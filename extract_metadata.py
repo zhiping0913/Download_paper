@@ -115,15 +115,6 @@ def format_metadata_to_markdown(metadata: dict) -> str:
 
     md_parts.append("\n---\n")
 
-    # 摘要
-    description = metadata.get('description', '')
-    if description:
-        md_parts.append("## Abstract\n")
-        md_parts.append(description)
-        md_parts.append("\n")
-
-    md_parts.append("\n---\n")
-
     return "\n".join(md_parts)
 
 
