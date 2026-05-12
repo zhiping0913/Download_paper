@@ -132,12 +132,12 @@ class APSHandler(PublisherHandler):
         # 清理LaTeX命令
         md_content = re.sub(r'\\mspace\{[^}]+\}', '', md_content)
 
-        # ===== 后处理：在FIG. X. 后添加图片引用 =====
+        # ===== 后处理：在FIG. X 或 FIG. X. 后添加图片引用 =====
         # 只在add_figure_refs为True且成功下载图片时添加引用
         if add_figure_refs:
-            # 匹配 "FIG. 1." 并在其后插入图片
+            # 匹配 "FIG. 1" 或 "FIG. 1." 并在其后插入图片
             def add_figure_reference(match):
-                fig_text = match.group(0)  # e.g., "FIG. 1."
+                fig_text = match.group(0)  # e.g., "FIG. 1" or "FIG. 1."
                 # 提取图片编号
                 fig_match = re.search(r'FIG\.\s*(\d+)', fig_text)
                 if fig_match:
@@ -146,7 +146,7 @@ class APSHandler(PublisherHandler):
                     return f"{fig_text}\n\n![Figure {fig_num}](figure_{fig_num}.png)"
                 return fig_text
 
-            md_content = re.sub(r'FIG\.\s*\d+\.', add_figure_reference, md_content)
+            md_content = re.sub(r'FIG\.\s*\d+\.?', add_figure_reference, md_content)
 
         return md_content
 
