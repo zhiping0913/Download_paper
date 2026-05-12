@@ -92,20 +92,20 @@ def traverse_json_recursive(data, depth=0, parent_type=None, skip_section_header
                         caption_text = component.get("body", "")
                         break
 
-            # 从caption中提取图片编号 (e.g., "FIG. 1." -> "1")
-            fig_match = re.search(r'FIG\.\s*(\d+)', caption_text)
+            # 从caption中提取图片编号 (e.g., "FIG. 1." or "Fig. 1." -> "1")
+            fig_match = re.search(r'[Ff][Ii][Gg]\.\s*(\d+)', caption_text)
             if fig_match:
                 fig_num = fig_match.group(1)
-                # 添加FIG标记和图片引用
+                # 添加图标记和图片引用
                 md_text = convert_html_to_markdown(caption_text)
                 md_text = remove_newlines_in_paragraph(md_text, "", "fig-caption")
                 md_text = re.sub(r'\[\]\{#[^}]*\}', '', md_text).strip()
 
                 if md_text:
-                    # 查找FIG文本后的位置，插入图片引用
-                    # 在第一行(通常是"FIG. X.")后插入图片
+                    # 查找图文本后的位置，插入图片引用
+                    # 在第一行(通常是"FIG. X." 或 "Fig. X.")后插入图片
                     lines = md_text.split('\n')
-                    if lines and re.search(r'FIG\.\s*\d+', lines[0]):
+                    if lines and re.search(r'[Ff][Ii][Gg]\.\s*\d+', lines[0]):
                         # 在FIG行后插入空行和图片引用
                         md_output.append(f"{lines[0]}\n\n")
                         md_output.append(f"![Figure {fig_num}](figure_{fig_num}.png)\n\n")

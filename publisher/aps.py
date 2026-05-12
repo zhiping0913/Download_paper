@@ -132,21 +132,28 @@ class APSHandler(PublisherHandler):
         # 跨发布商通用的清理 (移到 json_to_md_converter.cleanup_markdown)
         md_content = cleanup_markdown(md_content)
 
-        # ===== 后处理：在FIG. X 或 FIG. X. 后添加图片引用 =====
+        # ===== 后处理：在独立的 FIG./Fig. X 行后添加图片引用 =====
         # 只在add_figure_refs为True且成功下载图片时添加引用
         if add_figure_refs:
-            # 匹配 "FIG. 1" 或 "FIG. 1." 并在其后插入图片
+            # 只匹配独立的 "FIG. X" 或 "Fig. X" 行（不是 "Fig. X(a)" 这样的inline引用）
+            # 查找行首的 Fig/FIG 标记
             def add_figure_reference(match):
-                fig_text = match.group(0)  # e.g., "FIG. 1" or "FIG. 1."
+                line = match.group(0)  # 完整的行
                 # 提取图片编号
-                fig_match = re.search(r'FIG\.\s*(\d+)', fig_text)
+                fig_match = re.search(r'[Ff][Ii][Gg]\.\s*(\d+)', line)
                 if fig_match:
                     fig_num = fig_match.group(1)
-                    # 返回FIG文本，加上空行和图片引用
-                    return f"{fig_text}\n\n![Figure {fig_num}](figure_{fig_num}.png)"
-                return fig_text
+                    # 在该行后添加图片引用
+                    return f"{line}\n\n![Figure {fig_num}](figure_{fig_num}.png)"
+                return line
 
-            md_content = re.sub(r'FIG\.\s*\d+\.?', add_figure_reference, md_content)
+            # 匹配行首的 "FIG. X" 或 "Fig. X" (可能带或不带句号，但后面不是括号)
+            md_content = re.sub(
+                r'^([Ff][Ii][Gg]\.\s*\d+\.?)(?!\()',
+                add_figure_reference,
+                md_content,
+                flags=re.MULTILINE
+            )
 
         return md_content
 

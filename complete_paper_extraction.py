@@ -1452,9 +1452,9 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
                 # 📝 后处理: 如果成功下载了图片，重新生成markdown并添加图片引用
                 if figure_map:
                     print(f"  📝 重新生成Markdown并添加图片引用...")
-                    md_with_figs = handler.convert_to_markdown(metadata, fulltext_data, add_figure_refs=True)
+                    md = handler.convert_to_markdown(metadata, fulltext_data, add_figure_refs=True)
                     with open(markdown_file, 'w', encoding='utf-8') as f:
-                        f.write(md_with_figs)
+                        f.write(md)
                     print(f"  ✓ Markdown已更新图片引用")
                 else:
                     print(f"  ℹ️  未下载图片，Markdown中不包含图片引用")
