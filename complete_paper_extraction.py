@@ -1411,13 +1411,53 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
                     except:
                         fulltext_data = {}
 
-                # 调用handler的convert_to_markdown方法
-                md = handler.convert_to_markdown(metadata, fulltext_data)
+                # 调用handler的convert_to_markdown方法 (不添加图片引用，先后处理)
+                md = handler.convert_to_markdown(metadata, fulltext_data, add_figure_refs=False)
 
                 # 保存Markdown文件
                 with open(markdown_file, 'w', encoding='utf-8') as f:
                     f.write(md)
                 print(f"  ✓ Markdown已保存: {markdown_filename}")
+
+                # 🖼️ 下载图片 (这是之前丢失的步骤!)
+                print("  🖼️  下载图片...")
+                figure_map = {}  # 追踪图号 -> 文件名的映射
+
+                # 从fulltext_data中提取图片信息
+                try:
+                    from publisher.aps import extract_figure_assets_from_fulltext
+                    journal_prefix = captured.get('journal_prefix', 'prl')
+                    figure_assets = extract_figure_assets_from_fulltext(fulltext_data, journal_prefix=journal_prefix)
+
+                    if figure_assets:
+                        print(f"  🖼️  图片: {len(figure_assets)} 个")
+                        for fig_id in sorted(figure_assets.keys(), key=lambda x: int(x[1:]) if x[1:].isdigit() else 0):
+                            fig_url = figure_assets[fig_id].get('url')
+
+                            if fig_url:
+                                # 提取图号（f1 -> 1, f2 -> 2等）
+                                fig_num = fig_id[1:] if fig_id.startswith('f') else fig_id
+
+                                try:
+                                    img_filename = await download_figure(page2, fig_url, int(fig_num), paper_output_dir)
+                                    if img_filename:
+                                        figure_map[fig_num] = img_filename  # 记录图片映射
+                                except Exception as e:
+                                    print(f"    ⚠️  Figure {fig_num} 下载失败: {e}")
+                    else:
+                        print(f"  ℹ️  未找到图片信息")
+                except Exception as e:
+                    print(f"  ⚠️  图片提取异常: {e}")
+
+                # 📝 后处理: 如果成功下载了图片，重新生成markdown并添加图片引用
+                if figure_map:
+                    print(f"  📝 重新生成Markdown并添加图片引用...")
+                    md_with_figs = handler.convert_to_markdown(metadata, fulltext_data, add_figure_refs=True)
+                    with open(markdown_file, 'w', encoding='utf-8') as f:
+                        f.write(md_with_figs)
+                    print(f"  ✓ Markdown已更新图片引用")
+                else:
+                    print(f"  ℹ️  未下载图片，Markdown中不包含图片引用")
 
                 # 保存元数据JSON
                 save_metadata_json(paper_output_dir, metadata, s2_data, doi)
