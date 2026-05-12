@@ -32,8 +32,154 @@ def aps_extract_references_from_html(html: str) -> list:
 
 async def aps_get_supplemental_links(page, doi: str, journal_prefix: str = None) -> tuple:
     """获取补充材料链接 - APS 专用"""
-    from complete_paper_extraction import get_supplemental_links
     return await get_supplemental_links(page, doi, journal_prefix)
+
+
+async def get_supplemental_links(page, doi: str, journal_prefix: str = None) -> tuple:
+    """获取补充材料的所有下载链接和描述信息
+
+    Returns: (supplemental_links, descriptions_dict)
+    """
+    try:
+        if not journal_prefix:
+            journal_prefix = 'prl'  # 默认值
+        supplemental_url = f"https://journals.aps.org/{journal_prefix}/supplemental/{doi}"
+        print(f"  🔗 获取补充材料链接: {supplemental_url}")
+
+        # 监听网络响应来获取描述
+        supplemental_data = None
+
+        def handle_response(response):
+            nonlocal supplemental_data
+            try:
+                if '/supplemental/' in response.url and response.status == 200:
+                    if 'application/json' in response.headers.get('content-type', ''):
+                        supplemental_data = response.json()
+            except:
+                pass
+
+        page.on("response", handle_response)
+
+        await page.goto(supplemental_url, wait_until='networkidle', timeout=60000)
+
+        # 提取所有链接
+        links_js = """
+        () => {
+            const links = [];
+
+            // 找所有指向PDF、doc等的链接
+            document.querySelectorAll('a').forEach(a => {
+                const href = a.getAttribute('href');
+                const text = a.innerText || a.textContent;
+                if (href && !href.includes('login') && !href.includes('scholar.google')) {
+                    if (href.includes('supplemental') || href.includes('pdf') || href.includes('doc') || href.includes('zip') || href.includes('gif')) {
+                        links.push({
+                            text: text.trim(),
+                            href: href,
+                            url: new URL(href, window.location.href).href
+                        });
+                    }
+                }
+            });
+
+            // 去重
+            const seen = new Set();
+            return links.filter(link => {
+                if (seen.has(link.url)) return false;
+                seen.add(link.url);
+                return link.url.length > 0 && !link.url.includes('login');
+            });
+        }
+        """
+
+        supp_links = await page.evaluate(links_js)
+
+        # 从页面HTML中提取补充材料描述
+        # description通常在<p>标签中，与下载链接相关
+        descriptions_js = """
+        () => {
+            const descriptions = {};
+
+            // 方法1: 查找每个文件对应的<p>标签描述
+            const links = document.querySelectorAll('a');
+            links.forEach(link => {
+                const href = link.getAttribute('href');
+                if (href && (href.includes('supplemental') || href.includes('.gif') || href.includes('.pdf') || href.includes('.doc'))) {
+                    const filename = href.split('/').pop();
+
+                    // 查找最近的段落或描述
+                    let element = link.parentElement;
+                    let description = '';
+
+                    // 向上查找最多5层
+                    for (let i = 0; i < 5; i++) {
+                        if (!element) break;
+
+                        // 查找<p>标签中的文本
+                        const pTags = element.querySelectorAll('p');
+                        if (pTags.length > 0) {
+                            description = pTags[0].innerText || pTags[0].textContent;
+                            if (description && description.length > 10) break;
+                        }
+
+                        element = element.parentElement;
+                    }
+
+                    if (description) {
+                        descriptions[filename] = description.trim();
+                    }
+                }
+            });
+
+            // 方法2: 如果没找到，直接获取所有<p>标签
+            if (Object.keys(descriptions).length === 0) {
+                const allP = document.querySelectorAll('p');
+                allP.forEach(p => {
+                    const text = (p.innerText || p.textContent).trim();
+                    if (text.length > 20 && !text.includes('Copyright')) {
+                        // 尝试匹配到文件
+                        const links = p.querySelectorAll('a');
+                        if (links.length > 0) {
+                            links.forEach(link => {
+                                const href = link.getAttribute('href');
+                                if (href) {
+                                    const filename = href.split('/').pop();
+                                    if (!descriptions[filename]) {
+                                        descriptions[filename] = text;
+                                    }
+                                }
+                            });
+                        }
+                    }
+                });
+            }
+
+            return descriptions;
+        }
+        """
+
+        try:
+            descriptions = await page.evaluate(descriptions_js) or {}
+        except Exception as e:
+            print(f"  ⚠️  提取描述失败: {e}")
+            descriptions = {}
+
+        if descriptions:
+            print(f"  📝 从HTML提取 {len(descriptions)} 个描述")
+            for filename, desc in list(descriptions.items())[:2]:
+                print(f"    - {filename}: {desc[:50]}...")
+
+        page.remove_listener("response", handle_response)
+
+        if supp_links:
+            print(f"  ✓ 找到 {len(supp_links)} 个补充材料")
+            return supp_links, descriptions
+        else:
+            return [], {}
+
+    except Exception as e:
+        print(f"  ⚠️  获取补充材料链接失败: {e}")
+        return [], {}
 
 
 async def aps_download_pdf(page, doi: str, output_dir: Path, journal_prefix: str = None) -> str:
@@ -259,66 +405,105 @@ def extract_references_from_html(html: str) -> list:
         return []
 
 
-def extract_figure_assets_from_fulltext(fulltext_data: dict, journal_prefix: str = 'prl') -> dict:
-    """Extract figure URLs and captions from APS fulltext JSON API response
-
-    Args:
-        fulltext_data: The fulltext JSON data from APS API
-        journal_prefix: The journal prefix (prl, pre, pra, etc.) - defaults to 'prl'
-
-    Note:
-        Figures are stored as 'asset' objects with type='figure' containing:
-        - id: figure identifier (e.g., 'f1', 'f2')
-        - caption: figure caption text (with MathML)
-        - variants: dict with 'thumbnail', 'medium', 'large' URLs
+def extract_figure_assets_from_fulltext(fulltext_data: dict) -> dict:
+    """
+    从fulltext API响应中提取图片资源信息
+    返回: {fig_id: {"url": "...", "caption": "..."}, ...}
     """
     figure_assets = {}
 
-    def search_figures(obj):
-        """Recursively search for figure objects in the JSON structure"""
+    if not fulltext_data:
+        return figure_assets
+
+    def search_assets(obj):
+        """递归搜索所有asset对象"""
         if isinstance(obj, dict):
-            # Look for asset objects with type='figure'
-            if obj.get('type') == 'figure' and obj.get('asset'):
-                asset = obj['asset']
-                fig_id = asset.get('id') or f"fig_{len(figure_assets) + 1}"
-                caption = asset.get('caption', '')
-                url = ""
+            # 检查是否是figure asset
+            if obj.get('type') == 'figure' and 'variants' in obj:
+                fig_id = obj.get('id', '')
+                variants = obj.get('variants', {})
 
-                # Extract figure URL from asset.variants (prefer large, fallback to medium or thumbnail)
-                variants = asset.get('variants', {})
-                if isinstance(variants, dict):
-                    url = variants.get('large') or variants.get('medium') or variants.get('thumbnail')
+                # 优先使用large版本，其次medium
+                fig_url = variants.get('large') or variants.get('medium')
 
-                # Convert relative URL to absolute URL if needed
-                if url and url.startswith('/'):
-                    url = f"https://journals.aps.org{url}"
+                if fig_url and fig_id:
+                    figure_assets[fig_id] = {
+                        'url': fig_url,
+                        'caption': obj.get('caption', '')
+                    }
 
-                if url:  # Only add if we have a URL
-                    figure_assets[fig_id] = {'caption': caption, 'url': url}
-
-            # Recurse into all values (including 'components')
-            for value in obj.values():
-                if isinstance(value, (dict, list)):
-                    search_figures(value)
+            # 递归搜索字典中的所有值
+            for v in obj.values():
+                search_assets(v)
 
         elif isinstance(obj, list):
             for item in obj:
-                search_figures(item)
+                search_assets(item)
 
-    search_figures(fulltext_data)
+    search_assets(fulltext_data)
     return figure_assets
 
 
 def extract_supplemental_descriptions(supplemental_data: dict) -> dict:
-    """Extract supplemental file descriptions from API response"""
+    """从supplemental API响应中提取每个文件的描述
+
+    Returns: {filename: description, ...}
+    """
     descriptions = {}
+
+    if not supplemental_data:
+        return descriptions
+
     try:
-        if isinstance(supplemental_data, dict):
-            for key, value in supplemental_data.items():
-                if isinstance(value, dict) and 'description' in value:
-                    descriptions[key] = value['description']
-    except:
-        pass
+        # 尝试多种可能的JSON结构
+        files = supplemental_data.get('files', [])
+
+        # 如果没有files字段，尝试其他结构
+        if not files:
+            if isinstance(supplemental_data, list):
+                files = supplemental_data
+            elif 'data' in supplemental_data:
+                files = supplemental_data.get('data', [])
+            elif 'supplemental' in supplemental_data:
+                files = supplemental_data.get('supplemental', [])
+
+        if not isinstance(files, list):
+            files = [files] if files else []
+
+        for file_item in files:
+            if isinstance(file_item, dict):
+                # 获取文件名
+                filename = file_item.get('filename', '') or file_item.get('name', '') or file_item.get('file', '')
+                url = file_item.get('url', '')
+
+                if not filename and url:
+                    filename = url.split('/')[-1]
+
+                # 获取描述
+                description = (
+                    file_item.get('description', '') or
+                    file_item.get('desc', '') or
+                    file_item.get('caption', '')
+                )
+
+                if description:
+                    # 清理HTML标签
+                    description = re.sub(r'<br\s*/?>', ' ', description)  # <br> -> 空格
+                    description = re.sub(r'<p[^>]*>', '', description)    # 移除<p>
+                    description = re.sub(r'</p>', ' ', description)        # </p> -> 空格
+                    description = re.sub(r'<[^>]+>', '', description)      # 移除所有HTML标签
+                    description = re.sub(r'&\w+;', lambda m: {'&lt;': '<', '&gt;': '>', '&amp;': '&', '&#x2F;': '/'}.get(m.group(0), m.group(0)), description)  # 解码HTML实体
+                    description = re.sub(r'\s+', ' ', description)         # 多空格->单空格
+                    from html import unescape
+                    description = unescape(description).strip()
+
+                    if filename and description:
+                        descriptions[filename] = description
+                        print(f"  📝 找到描述: {filename[:40]} - {description[:50]}...")
+
+    except Exception as e:
+        print(f"  ⚠️  解析supplemental描述失败: {e}")
+
     return descriptions
 
 
