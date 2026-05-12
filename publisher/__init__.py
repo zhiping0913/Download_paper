@@ -1,13 +1,11 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Publisher module: Publisher-specific implementations
+出版商特定处理模块
+
+包含不同出版商（Nature、Science等）的论文提取处理器
 """
 
-from .base import PublisherHandler
-from .aps import APSHandler
 from .nature import NatureHandler
 
-__all__ = [
-    'PublisherHandler',
-    'APSHandler',
-    'NatureHandler'
-]
+__all__ = ['NatureHandler']

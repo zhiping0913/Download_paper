@@ -1,582 +1,289 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Nature Journal Publisher Implementation
-Handles extraction from Nature and Nature-family journals (Nature Physics, Nature Materials, etc.)
-
-工作流：
-  1. complete_paper_extraction.py → 进入Nature页面 → 获取页面HTML
-  2. extract_html_from_page() → 用 Playwright 捕获完整HTML
-  3. extract_main_content_paragraphs() → 从HTML中抓取 <div class="main-content">
-  4. convert_main_content_by_paragraph() → 按段落分割转换（避免Pandoc换行问题）
-     - 按 </p> 标记分割成独立段落
-     - 逐段用 Pandoc 转换为 Markdown
-     - 移除每段内部换行
-     - 简化引用格式 [N]
-     - 重新组合段落
-  5. 最终得到清洁的Markdown正文
+Nature期刊论文提取模块
+集合所有Nature相关的提取功能
 """
 
-from publisher.base import PublisherHandler
-from core import extract_text_without_math
-import re
 import json
+import re
 from pathlib import Path
-from typing import Optional, Dict, List
 from bs4 import BeautifulSoup
 
-# 导入转换函数
-try:
-    from json_to_md_converter import convert_html_to_markdown, cleanup_markdown
-except ImportError:
-    # 如果在publisher子目录中运行，调整导入路径
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-    from json_to_md_converter import convert_html_to_markdown, cleanup_markdown
 
+class NatureHandler:
+    """Nature期刊论文数据提取处理器"""
 
-class NatureHandler(PublisherHandler):
-    """Handler for Nature and Springer Nature journals"""
-
-    def __init__(self, journal_name: str = 'nature'):
-        """
-        Initialize Nature handler
+    def __init__(self, html_file: str):
+        """初始化处理器
 
         Args:
-            journal_name: Journal name (nature, nature_physics, nature_materials, etc.)
+            html_file: Nature期刊论文HTML文件路径
         """
-        self.journal_name = journal_name
-        self.base_url = "https://www.nature.com"
-
-    async def extract_metadata(self, page) -> dict:
-        """Extract metadata from Nature article page
-
-        Extracts from:
-        - Meta tags (citation_*, dc.*, prism.* prefixes)
-        - JSON-LD structured data
-        - HTML DOM elements
-
-        Returns:
-            Dictionary with extracted metadata
-        """
-        metadata = {
-            'title': None,
-            'authors': [],
-            'author_emails': [],
-            'abstract': None,
-            'journal': None,
-            'year': None,
-            'volume': None,
-            'issue': None,
-            'pages': None,
-            'doi': None,
-            'author_with_affiliations': [],
-            'corresponding_author_emails': [],
-            'references': [],
-        }
-
-        print("  🔍 Extracting metadata from Nature article...")
-
-        # Extract all meta tags
-        meta_data = await page.evaluate("""() => {
-            const data = {};
-            document.querySelectorAll('meta').forEach(meta => {
-                const name = meta.getAttribute('name') || meta.getAttribute('property') || '';
-                const content = meta.getAttribute('content') || '';
-                if (name && content) {
-                    data[name] = content;
-                }
-            });
-            return data;
-        }""")
-
-        # Map meta tags to metadata fields
-        metadata['title'] = meta_data.get('citation_title') or meta_data.get('dc.title')
-        metadata['journal'] = meta_data.get('citation_journal_title', 'Nature')
-        metadata['doi'] = (meta_data.get('citation_doi') or meta_data.get('prism.doi', '').replace('doi:', ''))
-
-        # Parse publication date (format: 2026/04/22 or 2026-04-22)
-        pub_date = meta_data.get('citation_online_date', '')
-        if pub_date:
-            # Handle both / and - separators
-            date_parts = pub_date.replace('-', '/').split('/')
-            if len(date_parts) >= 1:
-                metadata['year'] = date_parts[0]
-
-        # Get first author from meta tag
-        if meta_data.get('citation_author'):
-            metadata['authors'].append(meta_data['citation_author'])
-
-        print(f"  ✅ Title: {metadata['title'][:60] if metadata['title'] else 'N/A'}...")
-        print(f"  ✅ Journal: {metadata['journal']}")
-        print(f"  ✅ DOI: {metadata['doi']}")
-
-        # Extract abstract from JSON-LD
-        json_ld_data = await page.evaluate("""() => {
-            const scripts = document.querySelectorAll('script[type="application/ld+json"]');
-            for (let script of scripts) {
-                try {
-                    const data = JSON.parse(script.textContent);
-                    if (data.mainEntity) {
-                        return data.mainEntity;
-                    }
-                } catch (e) {}
-            }
-            return null;
-        }""")
-
-        if json_ld_data and 'description' in json_ld_data:
-            metadata['abstract'] = json_ld_data['description']
-            print(f"  ✅ Abstract: {metadata['abstract'][:60]}...")
-
-        # Extract all authors from HTML DOM (more complete than meta tags)
-        all_authors = await page.evaluate("""() => {
-            const authors = [];
-            const elements = document.querySelectorAll('[class*="author"]');
-            let uniqueAuthors = new Set();
-
-            elements.forEach(el => {
-                const text = el.textContent.trim();
-                if (text && text.length > 2 && text.length < 100) {
-                    uniqueAuthors.add(text);
-                }
-            });
-
-            return Array.from(uniqueAuthors).slice(0, 50);
-        }""")
-
-        if all_authors:
-            metadata['authors'] = all_authors
-            print(f"  ✅ Authors found: {len(metadata['authors'])}")
-
-        return metadata
-
-    async def get_fulltext_url(self, page) -> Optional[str]:
-        """Nature doesn't have a separate fulltext API, content is on the page itself"""
-        return page.url
-
-    async def get_pdf_url(self, page) -> Optional[str]:
-        """Find PDF download URL
-
-        Nature articles typically have a PDF button/link that needs to be located
-        """
-        print("  🔍 Looking for PDF download link...")
-
-        # Look for PDF download link - try multiple selectors
-        selectors = [
-            'a[href*=".pdf"]',
-            'a[title*="PDF"]',
-            '[class*="pdf-download"]',
-            'a[href*="pdf"]',
-            'button:has-text("PDF")',
-            '[data-test*="pdf"]'
-        ]
-
-        for selector in selectors:
-            try:
-                pdf_link = await page.query_selector(selector)
-                if pdf_link:
-                    href = await pdf_link.get_attribute('href')
-                    if href:
-                        if not href.startswith('http'):
-                            href = f"https://www.nature.com{href}"
-                        print(f"  ✅ Found PDF: {href[:80]}...")
-                        return href
-            except:
-                continue
-
-        print("  ⚠️  PDF link not found (may require subscription)")
-        return None
-
-    async def get_supplemental_url(self, page) -> Optional[str]:
-        """Find supplementary materials link"""
-        print("  🔍 Looking for supplementary materials...")
-
-        selectors = [
-            'a[href*="supplement"]',
-            'a[href*="supp"]',
-            'a:has-text("Supplementary")',
-            'a:has-text("Supplemental")',
-            '[class*="supplementary"] a',
-            '[class*="supplemental"] a'
-        ]
-
-        for selector in selectors:
-            try:
-                supp_link = await page.query_selector(selector)
-                if supp_link:
-                    href = await supp_link.get_attribute('href')
-                    if href:
-                        if not href.startswith('http'):
-                            href = f"https://www.nature.com{href}"
-                        print(f"  ✅ Found supplementary: {href[:80]}...")
-                        return href
-            except:
-                continue
-
-        print("  ⚠️  Supplementary materials link not found")
-        return None
-
-    async def extract_references(self, page) -> List[str]:
-        """Parse references from HTML reference list"""
-        print("  🔍 Extracting references...")
-
-        references = await page.evaluate("""() => {
-            const refs = [];
-            const refItems = document.querySelectorAll('[class*="reference"] li, [class*="ref-item"]');
-
-            refItems.forEach(item => {
-                const text = item.textContent.trim();
-                if (text && text.length > 10) {
-                    refs.push(text);
-                }
-            });
-
-            return refs.slice(0, 200);  // Limit to first 200
-        }""")
-
-        if references:
-            print(f"  ✅ References found: {len(references)}")
-        else:
-            print("  ⚠️  No references found")
-
-        return references
-
-    async def get_figures(self, page) -> Dict[str, dict]:
-        """Extract figure URLs and captions from HTML img tags"""
-        print("  🔍 Extracting figures...")
-
-        figures = {}
-
-        # Find all figure elements
-        figure_data = await page.evaluate("""() => {
-            const figs = [];
-            const elements = document.querySelectorAll('figure, [class*="figure"]');
-
-            elements.forEach((fig, idx) => {
-                // Get figure image
-                const img = fig.querySelector('img');
-                if (!img) return;
-
-                let src = img.getAttribute('src') || img.getAttribute('data-src');
-                if (!src) return;
-
-                // Upgrade to high-res version if possible
-                if (src.includes('media.springernature.com')) {
-                    src = src.replace(/w\d+h\d+/, 'lw685');
-                }
-
-                // Convert to full URL if relative
-                if (!src.startsWith('http')) {
-                    src = 'https://www.nature.com' + src;
-                }
-
-                // Get figure caption
-                let caption = '';
-                const captionEl = fig.querySelector('figcaption, [class*="caption"]');
-                if (captionEl) {
-                    caption = captionEl.textContent.trim();
-                }
-
-                if (src) {
-                    figs.push({
-                        idx: idx + 1,
-                        src: src,
-                        caption: caption
-                    });
-                }
-            });
-
-            return figs.slice(0, 100);  // Limit to first 100 figures
-        }""")
-
-        for fig in figure_data:
-            fig_key = f'fig_{fig["idx"]}'
-            figures[fig_key] = {
-                'caption': fig['caption'],
-                'url': fig['src']
-            }
-
-        if figures:
-            print(f"  ✅ Figures found: {len(figures)}")
-        else:
-            print("  ⚠️  No figures found")
-
-        return figures
-
-    def convert_to_markdown(self, metadata: dict, article_html: str = None,
-                          add_figure_refs: bool = False) -> str:
-        """Convert extracted data to Markdown
-
-        Args:
-            metadata: Paper metadata dict
-            article_html: HTML content of article (from page.content())
-            add_figure_refs: If True, add figure references in markdown
-
-        Returns:
-            Markdown formatted text
-        """
-        md_content = ""
-
-        # ===== Title =====
-        title = metadata.get('title') or "Academic Paper"
-        md_content += f"# {title}\n\n"
-
-        # ===== Authors =====
-        if metadata.get('authors'):
-            md_content += "## Authors\n\n"
-            for author in metadata['authors'][:30]:  # Limit display to first 30
-                md_content += f"- {author}\n"
-            if len(metadata['authors']) > 30:
-                md_content += f"- ... and {len(metadata['authors']) - 30} more authors\n"
-            md_content += "\n"
-
-        # ===== Publication Info =====
-        md_content += "## Publication\n\n"
-        if metadata.get('journal'):
-            md_content += f"**Journal:** {metadata['journal']}\n\n"
-        if metadata.get('year'):
-            md_content += f"**Year:** {metadata['year']}\n\n"
-        if metadata.get('volume'):
-            md_content += f"**Volume:** {metadata['volume']}"
-            if metadata.get('issue'):
-                md_content += f", Issue {metadata['issue']}"
-            md_content += "\n\n"
-        if metadata.get('pages'):
-            md_content += f"**Pages:** {metadata['pages']}\n\n"
-        if metadata.get('doi'):
-            md_content += f"**DOI:** {metadata['doi']}\n\n"
-        md_content += "---\n\n"
-
-        # ===== Abstract =====
-        if metadata.get('abstract'):
-            md_content += "## Abstract\n\n"
-            md_content += f"{metadata['abstract']}\n\n"
-            md_content += "---\n\n"
-
-        # ===== Article Content (Using Paragraph-by-Paragraph Conversion) =====
-        if article_html:
-            md_content += "## Article Content\n\n"
-            try:
-                # 使用段落级转换，避免Pandoc跨段落换行问题
-                article_md = self.convert_main_content_by_paragraph(article_html)
-                md_content += article_md
-            except Exception as e:
-                print(f"  ⚠️  Could not convert article HTML: {e}")
-                md_content += "[Article HTML content available but conversion failed]\n"
-
-        md_content += "\n---\n\n"
-
-        # ===== References =====
-        if metadata.get('references'):
-            md_content += "## References\n\n"
-            for i, ref in enumerate(metadata['references'][:100], 1):  # First 100
-                md_content += f"[{i}] {ref}\n\n"
-            if len(metadata['references']) > 100:
-                md_content += f"\n[... and {len(metadata['references']) - 100} more references]\n"
-
-        return md_content
-
-    def extract_main_content_paragraphs(self, html_str: str) -> List[str]:
-        """从HTML中提取 main-content div 里的所有段落
-
-        Args:
-            html_str: HTML字符串
-
-        Returns:
-            包含 <p>...</p> 的段落列表
-        """
-        soup = BeautifulSoup(html_str, 'html.parser')
-
-        # Try multiple selectors in order of preference
-        main_content_div = None
-        selectors = [
-            ('div', {'class': re.compile(r'main-content|article-body|article-content')}),
-            ('article', {}),
-            ('div', {'class': re.compile(r'content|body|article')}),
-            ('main', {}),
-        ]
-
-        for tag, attrs in selectors:
-            if attrs:
-                main_content_div = soup.find(tag, attrs)
-            else:
-                main_content_div = soup.find(tag)
-            if main_content_div:
-                print(f"  ✓ 找到内容容器: {tag}")
-                break
-
-        if not main_content_div:
-            # Last resort: find all paragraphs
-            print("  ⚠️  未找到主要内容容器，尝试查找所有段落")
-            paragraphs = soup.find_all('p')
-            if paragraphs and len(paragraphs) > 5:
-                # If we find substantial paragraphs, use them
-                main_content_div = soup.new_tag('div')
-                for p in paragraphs:
-                    main_content_div.append(p)
-            else:
-                print("  ❌ 未找到足够的段落内容")
-                return []
-
-        # 获取HTML字符串
-        main_html = str(main_content_div)
-
-        # 按 </p> 分割段落，但保留完整的 <p>...</p> 标签
-        p_pattern = r'<p[^>]*>(.*?)</p>'
-        matches = re.finditer(p_pattern, main_html, re.DOTALL)
-
-        paragraphs = [match.group(0) for match in matches]
-
-        print(f"  ✅ 从 main-content 中提取了 {len(paragraphs)} 个段落")
-        return paragraphs
-
-    def convert_paragraph(self, p_html: str) -> str:
-        """转换单个段落
-
-        1. 用 Pandoc 转换为 Markdown
-        2. 移除内部换行
-        3. 清理 LaTeX 命令
-        4. 简化引用格式
-        5. 清理 HTML 属性
-
-        Args:
-            p_html: 段落的HTML字符串
-
-        Returns:
-            转换后的Markdown段落
-        """
-        try:
-            # 1. 转换为Markdown
-            md = convert_html_to_markdown(p_html)
-
-            # 2. 清理LaTeX命令
-            md = cleanup_markdown(md)
-
-            # 3. 移除段落内的换行（将多个空格替换为单个空格）
-            md = re.sub(r'\s+', ' ', md)
-
-            # 4. 完全清理引用格式
-            # Pandoc脚注格式: ^[9](#ref-CR9 "title...")^ → [9]
-            md = re.sub(r'\^\[(\d+)\]\([^)]*\)\^', r'[\1]', md)
-            # 处理嵌套括号的情况
-            md = re.sub(r'\^\[(\d+)\][^\^]*\^', r'[\1]', md)
-
-            # 5. 移除HTML属性
-            md = re.sub(r'\{[^}]*\}', '', md)
-
-            # 6. 清理转义的字符
-            # 处理转义的星号：\*text\* → *text*
-            md = re.sub(r'\\\*', '*', md)
-            # 处理转义的波浪线：\~ → ~
-            md = re.sub(r'\\\~', '~', md)
-
-            # 7. 移除Pandoc语法
-            md = re.sub(r'::: \{[^}]*\}\n?', '', md)
-            md = re.sub(r':::\n?', '', md)
-
-            # 清理首尾空格
-            md = md.strip()
-
-            return md
-
-        except Exception as e:
-            print(f"  ⚠️  段落转换错误: {str(e)[:50]}")
+        self.html_file = html_file
+        with open(html_file, 'r', encoding='utf-8') as f:
+            self.html_content = f.read()
+        self.soup = BeautifulSoup(self.html_content, 'html.parser')
+
+    # ==================== 元数据提取 ====================
+
+    def extract_metadata(self) -> str:
+        """提取论文元数据（标题、作者、出版信息等）"""
+        ld_json_script = self.soup.find('script', {'type': 'application/ld+json'})
+        if not ld_json_script:
             return ""
 
-    def convert_main_content_by_paragraph(self, html_str: str) -> str:
-        """按段落分割转换 main-content
+        try:
+            metadata = json.loads(ld_json_script.string)
+            main_entity = metadata.get('mainEntity', {})
+            return self._format_metadata(main_entity)
+        except json.JSONDecodeError:
+            return ""
 
-        关键工作流：
-        1. 从HTML中提取 <div class="main-content">
-        2. 按 </p> 分割成独立段落（保持原始结构）
-        3. 逐个转换每个段落（避免Pandoc跨段落换行）
-        4. 移除每段内部的不必要换行
-        5. 简化引用格式为 [N]
-        6. 用双换行重新组合段落
+    def _format_metadata(self, metadata: dict) -> str:
+        """将元数据格式化为Markdown"""
+        md_parts = []
 
-        Args:
-            html_str: 完整的HTML页面字符串
+        # 标题
+        headline = metadata.get('headline', '')
+        if headline:
+            md_parts.append(f"# {headline}\n")
 
-        Returns:
-            清洁的Markdown文本
-        """
-        print("  📖 按段落分割转换HTML...")
+        # 作者信息
+        authors = metadata.get('author', [])
+        if authors:
+            md_parts.append("## Authors\n")
+            for author in authors:
+                name = author.get('name', '')
+                orcid = author.get('url', '')
+                email = author.get('email', '')
+                affiliations = author.get('affiliation', [])
 
-        # 1. 提取段落
-        paragraphs = self.extract_main_content_paragraphs(html_str)
+                if name:
+                    md_parts.append(f"- **{name}**")
+                    if orcid:
+                        md_parts.append(f"  ORCID: {orcid.split('/')[-1]}")
+                    if affiliations:
+                        for aff in affiliations:
+                            aff_address = aff.get('address', {})
+                            aff_text = aff_address.get('name', '') if isinstance(aff_address, dict) else ''
+                            if aff_text:
+                                md_parts.append(f"  {aff_text}")
+
+            # 对应作者
+            corresponding = [a for a in authors if a.get('email')]
+            if corresponding:
+                md_parts.append("\n**Corresponding authors:**")
+                for author in corresponding:
+                    email = author.get('email', '')
+                    if email:
+                        md_parts.append(f"- {email}")
+            md_parts.append("")
+
+        # 出版信息
+        md_parts.append("## Publication\n")
+
+        doi = metadata.get('sameAs', '')
+        if doi:
+            doi_short = doi.replace('https://doi.org/', '')
+            md_parts.append(f"**DOI:** {doi_short}\n")
+
+        is_part_of = metadata.get('isPartOf', {})
+        if is_part_of:
+            journal_name = is_part_of.get('name', '')
+            if journal_name:
+                md_parts.append(f"**Journal:** {journal_name}\n")
+
+        date_published = metadata.get('datePublished', '')
+        if date_published:
+            year = date_published.split('-')[0]
+            md_parts.append(f"**Year:** {year}\n")
+
+        volume = is_part_of.get('volumeNumber', '') if is_part_of else ''
+        if volume:
+            md_parts.append(f"**Volume:** {volume}\n")
+
+        page_start = metadata.get('pageStart', '')
+        page_end = metadata.get('pageEnd', '')
+        if page_start and page_end:
+            md_parts.append(f"**Pages:** {page_start}-{page_end}\n")
+
+        keywords = metadata.get('keywords', [])
+        if keywords:
+            md_parts.append(f"**Keywords:** {', '.join(keywords)}\n")
+
+        md_parts.append("\n---\n")
+
+        return "\n".join(md_parts)
+
+    # ==================== 引用提取 ====================
+
+    def extract_references(self) -> str:
+        """提取论文引用"""
+        ref_section = self.soup.find('ol', {'class': 'c-article-references'})
+        if not ref_section:
+            return ""
+
+        items = ref_section.find_all('li', {'class': 'c-article-references__item'})
+        if not items:
+            return ""
+
+        md_parts = ["# References\n"]
+        for item in items:
+            counter = item.get('data-counter', '')
+            text_p = item.find('p', {'class': 'c-article-references__text'})
+            doi_link = item.find('a', {'data-doi': True})
+
+            if text_p:
+                text = text_p.get_text(strip=True)
+                doi = doi_link.get('data-doi', '') if doi_link else ''
+
+                if doi:
+                    md_parts.append(f"[{counter}] {text} DOI: {doi}")
+                else:
+                    md_parts.append(f"[{counter}] {text}")
+
+        return "\n".join(md_parts)
+
+    # ==================== 附加内容提取 ====================
+
+    def extract_data_availability(self) -> str:
+        """提取Data availability部分"""
+        data_avail_section = self.soup.find('section', {'data-title': 'Data availability'})
+        if not data_avail_section:
+            return ""
+
+        content_div = data_avail_section.find('div', {'class': 'c-article-section__content'})
+        if not content_div:
+            return ""
+
+        paragraphs = content_div.find_all('p')
         if not paragraphs:
             return ""
 
-        # 2. 逐段转换
-        print(f"  ⚙️  逐段转换 {len(paragraphs)} 个段落...")
-        converted_paragraphs = []
+        md_parts = []
+        for p in paragraphs:
+            text = p.get_text(strip=True)
+            if text:
+                md_parts.append(text)
 
-        for idx, p_html in enumerate(paragraphs, 1):
-            md = self.convert_paragraph(p_html)
+        return "\n\n".join(md_parts) if md_parts else ""
 
-            if md:
-                converted_paragraphs.append(md)
+    def extract_acknowledgements(self) -> str:
+        """提取Acknowledgements部分"""
+        ack_section = self.soup.find('section', {'data-title': 'Acknowledgements'})
+        if not ack_section:
+            return ""
 
-                # 每10段或前3段打印进度
-                if idx <= 3 or idx % 10 == 0:
-                    chars = len(md)
-                    print(f"    ✓ 段落 {idx}: {chars} 字符")
+        content_div = ack_section.find('div', {'class': 'c-article-section__content'})
+        if not content_div:
+            return ""
 
-        print(f"  ✅ 共转换 {len(converted_paragraphs)} 个有效段落")
+        paragraphs = content_div.find_all('p')
+        if not paragraphs:
+            return ""
 
-        # 3. 组合段落（双换行分隔）
-        final_markdown = "\n\n".join(converted_paragraphs)
+        md_parts = []
+        for p in paragraphs:
+            text = p.get_text(strip=True)
+            if text:
+                md_parts.append(text)
 
-        # 4. 最后清理
-        # 移除过多的空行
-        final_markdown = re.sub(r'\n\n\n+', '\n\n', final_markdown)
+        return "\n\n".join(md_parts) if md_parts else ""
 
-        return final_markdown
+    # ==================== 补充材料提取 ====================
+
+    def extract_extended_data(self) -> str:
+        """提取Extended data figures and tables"""
+        extended_section = self.soup.find('section', {'data-title': 'Extended data figures and tables'})
+        if not extended_section:
+            return ""
+
+        items = extended_section.find_all('div', {'class': 'c-article-supplementary__item'})
+        if not items:
+            return ""
+
+        md_parts = []
+        for i, item in enumerate(items, 1):
+            title = item.find('a', {'class': 'print-link'})
+            if title:
+                title_text = title.get_text(strip=True)
+                href = title.get('href', '')
+
+                # 获取描述
+                desc_div = item.find('div', {'class': 'c-article-supplementary__description'})
+                desc_text = ""
+                if desc_div:
+                    desc_text = desc_div.get_text(strip=True)
+                    desc_text = re.sub(r'\s+', ' ', desc_text)
+
+                # 组合内容
+                md_parts.append(f"{i}. [{title_text}]({href})")
+                if desc_text:
+                    md_parts.append(f"\n   {desc_text}\n")
+
+        return "\n".join(md_parts) if md_parts else ""
+
+    def extract_supplementary_information(self) -> str:
+        """提取Supplementary information"""
+        supp_section = self.soup.find('section', {'data-title': 'Supplementary information'})
+        if not supp_section:
+            return ""
+
+        content_div = supp_section.find('div', {'class': 'c-article-section__content'})
+        if not content_div:
+            return ""
+
+        items = content_div.find_all('div', {'class': 'c-article-supplementary__item'})
+        if not items:
+            return ""
+
+        md_parts = []
+        for i, item in enumerate(items, 1):
+            title = item.find('a', {'class': 'print-link'})
+            if title:
+                title_text = title.get_text(strip=True)
+                href = title.get('href', '')
+                md_parts.append(f"{i}. [{title_text}]({href})")
+
+        return "\n".join(md_parts) if md_parts else ""
 
 
-# ============================================================================
-# Nature-Specific Extraction Functions
-# ============================================================================
+def main():
+    """测试函数"""
+    html_file = "/home/zhiping/Projects/Download_paper/captured_data/page_000.html"
+    handler = NatureHandler(html_file)
 
-def extract_doi_from_nature_url(url: str) -> Optional[str]:
-    """Extract DOI from Nature article URL
+    print("=" * 80)
+    print("🧪 Nature处理器测试")
+    print("=" * 80)
 
-    Example: https://www.nature.com/articles/s41586-026-10400-2
-    Returns: 10.1038/s41586-026-10400-2
-    """
-    match = re.search(r'articles/(s\d+\-[\d\-]+)', url)
-    if match:
-        article_id = match.group(1)
-        return f"10.1038/{article_id}"
-    return None
+    print("\n1. 提取元数据...")
+    metadata = handler.extract_metadata()
+    print(f"✓ 元数据: {len(metadata)} 字符")
+
+    print("\n2. 提取引用...")
+    references = handler.extract_references()
+    print(f"✓ 引用: {len(references)} 字符")
+
+    print("\n3. 提取Data availability...")
+    data_avail = handler.extract_data_availability()
+    print(f"✓ Data availability: {len(data_avail)} 字符")
+
+    print("\n4. 提取Acknowledgements...")
+    ack = handler.extract_acknowledgements()
+    print(f"✓ Acknowledgements: {len(ack)} 字符")
+
+    print("\n5. 提取Extended data...")
+    extended = handler.extract_extended_data()
+    print(f"✓ Extended data: {len(extended)} 字符")
+
+    print("\n6. 提取Supplementary information...")
+    supp = handler.extract_supplementary_information()
+    print(f"✓ Supplementary information: {len(supp)} 字符")
+
+    print("\n✅ 测试完成")
 
 
-def parse_nature_meta_tags(meta_dict: dict) -> dict:
-    """Parse Nature-specific meta tags into standard format"""
-    return {
-        'title': meta_dict.get('citation_title'),
-        'doi': meta_dict.get('citation_doi', '').replace('doi:', ''),
-        'journal': meta_dict.get('citation_journal_title'),
-        'author': meta_dict.get('citation_author'),
-        'author_institution': meta_dict.get('citation_author_institution'),
-        'date': meta_dict.get('citation_online_date'),
-        'abstract': meta_dict.get('dc.description'),
-    }
-
-
-def detect_nature_journal(url: str) -> Optional[str]:
-    """Detect Nature journal type from URL
-
-    Returns: 'nature', 'nature_physics', 'nature_materials', etc.
-    """
-    if 'nature.com/articles' in url:
-        # Extract journal from article ID pattern or URL
-        if 's41567' in url:
-            return 'nature_physics'
-        elif 's41563' in url:
-            return 'nature_materials'
-        elif 's41586' in url:
-            return 'nature'
-        else:
-            return 'nature'  # default
-    return None
-
+if __name__ == "__main__":
+    main()
