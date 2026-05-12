@@ -1556,7 +1556,7 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
                 print(f"  💾 输出目录: {paper_output_dir}")
                 print()
 
-                # 关闭当前论文的所有页面，保留浏览器连接供下次使用
+                # 关闭当前论文的所有页面，保留一个空白页面保持浏览器窗口打开
                 print("🧹 清理当前论文的标签页...")
                 print("=" * 80)
                 pages_to_close = []
@@ -1572,8 +1572,15 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
                     except:
                         pass
 
-                print("  ✓ 当前论文的标签页已关闭")
-                print("  ℹ️  浏览器已保留，可继续处理下一篇论文\n")
+                # 创建一个新的空白页面，保持浏览器窗口打开
+                try:
+                    blank_page = await context.new_page()
+                    await blank_page.goto("about:blank")
+                    print("  ✓ 当前论文的标签页已关闭")
+                    print("  ℹ️  浏览器已保留，可继续处理下一篇论文\n")
+                except:
+                    print("  ✓ 当前论文的标签页已关闭")
+                    print("  ⚠️  无法创建空白页面，但浏览器仍保持连接\n")
 
             # 不关闭浏览器，保持连接以供批处理使用
             # await browser.close()
