@@ -40,141 +40,89 @@ def extract_metadata_from_html(html_file: str) -> dict:
 
 
 def format_metadata_to_markdown(metadata: dict) -> str:
-    """将元数据转换为Markdown格式"""
+    """将元数据转换为Markdown格式（简洁版）"""
 
     md_parts = []
-
-    # 1. 论文基本信息
-    md_parts.append("---")
-    md_parts.append("# 论文元数据\n")
 
     # 标题
     headline = metadata.get('headline', '')
     if headline:
-        md_parts.append(f"## 📄 论文标题\n\n{headline}\n")
+        md_parts.append(f"# {headline}\n")
 
-    # 2. 出版信息
-    doi = metadata.get('sameAs', '')
-    date_published = metadata.get('datePublished', '')
-    date_modified = metadata.get('dateModified', '')
-
-    if doi or date_published:
-        md_parts.append("## 📚 出版信息\n")
-        if doi:
-            doi_short = doi.replace('https://doi.org/', '')
-            md_parts.append(f"- **DOI:** [{doi_short}]({doi})")
-        if date_published:
-            md_parts.append(f"- **发表日期:** {date_published.split('T')[0]}")
-        if date_modified:
-            md_parts.append(f"- **修改日期:** {date_modified.split('T')[0]}")
-        md_parts.append("")
-
-    # 3. 期刊信息
-    is_part_of = metadata.get('isPartOf', {})
-    if is_part_of:
-        md_parts.append("## 🗞️ 期刊\n")
-        journal_name = is_part_of.get('name', '')
-        volume = is_part_of.get('volumeNumber', '')
-        issn = is_part_of.get('issn', [])
-
-        if journal_name:
-            md_parts.append(f"- **名称:** {journal_name}")
-        if volume:
-            md_parts.append(f"- **卷号:** {volume}")
-        if issn:
-            if isinstance(issn, list):
-                md_parts.append(f"- **ISSN:** {', '.join(issn)}")
-            else:
-                md_parts.append(f"- **ISSN:** {issn}")
-
-        page_start = metadata.get('pageStart', '')
-        page_end = metadata.get('pageEnd', '')
-        if page_start and page_end:
-            md_parts.append(f"- **页码:** {page_start}-{page_end}")
-        md_parts.append("")
-
-    # 4. 发布者
-    publisher = metadata.get('publisher', {})
-    if publisher:
-        md_parts.append("## 🏢 发布者\n")
-        pub_name = publisher.get('name', '')
-        if pub_name:
-            md_parts.append(f"- {pub_name}")
-        md_parts.append("")
-
-    # 5. 作者信息
+    # 作者信息
     authors = metadata.get('author', [])
     if authors:
-        md_parts.append("## 👥 作者信息\n")
-        for i, author in enumerate(authors, 1):
+        md_parts.append("## Authors\n")
+        for author in authors:
             name = author.get('name', '')
             orcid = author.get('url', '')
             email = author.get('email', '')
             affiliations = author.get('affiliation', [])
 
-            # 作者名称和ORCID
             if name:
+                md_parts.append(f"- **{name}**")
                 if orcid:
-                    md_parts.append(f"### {i}. {name}")
-                    md_parts.append(f"- **ORCID:** [{orcid.split('/')[-1]}]({orcid})")
-                else:
-                    md_parts.append(f"### {i}. {name}")
-
-                if email:
-                    md_parts.append(f"- **邮箱:** {email}")
-
-                # 从属机构
+                    md_parts.append(f"  ORCID: {orcid.split('/')[-1]}")
                 if affiliations:
-                    md_parts.append("- **从属机构:**")
                     for aff in affiliations:
-                        aff_name = aff.get('name', '')
                         aff_address = aff.get('address', {})
-                        aff_address_text = aff_address.get('name', '') if isinstance(aff_address, dict) else ''
-                        if aff_address_text:
-                            md_parts.append(f"  - {aff_address_text}")
-                md_parts.append("")
+                        aff_text = aff_address.get('name', '') if isinstance(aff_address, dict) else ''
+                        if aff_text:
+                            md_parts.append(f"  {aff_text}")
 
-    # 6. 机构列表（去重）
-    institutions = set()
-    for author in authors:
-        affiliations = author.get('affiliation', [])
-        for aff in affiliations:
-            aff_address = aff.get('address', {})
-            aff_address_text = aff_address.get('name', '') if isinstance(aff_address, dict) else ''
-            if aff_address_text:
-                institutions.add(aff_address_text)
-
-    if institutions:
-        md_parts.append("## 🏫 参与机构\n")
-        for i, inst in enumerate(sorted(institutions), 1):
-            md_parts.append(f"{i}. {inst}")
+        # 对应作者
+        corresponding = [a for a in authors if a.get('email')]
+        if corresponding:
+            md_parts.append("\n**Corresponding authors:**")
+            for author in corresponding:
+                name = author.get('name', '')
+                email = author.get('email', '')
+                if email:
+                    md_parts.append(f"- {email}")
         md_parts.append("")
 
-    # 7. 关键词
+    # 出版信息
+    md_parts.append("## Publication\n")
+
+    doi = metadata.get('sameAs', '')
+    if doi:
+        doi_short = doi.replace('https://doi.org/', '')
+        md_parts.append(f"**DOI:** {doi_short}\n")
+
+    is_part_of = metadata.get('isPartOf', {})
+    if is_part_of:
+        journal_name = is_part_of.get('name', '')
+        if journal_name:
+            md_parts.append(f"**Journal:** {journal_name}\n")
+
+    date_published = metadata.get('datePublished', '')
+    if date_published:
+        year = date_published.split('-')[0]
+        md_parts.append(f"**Year:** {year}\n")
+
+    volume = is_part_of.get('volumeNumber', '') if is_part_of else ''
+    if volume:
+        md_parts.append(f"**Volume:** {volume}\n")
+
+    page_start = metadata.get('pageStart', '')
+    page_end = metadata.get('pageEnd', '')
+    if page_start and page_end:
+        md_parts.append(f"**Pages:** {page_start}-{page_end}\n")
+
     keywords = metadata.get('keywords', [])
     if keywords:
-        md_parts.append("## 🔑 关键词\n")
-        md_parts.append(", ".join(keywords))
-        md_parts.append("")
+        md_parts.append(f"**Keywords:** {', '.join(keywords)}\n")
 
-    # 8. 摘要
+    md_parts.append("\n---\n")
+
+    # 摘要
     description = metadata.get('description', '')
     if description:
-        md_parts.append("## 📝 摘要\n")
+        md_parts.append("## Abstract\n")
         md_parts.append(description)
-        md_parts.append("")
+        md_parts.append("\n")
 
-    # 9. 许可证
-    license_url = metadata.get('license', '')
-    if license_url:
-        md_parts.append("## ⚖️ 许可证\n")
-        if 'creative' in license_url.lower():
-            md_parts.append(f"[Creative Commons Attribution 4.0]({license_url})")
-        else:
-            md_parts.append(f"[{license_url}]({license_url})")
-        md_parts.append("")
-
-    md_parts.append("---\n")
+    md_parts.append("\n---\n")
 
     return "\n".join(md_parts)
 
