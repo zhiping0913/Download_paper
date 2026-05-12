@@ -103,6 +103,10 @@ def convert_html_to_markdown(html_content):
         # 合并连续的引用标记
         md = merge_superscript_citations(md)
 
+        # 7. 包装inline LaTeX公式（转换 \(...\) 为 $\(...\)$）
+        # 但不要处理 $$...$$ 的块级公式
+        md = re.sub(r'(?<!\$)\\\(([^)]+)\\\)(?!\$)', r'$\\\(\1\\\)$', md)
+
         return md
     except Exception as e:
         print(f"⚠️ pypandoc转换错误: {e}")
