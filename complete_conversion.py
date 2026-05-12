@@ -78,16 +78,37 @@ def run_conversion_workflow(html_file: str, output_dir: str):
 
     print(f"✓ 引用信息已保存: {references_file}")
 
-    # 4. 提取Data availability
-    print("\n4️⃣  提取Data availability...")
+    # 4. 提取Supplementary information
+    print("\n4️⃣  提取Supplementary information...")
+    subprocess.run(["python", "extract_supplementary_information.py"], cwd=Path(__file__).parent)
+    supp_file = output_path / "nature_supplementary_information.md"
+
+    supp_md = ""
+    if not supp_file.exists():
+        print("⚠️  Supplementary information未提取，尝试从脚本获取")
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent))
+        from extract_supplementary_information import extract_supplementary_information_from_html
+        supp_md = extract_supplementary_information_from_html(html_file)
+    else:
+        with open(supp_file, 'r', encoding='utf-8') as f:
+            supp_md = f.read()
+
+    if supp_md:
+        print(f"✓ Supplementary information已提取: {len(supp_md)} 字符")
+    else:
+        print("⚠️  未获取到Supplementary information")
+
+    # 5. 提取Data availability
+    print("\n5️⃣  提取Data availability...")
     subprocess.run(["python", "extract_data_availability.py"], cwd=Path(__file__).parent)
 
-    # 5. 提取Acknowledgements
-    print("\n5️⃣  提取Acknowledgements...")
+    # 6. 提取Acknowledgements
+    print("\n6️⃣  提取Acknowledgements...")
     subprocess.run(["python", "extract_acknowledgements.py"], cwd=Path(__file__).parent)
 
-    # 6. 合并成完整文档
-    print("\n6️⃣  合并为完整文档...")
+    # 7. 合并成完整文档
+    print("\n7️⃣  合并为完整文档...")
     with open(main_with_abstract_file, 'r', encoding='utf-8') as f:
         main_content = f.read()
 
@@ -98,7 +119,8 @@ def run_conversion_workflow(html_file: str, output_dir: str):
     ack_content = "We acknowledge the contributions of the CLF staff, in particular A. Thomas, conversations with M. Zepf's group and the Smilei developers for their assistance with simulations. This work used the ARCHER2 UK National Supercomputing Service (https://www.archer2.ac.uk) through the EPSRC HEC grant (EP/X035336/1). The thin-film analysis was performed by the Ewald Microscopy Facilities in the School of Mathematics and Physics at Queen's University Belfast. This work was funded by the EPSRC HEC grant (grant nos. EP/X035336/1, EP/W017245/1, EP/P010059/1 and EP/P016960/1), the AWAKE2 grant (ST/X005518/1), the JAI grant (ST/V001655/1), the Oxford-Living Optics and Oxford-IBM Computational Discovery grants, the Oxford Clarendon Scholarship scheme, the Deutsche Forschungsgemeinschaft (DFG, German Research Foundation; grant no. 392856280) and the National Science Foundation under award 2126181."
 
     # 生成完整文档
-    # 结构: Metadata → Abstract & Main → Data availability → Acknowledgements → References
+    # 结构: Metadata → Abstract & Main → Data availability → Acknowledgements → Supplementary information → References
+    supp_section = f"\n## Supplementary information\n\n{supp_md}\n" if supp_md else ""
     complete_doc = f"""{metadata_md}
 
 {main_content}
@@ -112,7 +134,7 @@ The datasets generated during and/or analysed during this study are available fr
 {ack_content}
 
 ---
-
+{supp_section}
 {references}"""
 
     complete_file = output_path / "nature_paper_complete.md"
@@ -124,12 +146,14 @@ The datasets generated during and/or analysed during this study are available fr
     print("=" * 80)
     metadata_lines = len(metadata_md.splitlines()) if metadata_md else 0
     main_lines = len(main_content.splitlines())
+    supp_lines = len(supp_md.splitlines()) if supp_md else 0
     ref_lines = len(references.splitlines())
     total_chars = len(complete_doc)
     print(f"元数据: {metadata_lines} 行")
     print(f"Abstract + Main 部分: {main_lines} 行")
     print(f"Data availability: 2 行")
     print(f"Acknowledgements: 5 行")
+    print(f"Supplementary information: {supp_lines} 行")
     print(f"引用部分: {ref_lines} 行")
     print(f"总字符数: {total_chars:,} 字符")
     print(f"\n✅ 完整转换工作流完成！")
@@ -140,7 +164,8 @@ The datasets generated during and/or analysed during this study are available fr
     print(f"   3. ## Main")
     print(f"   4. ## Data availability")
     print(f"   5. ## Acknowledgements")
-    print(f"   6. # References")
+    print(f"   6. ## Supplementary information")
+    print(f"   7. # References")
 
 
 def main():
