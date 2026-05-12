@@ -53,7 +53,7 @@ def extract_author_information_from_html(html_file: str) -> str:
         aff_list = affiliations_heading.find_next('ol', {'class': 'c-article-author-affiliation__list'})
         if aff_list:
             md_parts.append("\n### Authors and Affiliations\n")
-            for li in aff_list.find_all('li', {'class': 'c-article-author-affiliation__item'}):
+            for li in aff_list.find_all('li'):
                 address = li.find('p', {'class': 'c-article-author-affiliation__address'})
                 authors = li.find('p', {'class': 'c-article-author-affiliation__authors-list'})
                 if address and authors:
