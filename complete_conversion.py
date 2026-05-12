@@ -2,9 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 完整论文转换工作流：
-1. 转换主要内容（段落+公式）
-2. 提取引用信息
-3. 生成完整的Markdown文档
+1. 提取Abstract并转换
+2. 转换主要内容（段落+公式）
+3. 提取引用信息
+4. 生成完整的Markdown文档
 """
 
 import subprocess
@@ -18,11 +19,22 @@ def run_conversion_workflow(html_file: str, output_dir: str):
     output_path.mkdir(parents=True, exist_ok=True)
 
     print("=" * 80)
-    print("🔄 完整论文转换工作流")
+    print("🔄 完整论文转换工作流（含Abstract）")
     print("=" * 80)
 
-    # 1. 转换主要内容
-    print("\n1️⃣  转换主要内容（段落 + 公式）...")
+    # 1. 提取Abstract
+    print("\n1️⃣  提取并转换Abstract...")
+    subprocess.run(["python", "extract_abstract.py"], cwd=Path(__file__).parent)
+    main_with_abstract_file = output_path / "nature_main_with_abstract.md"
+
+    if not main_with_abstract_file.exists():
+        print("⚠️  Abstract提取失败，使用main_by_paragraph作为后备")
+        main_with_abstract_file = output_path / "nature_main_by_paragraph.md"
+    else:
+        print(f"✓ Abstract已添加: {main_with_abstract_file}")
+
+    # 2. 转换主要内容
+    print("\n2️⃣  转换主要内容（段落 + 公式）...")
     subprocess.run(["python", "convert_by_paragraph.py"], cwd=Path(__file__).parent)
     main_content_file = output_path / "nature_main_by_paragraph.md"
 
@@ -32,8 +44,8 @@ def run_conversion_workflow(html_file: str, output_dir: str):
 
     print(f"✓ 主要内容已保存: {main_content_file}")
 
-    # 2. 提取引用
-    print("\n2️⃣  提取引用信息...")
+    # 3. 提取引用
+    print("\n3️⃣  提取引用信息...")
     subprocess.run(["python", "extract_references.py"], cwd=Path(__file__).parent)
     references_file = output_path / "nature_references.md"
 
@@ -43,9 +55,9 @@ def run_conversion_workflow(html_file: str, output_dir: str):
 
     print(f"✓ 引用信息已保存: {references_file}")
 
-    # 3. 合并成完整文档
-    print("\n3️⃣  合并为完整文档...")
-    with open(main_content_file, 'r', encoding='utf-8') as f:
+    # 4. 合并成完整文档
+    print("\n4️⃣  合并为完整文档...")
+    with open(main_with_abstract_file, 'r', encoding='utf-8') as f:
         main_content = f.read()
 
     with open(references_file, 'r', encoding='utf-8') as f:
@@ -72,7 +84,7 @@ def run_conversion_workflow(html_file: str, output_dir: str):
     print("\n" + "=" * 80)
     print("📊 转换统计")
     print("=" * 80)
-    print(f"主要内容: {main_lines} 行")
+    print(f"Abstract + Main 部分: {main_lines} 行")
     print(f"引用部分: {ref_lines} 行")
     print(f"总字符数: {total_chars:,} 字符")
     print(f"\n✅ 完整转换工作流完成！")
@@ -89,3 +101,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
