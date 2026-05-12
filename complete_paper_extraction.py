@@ -39,8 +39,44 @@ from core import (
     extract_text_without_math
 )
 from publisher import APSHandler
+from publisher.nature import NatureHandler
+from publisher.orchestrator import (
+    detect_publisher_from_url,
+    get_publisher_handler,
+    extract_metadata_multi_publisher
+)
+
+# 导入 APS 特定函数
+# 注意：这些函数在本文件中定义，但也在 publisher/aps.py 中有对应的接口
+# 在未来的重构中，这些函数应该从 publisher/aps.py 导入
 
 OUTPUT_DIR = "captured_data"
+
+
+# ============================================================================
+# Publisher Detection and Handler Factory
+# ============================================================================
+
+def detect_publisher(url: str) -> str:
+    """
+    Detect which publisher based on URL domain or DOI
+
+    Returns: 'aps' | 'nature' | 'unknown'
+
+    Note: This is a wrapper around orchestrator.detect_publisher_from_url
+    for backward compatibility. New code should use the orchestrator module.
+    """
+    return detect_publisher_from_url(url)
+
+
+def get_publisher_handler_factory(publisher: str):
+    """
+    Factory function to get appropriate publisher handler
+
+    Note: This is a wrapper around orchestrator.get_publisher_handler
+    for backward compatibility. New code should use the orchestrator module.
+    """
+    return get_publisher_handler(publisher)
 
 # ============================================================================
 # Semantic Scholar API 配置
@@ -400,12 +436,22 @@ async def capture_network_data(page, url: str) -> dict:
                     captured['abstract_html'] = html
                     print(f"  ✓ 保存abstract HTML: {len(html)} 字节")
 
+                # 保存主要HTML文档到文件
                 captured['document'] = {
                     'url': url_str,
                     'timestamp': ts,
                     'size': len(html),
                 }
+
+                # 保存HTML文件
+                html_filename = f"page_{len(captured['json_responses']):03d}.html"
+                html_path = Path(OUTPUT_DIR) / html_filename
+                with open(html_path, 'w', encoding='utf-8') as f:
+                    f.write(html)
+                captured['document']['file'] = str(html_path)
+
                 print(f"  ✓ HTML文档: {len(html)} 字节")
+                print(f"    保存到: {html_filename}")
             except:
                 pass
 
@@ -617,12 +663,24 @@ def extract_text_without_math(html_str: str) -> str:
 # ============================================================================
 
 
-async def download_pdf(page, doi: str, output_dir: Path, journal_prefix: str = None) -> str:
+async def download_pdf(page, doi: str, output_dir: Path, journal_prefix: str = None, publisher: str = None) -> str:
     """下载论文PDF - 配合Chrome下载设置"""
     try:
-        if not journal_prefix:
-            journal_prefix = 'prl'  # PhysRevLett默认值
-        pdf_url = f"https://journals.aps.org/{journal_prefix}/pdf/{doi}"
+        # 根据出版商构造正确的PDF URL
+        if publisher == 'nature':
+            # Nature论文：使用DOI直接获取PDF
+            pdf_url = f"https://doi.org/{doi}"
+        elif publisher == 'aps':
+            # APS论文：使用APS特定的PDF格式
+            if not journal_prefix:
+                journal_prefix = 'prl'  # PhysRevLett默认值
+            pdf_url = f"https://journals.aps.org/{journal_prefix}/pdf/{doi}"
+        else:
+            # 未知发布商：尝试APS格式作为默认值
+            if not journal_prefix:
+                journal_prefix = 'prl'
+            pdf_url = f"https://journals.aps.org/{journal_prefix}/pdf/{doi}"
+
         print(f"  📥 下载 PDF...")
         print(f"     链接: {pdf_url}")
 
@@ -1321,6 +1379,14 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
             except:
                 pass
 
+            # 获取最终 URL（重定向后）
+            final_url = page.url
+            print(f"✓ 最终 URL: {final_url}")
+
+            # 根据最终 URL 检测出版商
+            publisher = detect_publisher_from_url(final_url)
+            print(f"✓ 检测出版商: {publisher.upper()}\n")
+
             metadata = await extract_metadata_from_page(page)
 
             if metadata['title']:
@@ -1372,13 +1438,22 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
 
             print()
 
-            # 第3步：转换为Markdown (使用APS publisher handler)
+            # 第3步：转换为Markdown (使用对应出版商的handler)
             print("Step 3️⃣  转换为Markdown并下载图片...")
             print("=" * 80)
 
-            # 获取补充材料链接
-            print("  🔗 获取补充材料链接...")
-            supplemental_links, supp_descriptions_from_api = await get_supplemental_links(page2, doi, journal_prefix=captured.get('journal_prefix'))
+            # 只有APS才需要获取补充材料链接
+            supplemental_links = []
+            supp_descriptions_from_api = {}
+
+            if publisher == 'aps':
+                # 获取补充材料链接
+                print("  🔗 获取补充材料链接...")
+                supplemental_links, supp_descriptions_from_api = await get_supplemental_links(page2, doi, journal_prefix=captured.get('journal_prefix'))
+            elif publisher == 'nature':
+                print("  ℹ️  Nature 论文 - 跳过 APS 特定的补充材料查询")
+            else:
+                print(f"  ℹ️  出版商 {publisher.upper()} - 补充材料查询未实现")
 
             if captured['json_responses']:
                 json_file = captured['json_responses'][0]['file']
@@ -1398,21 +1473,60 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
                 markdown_filename = f"{year}--{title_clean}.md"
                 markdown_file = paper_output_dir / markdown_filename
 
-                # 使用APSHandler生成markdown (Phase 2 refactoring)
-                print("  📝 使用APS handler生成Markdown...")
-                handler = APSHandler(journal_prefix=captured.get('journal_prefix', 'prl'))
+                # 根据出版商选择相应的处理器
+                if publisher == 'aps':
+                    print("  📝 使用 APS Handler 生成Markdown...")
+                    handler = APSHandler(journal_prefix=captured.get('journal_prefix', 'prl'))
+                elif publisher == 'nature':
+                    print("  📝 使用 Nature Handler 生成Markdown...")
+                    from publisher.nature import NatureHandler
+                    handler = NatureHandler()
+                else:
+                    print(f"  ⚠️  出版商 {publisher.upper()} 的处理器未实现，使用 APS Handler...")
+                    handler = APSHandler(journal_prefix=captured.get('journal_prefix', 'prl'))
 
-                # 加载fulltext JSON数据
-                fulltext_data = captured.get('fulltext_data')
-                if not fulltext_data and json_file:
+                # 为每个出版商准备合适的数据
+                if publisher == 'aps':
+                    # APS: 使用fulltext JSON数据
+                    fulltext_data = captured.get('fulltext_data')
+                    if not fulltext_data and json_file:
+                        try:
+                            with open(json_file, 'r', encoding='utf-8') as f:
+                                fulltext_data = json.load(f)
+                        except:
+                            fulltext_data = {}
+                    article_data = fulltext_data
+                elif publisher == 'nature':
+                    # Nature: 使用HTML内容 - 从保存的文件读取
+                    article_data = None
                     try:
-                        with open(json_file, 'r', encoding='utf-8') as f:
-                            fulltext_data = json.load(f)
+                        if captured.get('document') and captured['document'].get('file'):
+                            with open(captured['document']['file'], 'r', encoding='utf-8') as f:
+                                article_data = f.read()
+                                if not article_data:
+                                    article_data = None
                     except:
-                        fulltext_data = {}
+                        pass
+
+                    # 如果没有从文件读到，尝试从page获取
+                    if not article_data:
+                        try:
+                            article_data = await page2.content()
+                        except:
+                            pass
+                else:
+                    # 其他出版商：尝试JSON
+                    fulltext_data = captured.get('fulltext_data', {})
+                    if not fulltext_data and json_file:
+                        try:
+                            with open(json_file, 'r', encoding='utf-8') as f:
+                                fulltext_data = json.load(f)
+                        except:
+                            fulltext_data = {}
+                    article_data = fulltext_data
 
                 # 调用handler的convert_to_markdown方法 (不添加图片引用，先后处理)
-                md = handler.convert_to_markdown(metadata, fulltext_data, add_figure_refs=False)
+                md = handler.convert_to_markdown(metadata, article_data, add_figure_refs=False)
 
                 # 保存Markdown文件
                 with open(markdown_file, 'w', encoding='utf-8') as f:
@@ -1423,31 +1537,36 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
                 print("  🖼️  下载图片...")
                 figure_map = {}  # 追踪图号 -> 文件名的映射
 
-                # 从fulltext_data中提取图片信息
-                try:
-                    from publisher.aps import extract_figure_assets_from_fulltext
-                    journal_prefix = captured.get('journal_prefix', 'prl')
-                    figure_assets = extract_figure_assets_from_fulltext(fulltext_data, journal_prefix=journal_prefix)
+                # 从fulltext_data中提取图片信息（仅APS，Nature论文跳过）
+                if publisher == 'aps':
+                    try:
+                        from publisher.aps import extract_figure_assets_from_fulltext
+                        journal_prefix = captured.get('journal_prefix', 'prl')
+                        figure_assets = extract_figure_assets_from_fulltext(fulltext_data, journal_prefix=journal_prefix)
 
-                    if figure_assets:
-                        print(f"  🖼️  图片: {len(figure_assets)} 个")
-                        for fig_id in sorted(figure_assets.keys(), key=lambda x: int(x[1:]) if x[1:].isdigit() else 0):
-                            fig_url = figure_assets[fig_id].get('url')
+                        if figure_assets:
+                            print(f"  🖼️  图片: {len(figure_assets)} 个")
+                            for fig_id in sorted(figure_assets.keys(), key=lambda x: int(x[1:]) if x[1:].isdigit() else 0):
+                                fig_url = figure_assets[fig_id].get('url')
 
-                            if fig_url:
-                                # 提取图号（f1 -> 1, f2 -> 2等）
-                                fig_num = fig_id[1:] if fig_id.startswith('f') else fig_id
+                                if fig_url:
+                                    # 提取图号（f1 -> 1, f2 -> 2等）
+                                    fig_num = fig_id[1:] if fig_id.startswith('f') else fig_id
 
-                                try:
-                                    img_filename = await download_figure(page2, fig_url, int(fig_num), paper_output_dir)
-                                    if img_filename:
-                                        figure_map[fig_num] = img_filename  # 记录图片映射
-                                except Exception as e:
-                                    print(f"    ⚠️  Figure {fig_num} 下载失败: {e}")
-                    else:
-                        print(f"  ℹ️  未找到图片信息")
-                except Exception as e:
-                    print(f"  ⚠️  图片提取异常: {e}")
+                                    try:
+                                        img_filename = await download_figure(page2, fig_url, int(fig_num), paper_output_dir)
+                                        if img_filename:
+                                            figure_map[fig_num] = img_filename  # 记录图片映射
+                                    except Exception as e:
+                                        print(f"    ⚠️  Figure {fig_num} 下载失败: {e}")
+                        else:
+                            print(f"  ℹ️  未找到图片信息")
+                    except Exception as e:
+                        print(f"  ⚠️  图片提取异常: {e}")
+                elif publisher == 'nature':
+                    print(f"  ℹ️  Nature论文 - 暂不支持自动图片提取")
+                else:
+                    print(f"  ℹ️  {publisher.upper()}论文 - 暂不支持自动图片提取")
 
                 # 📝 后处理: 如果成功下载了图片，重新生成markdown并添加图片引用
                 if figure_map:
@@ -1465,7 +1584,9 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
                 # 第4步：下载PDF
                 print("\nStep 4️⃣  下载论文PDF...")
                 print("=" * 80)
-                pdf_filename = await download_pdf(page2, doi, paper_output_dir, journal_prefix=captured.get('journal_prefix'))
+                pdf_filename = await download_pdf(page2, doi, paper_output_dir,
+                                                  journal_prefix=captured.get('journal_prefix'),
+                                                  publisher=publisher)
 
                 # 如果下载成功，重命名PDF为 {年份}--{标题}.pdf
                 if pdf_filename:

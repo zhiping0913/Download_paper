@@ -3,11 +3,62 @@ APS Journal Publisher Implementation
 Handles extraction from American Physical Society journals (prl, pre, pra, etc.)
 """
 
+import asyncio
 from publisher.base import PublisherHandler
 from core import extract_text_without_math
 import re
 import json
 from pathlib import Path
+
+
+# ============================================================================
+# APS 特定函数 - 从 complete_paper_extraction.py 提取
+# ============================================================================
+# 注意：这些是从 complete_paper_extraction.py 中提取的 APS 专用函数
+# 保持原有逻辑，避免修改
+
+
+async def aps_extract_metadata_from_page(page) -> dict:
+    """从页面meta标签提取完整元数据（作者、单位、摘要等）- APS 专用"""
+    from complete_paper_extraction import extract_metadata_from_page
+    return await extract_metadata_from_page(page)
+
+
+def aps_extract_references_from_html(html: str) -> list:
+    """从HTML提取References - APS 专用"""
+    from complete_paper_extraction import extract_references_from_html
+    return extract_references_from_html(html)
+
+
+async def aps_get_supplemental_links(page, doi: str, journal_prefix: str = None) -> tuple:
+    """获取补充材料链接 - APS 专用"""
+    from complete_paper_extraction import get_supplemental_links
+    return await get_supplemental_links(page, doi, journal_prefix)
+
+
+async def aps_download_pdf(page, doi: str, output_dir: Path, journal_prefix: str = None) -> str:
+    """下载 PDF - APS 专用"""
+    from complete_paper_extraction import download_pdf
+    return await download_pdf(page, doi, output_dir, journal_prefix)
+
+
+def aps_extract_figure_assets_from_fulltext(fulltext_data: dict, journal_prefix: str = None) -> dict:
+    """从 fulltext JSON 提取图片资源 - APS 专用"""
+    from complete_paper_extraction import extract_figure_assets_from_fulltext
+    return extract_figure_assets_from_fulltext(fulltext_data)
+
+
+async def aps_download_figure(page, fig_url: str, fig_num: int, output_dir: Path) -> str:
+    """下载图片 - APS 专用"""
+    from complete_paper_extraction import download_figure
+    return await download_figure(page, fig_url, fig_num, output_dir)
+
+
+async def aps_json_to_markdown_complete(json_file: str, doi: str, metadata: dict,
+                                        journal_prefix: str, paper_output_dir, figure_map: dict = None) -> str:
+    """从 JSON 转换为 Markdown - APS 专用"""
+    from complete_paper_extraction import json_to_markdown_complete
+    return await json_to_markdown_complete(json_file, doi, metadata, journal_prefix, paper_output_dir, figure_map)
 
 
 class APSHandler(PublisherHandler):
@@ -25,18 +76,20 @@ class APSHandler(PublisherHandler):
 
     async def extract_metadata(self, page) -> dict:
         """Extract metadata from APS abstract page"""
-        # This will be implemented by calling extract_metadata_from_page()
-        # from the main module during transition
-        pass
+        return await aps_extract_metadata_from_page(page)
 
     async def get_fulltext_url(self, doi: str) -> str:
         """Get URL for full article text API endpoint"""
         # APS fulltext endpoint format: /fulltext/{doi}
         return f"{self.base_url}/fulltext/{doi}"
 
-    async def get_pdf_url(self, doi: str) -> str:
-        """Construct PDF download URL"""
-        return f"{self.base_url}/pdf/{doi}"
+    async def get_pdf_url(self, page) -> str:
+        """Get PDF download URL"""
+        # For APS, we use the standard pattern
+        doi = await page.evaluate("() => document.querySelector('meta[name=\"citation_doi\"]')?.getAttribute('content')")
+        if doi:
+            return f"{self.base_url}/pdf/{doi}"
+        return None
 
     async def get_supplemental_url(self, doi: str) -> str:
         """Construct supplemental materials URL"""
@@ -44,7 +97,7 @@ class APSHandler(PublisherHandler):
 
     async def extract_references(self, html: str) -> list:
         """Parse references from HTML"""
-        return extract_references_from_html(html)
+        return aps_extract_references_from_html(html)
 
     async def get_figures(self, json_data: dict) -> dict:
         """Extract figure URLs and captions from APS JSON"""
