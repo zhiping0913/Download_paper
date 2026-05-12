@@ -85,10 +85,6 @@ def convert_paragraph(p_html: str) -> str:
         # 将多个空格替换为单个空格
         md = re.sub(r'\s+', ' ', md)
 
-        # ===== 注意：不再应用原始的citation清理regex =====
-        # 原始regex \^\[(\d+)\][^\^]*\^ 会错误地匹配LaTeX公式内的^字符
-        # convert_html_to_markdown()已经处理了引用合并，所以不需要这里再处理
-
         # 清理首尾空格
         md = md.strip()
 
