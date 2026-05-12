@@ -1248,7 +1248,8 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
                 elif publisher == 'nature':
                     print("  📝 使用 Nature Handler 生成Markdown...")
                     from publisher.nature import NatureHandler
-                    handler = NatureHandler()
+                    html_file = captured.get('document', {}).get('file') if captured.get('document') else None
+                    handler = NatureHandler(html_file=html_file)
                 else:
                     print(f"  ⚠️  出版商 {publisher.upper()} 的处理器未实现，使用 APS Handler...")
                     handler = APSHandler(journal_prefix=captured.get('journal_prefix', 'prl'))
