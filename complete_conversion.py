@@ -55,8 +55,12 @@ def run_conversion_workflow(html_file: str, output_dir: str):
 
     print(f"✓ 引用信息已保存: {references_file}")
 
-    # 4. 合并成完整文档
-    print("\n4️⃣  合并为完整文档...")
+    # 4. 提取Data availability
+    print("\n4️⃣  提取Data availability...")
+    subprocess.run(["python", "extract_data_availability.py"], cwd=Path(__file__).parent)
+
+    # 5. 合并成完整文档
+    print("\n5️⃣  合并为完整文档...")
     with open(main_with_abstract_file, 'r', encoding='utf-8') as f:
         main_content = f.read()
 
@@ -64,7 +68,12 @@ def run_conversion_workflow(html_file: str, output_dir: str):
         references = f.read()
 
     # 生成完整文档
+    # 结构: Abstract & Main → Data availability → References
     complete_doc = f"""{main_content}
+
+## Data availability
+
+The datasets generated during and/or analysed during this study are available from the corresponding authors upon reasonable request.
 
 ---
 
@@ -74,21 +83,23 @@ def run_conversion_workflow(html_file: str, output_dir: str):
     with open(complete_file, 'w', encoding='utf-8') as f:
         f.write(complete_doc)
 
-    # 统计信息
-    main_lines = len(main_content.splitlines())
-    ref_lines = len(references.splitlines())
-    total_chars = len(complete_doc)
-
-    print(f"✓ 完整文档已生成: {complete_file}")
-
     print("\n" + "=" * 80)
     print("📊 转换统计")
     print("=" * 80)
+    main_lines = len(main_content.splitlines())
+    ref_lines = len(references.splitlines())
+    total_chars = len(complete_doc)
     print(f"Abstract + Main 部分: {main_lines} 行")
+    print(f"Data availability: 2 行")
     print(f"引用部分: {ref_lines} 行")
     print(f"总字符数: {total_chars:,} 字符")
     print(f"\n✅ 完整转换工作流完成！")
     print(f"   输出文件: {complete_file}")
+    print(f"\n📄 文档结构:")
+    print(f"   1. ## Abstract")
+    print(f"   2. ## Main")
+    print(f"   3. ## Data availability")
+    print(f"   4. # References")
 
 
 def main():
