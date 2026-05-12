@@ -1307,7 +1307,17 @@ async def json_to_markdown_complete(json_file: str, doi: str, metadata: dict,
 async def complete_extraction_workflow(doi: str, output_file: str = None):
     """完整提取工作流"""
 
-    Path(OUTPUT_DIR).mkdir(exist_ok=True)
+    output_path = Path(OUTPUT_DIR)
+    output_path.mkdir(exist_ok=True)
+
+    # 清理旧的captured_data中的HTML文件
+    print("🧹 清理旧的HTML捕获文件...")
+    for html_file in output_path.glob('*.html'):
+        try:
+            html_file.unlink()
+            print(f"  删除: {html_file.name}")
+        except Exception as e:
+            print(f"  ⚠️  无法删除 {html_file.name}: {e}")
 
     print("\n" + "=" * 80)
     print("🔍 论文完整提取工作流")
