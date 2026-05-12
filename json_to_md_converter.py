@@ -54,21 +54,88 @@ def remove_newlines_in_paragraph(text, klass=None, body_type=None):
 def convert_html_to_markdown(html_content):
     """
     使用pypandoc将HTML转换为Markdown
+
+    关键处理:
+    1. 提取并保存MathJax LaTeX公式
+    2. 移除引用链接的title和data属性
+    3. 使用Pandoc转换
+    4. 恢复LaTeX公式，合并引用
     """
     if not html_content or not html_content.strip():
         return ""
 
     try:
-        # 先清理HTML
+        # 1. 提取并保存MathJax LaTeX公式（在clean_html_body之前，因为它会移除class属性）
+        # <span class="mathjax-tex">\(formula\)</span> → MATHJAX000MATHEND
+        mathjax_formulas = []
+        def extract_mathjax(match):
+            mathjax_formulas.append(match.group(1))  # 保存完整的 \(...\)
+            idx = len(mathjax_formulas) - 1
+            return f"MATHJAX{idx:03d}MATHEND"
+
+        html_content = re.sub(r'<span[^>]*class="mathjax-tex"[^>]*>(.*?)</span>', extract_mathjax, html_content)
+
+        # 2. 清理HTML
         html_content = clean_html_body(html_content)
 
-        # 使用pypandoc转换
-        md = pypandoc.convert_text(html_content, 'md', format='html')
+        # 3. 处理引用链接：只保留数字，移除title和data属性
+        # <a title="..." href="#ref-CR9">9</a> → <a href="#ref-CR9">9</a>
+        html_content = re.sub(r'<a[^>]*title="[^"]*"[^>]*>', lambda m: re.sub(r'\s+title="[^"]*"', '', m.group(0)), html_content)
+        html_content = re.sub(r'<a[^>]*data-[^>]*>', lambda m: re.sub(r'\s+data-[^=]*="[^"]*"', '', m.group(0)), html_content)
 
-        return md.strip()
+        # 4. 使用pypandoc转换
+        md = pypandoc.convert_text(
+            html_content,
+            'md',
+            format='html',
+            extra_args=['--wrap=none']
+        )
+
+        md = md.strip()
+
+        # 5. 恢复MathJax公式
+        for i, formula in enumerate(mathjax_formulas):
+            # 从 MATHJAX000MATHEND 替换回原始公式
+            placeholder = f"MATHJAX{i:03d}MATHEND"
+            md = md.replace(placeholder, formula)
+
+        # 6. 后处理：
+        # 合并连续的引用标记
+        md = merge_superscript_citations(md)
+
+        return md
     except Exception as e:
         print(f"⚠️ pypandoc转换错误: {e}")
         return html_content
+
+
+def merge_superscript_citations(text):
+    """
+    处理Pandoc产生的上标引用格式
+    ^[9](#ref-CR9),[10](#ref-CR10),[11](#ref-CR11)^ → [9,10,11]
+    """
+    import re
+
+    # 匹配模式：^[...内容...]^
+    def process_superscript_cite(match):
+        cite_block = match.group(1)  # 获取 ^...^ 内部的内容
+
+        # 从 [N](#ref-XXX) 模式中提取数字
+        citations = re.findall(r'\[(\d+)\]', cite_block)
+
+        if not citations:
+            return match.group(0)  # 如果没有找到数字，保留原样
+
+        # 去重并排序
+        unique_citations = sorted(set(int(c) for c in citations))
+
+        # 返回合并后的形式
+        return '[' + ','.join(str(c) for c in unique_citations) + ']'
+
+    # 处理 ^[...]^ 格式
+    result = re.sub(r'\^([^\^]*)\^', process_superscript_cite, text)
+
+    return result
 
 def traverse_json_recursive(data, depth=0, parent_type=None, skip_section_header=False):
     """
