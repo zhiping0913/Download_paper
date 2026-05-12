@@ -175,6 +175,44 @@ def traverse_json_recursive(data, depth=0, parent_type=None, skip_section_header
 
     return "".join(md_output)
 
+
+def cleanup_markdown(md_content: str) -> str:
+    """
+    清理Markdown中的不兼容命令和HTML实体 - 跨发布商通用
+
+    处理:
+    - \\mspace{...} 命令 (APS LaTeX)
+    - \\ensuremath{...} 命令 (LaTeX, KaTeX不支持)
+    - \\slash 命令 (LaTeX, KaTeX不支持) -> 转换为 /
+    - HTML实体转换为纯文本字符
+
+    Args:
+        md_content: Markdown内容
+
+    Returns:
+        清理后的Markdown内容
+    """
+    # 移除 \mspace 命令
+    md_content = re.sub(r'\\mspace\{[^}]+\}', '', md_content)
+
+    # 移除不兼容KaTeX的 \ensuremath 命令，保留其中的内容
+    # \ensuremath{\propto} -> \propto
+    md_content = re.sub(r'\\ensuremath\{([^}]*)\}', r'\1', md_content)
+
+    # 转换不兼容KaTeX的 \slash 命令为 /
+    # }}\slash{{ -> }}/{{
+    md_content = re.sub(r'\\slash', '/', md_content)
+
+    # 转换HTML实体为纯文本字符
+    md_content = md_content.replace('&lt;', '<')
+    md_content = md_content.replace('&gt;', '>')
+    md_content = md_content.replace('&amp;', '&')
+    md_content = md_content.replace('&quot;', '"')
+    md_content = md_content.replace('&apos;', "'")
+
+    return md_content
+
+
 def convert_json_data_to_markdown(data: dict) -> str:
     """
     将JSON数据转换为Markdown文本
