@@ -256,6 +256,7 @@ def cleanup_markdown(md_content: str) -> str:
     - \\ensuremath{...} 命令 (LaTeX, KaTeX不支持)
     - \\slash 命令 (LaTeX, KaTeX不支持) -> 转换为 /
     - HTML引用链接 [N](/path/to/ref#id){...} -> [N]
+    - 残留的<div>标签
     - HTML实体转换为纯文本字符
 
     Args:
@@ -291,6 +292,10 @@ def cleanup_markdown(md_content: str) -> str:
         return '[' + ','.join(str(n) for n in unique_nums) + ']'
 
     md_content = re.sub(r'\^\[([^\]]*(?:\],[^\]]*)*)\]\^', clean_superscript_refs, md_content)
+
+    # 移除残留的<div>标签
+    # <div>...</div> 或 <div class="...">...</div> 等
+    md_content = re.sub(r'</?div[^>]*>', '', md_content)
 
     # 转换HTML实体为纯文本字符
     md_content = md_content.replace('&lt;', '<')
