@@ -1,0 +1,582 @@
+Your privacy, your choice
+
+We use essential cookies to make sure the site can function. We also use optional cookies for advertising, personalisation of content, usage analysis, and social media, as well as to allow video information to be shared for both marketing, analytics and editorial purposes.
+
+By accepting optional cookies, you consent to the processing of your personal data - including transfers to third parties. Some third parties are outside of the European Economic Area, with varying standards of data protection.
+
+See our privacy policy for more information on the use of your personal data.
+
+Manage preferences for further information and to change your choices.
+
+Accept all cookies
+Reject optional cookies
+Skip to main content
+
+Advertisement
+
+View all journals
+Search
+Log in
+Explore content
+About the journal
+Publish with us
+Sign up for alerts
+RSS feed
+nature  nature physics  letters  article
+Letter
+Published: 15 July 2019
+High-harmonic generation from an epsilon-near-zero material
+Yuanmu Yang, Jian Lu, Alejandro Manjavacas, Ting S. Luk, Hanzhe Liu, Kyle Kelley, Jon-Paul Maria, Evan L. Runnerstrom, Michael B. Sinclair, Shambhu Ghimire & Igal Brener 
+
+Nature Physics 
+volume
+ 15, 
+pages
+1022–1026 (2019) Cite this article
+
+12k Accesses
+
+227 Citations
+
+22 Altmetric
+
+Metrics
+details
+
+Abstract
+
+High-harmonic generation (HHG) is a signature optical phenomenon of strongly driven, nonlinear optical systems. Specifically, the understanding of the HHG process in rare gases has played a key role in the development of attosecond science1. Recently, HHG has also been reported in solids, providing novel opportunities such as controlling strong-field and attosecond processes in dense optical media down to the nanoscale2. Here, we report HHG from a low-loss, indium-doped cadmium oxide thin film by leveraging the epsilon-near-zero (ENZ) effect3,4,5,6,7,8, whereby the real part of the material’s permittivity in certain spectral ranges vanishes, as well as the associated large resonant enhancement of the driving laser field. We find that ENZ-assisted harmonics exhibit a pronounced spectral redshift as well as linewidth broadening, resulting from the photo induced electron heating and the consequent time-dependent ENZ wavelength of the material. Our results provide a new platform to study strong-field and ultrafast electron dynamics in ENZ materials, reveal new degrees of freedom for spectral and temporal control of HHG, and open up the possibilities of compact solid-state attosecond light sources.
+
+Similar content being viewed by others
+Enhanced high harmonic efficiency through phonon-assisted photodoping effect
+Article Open access
+02 September 2024
+High harmonic generation in condensed matter
+Article 09 May 2022
+The attoscience of strong-field-driven solids
+Article 16 December 2024
+Main
+
+Although traditionally observed in rare-gas atoms9, HHG has also recently been reported in a range of solid-state systems2 including dielectrics10,11, semiconductors12,13 and emerging two-dimensional materials14,15, thus opening up new avenues for solid-state attosecond spectroscopy10, with the additional advantage of producing stable light waveforms10,16 in the EUV regime with a compact set-up. Unfortunately, strong above-bandgap absorption restricts the observed solid-state HHG process to a very thin layer of the material (typically tens of nanometres in thickness), significantly limiting the generation efficiency17.
+
+Nanostructures with plasmonic resonances are widely known to provide enhancements of the optical near field, and therefore have been investigated for boosting the HHG efficiency in the surrounding media18,19. However, plasmonic nanostructures typically exhibit a relatively low damage threshold under intense laser fields and the electric field enhancement is restricted to small regions, for example near the apex of conical structures18. Furthermore, the periodic arrangement of plasmonic antennas may lead to multiple diffraction of the generated high-harmonic signal over a wide range of angles12,19, making the collection of high harmonics unwieldy. More recently, materials that exhibit a vanishing real part of their permittivity in certain spectral ranges, commonly known as epsilon-near-zero (ENZ) materials, have been found to exhibit unique nonlinear optical properties3,4,5,6,7,8. Although not yet explored, ENZ materials are appealing for HHG as the ENZ effect can greatly boost the pump laser field over the entire volume of a planar thin film made of the ENZ material. In addition, the deep sub-wavelength thickness of the film may allow efficient extraction of the harmonic signal, thus enhancing the HHG efficiency. Moreover, upon ultrafast high field excitation, the unique hot-electron dynamics of the ENZ material may lead to intriguing spectral and temporal control of the high harmonics.
+
+In this Letter, we report harmonic generation up to the ninth order directly from an ENZ material: In-doped CdO. The sample, as illustrated in Fig. 1a, is formed from a 75-nm-thick In-doped CdO layer epitaxially grown on a (100)-oriented MgO substrate by high power impulse magnetron sputtering20,21. The thickness of the CdO film is comparable to its skin depth at the ultraviolet wavelengths of the high-harmonic radiation (see Supplementary Information). An additional 200-nm-thick gold film is then coated on top of the CdO film to increase the confinement of the excitation optical field in the CdO device layer. The In-doped CdO film has a measured carrier density of 2.8 × 1020 cm−3 and an electron mobility of 300 cm2 V−1 s−1. According to the Drude dispersion formula for this material, the real part of its permittivity crosses zero at a wavelength of 2.1 μm.
+
+Fig. 1: Sample schematic and linear optical responses.
+The alternative text for this image may have been generated using AI.
+Full size image
+
+a, Schematic of the ENZ sample composed of a MgO substrate, CdO thin film and gold capping layer. The pump laser is incident from the substrate side with an incident angle of θ in free space. b, Measured real and imaginary parts of the permittivity of CdO as a function of wavelength. c, Measured polarization-dependent linear absorption spectra of the sample. d, Field enhancements in CdO for p-polarized light as a function of wavelength and incident angle calculated from the transfer matrix method. E0 is the incident electric field in free space. e, Calculated field enhancements of the three-layer structure as a function of location at wavelength λ = 2.08 μm and θ = 50° (marked with a red star in d).
+
+The origin of the field enhancement near the material’s ENZ wavelength can be intuitively understood by the boundary condition of electromagnetic fields. Specifically, it requires continuity of the normal displacement field εMgOEMgO = εCdOECdO (εMgO and εCdO are the permittivities of MgO and CdO, respectively, and EMgO and ECdO are the normal electric fields at the material boundary). When the real part of εCdO vanishes, ECdO diverges in the limit that the imaginary part of εCdO approaches zero. In-doped CdO has an imaginary permittivity of 0.18 at its ENZ wavelength (Fig. 1b), which is about three times lower than the imaginary permittivity of conventional conductive metal oxides such as ITO at their corresponding ENZ wavelength21,22. The lower imaginary permittivity of CdO is enabled by its high crystal quality and higher electron mobility, which is critical for the large field enhancement. Furthermore, the ENZ wavelength can be varied by adjusting the doping level of the CdO film20. Figure 1c presents the measured absolute absorption spectra of the sample under p- and s-polarized incidence, respectively. The absorption peak under p-polarized incidence can be attributed to the Ferrell–Berreman resonance, which was first discovered at the ENZ wavelengths of noble metals23 and polar crystals24. Figure 1d illustrates the field enhancements as a function of the wavelength and incidence angle calculated from the transfer matrix method, showing an intensity enhancement of up to 16-fold when the pump wavelength is tuned to the ENZ wavelength. The enhancement factor is inversely proportional to the film thickness25. Moreover, as illustrated in Fig. 1e, the field enhancement drops off sharply in the regions outside the ENZ region, indicating that the nonlinear optical response of the structure is boosted dominantly in the ENZ material itself.
+
+We generate high-harmonic radiation by illuminating the sample at an angle of incidence θ with a linearly polarized, 60 fs laser pulse at a 1 kHz repetition rate. The emitted harmonic radiation propagates along the specular reflection direction, collinear with the pump beam (see Methods). Figure 2a shows the high-harmonic spectra obtained from the layered structure under p- and s-polarized illumination at θ = 50°, with the excitation wavelength λ0 centred at 2.08 μm. For p-polarized illumination, odd-order harmonics are observed from the third to the ninth order, corresponding to a shortest harmonic wavelength of ~250 nm, for a vacuum peak intensity of 14.1 GW cm−2 (corresponding to a vacuum field strength of 0.33 V nm−1). Due to the large resonant field enhancement in the ENZ material, this excitation intensity is much weaker than the typical intensity of ~1 TW cm−2 used for HHG from zinc oxide and silicon11,13. The greatly reduced pump threshold allows the generation of HHG in the ENZ material at a much higher repetition rate, potentially leading to a high-power HHG-based source in the future. In contrast, for s-polarized illumination, a configuration that does not lead to field enhancements, no harmonic signal above the third order is observed. The measured third-harmonic yield for p-polarized illumination is 482 times greater than that for s-polarized illumination. These results serve as clear evidence that HHG originates in the CdO film and is enhanced by the ENZ effect. We do not observe even-order harmonics in any given sample orientation or pump polarization due to the inversion symmetry of CdO’s cubic crystal structure26. In Fig. 2b, we show the harmonic yield as a function of the excitation intensity. Although the third harmonic for s-polarized illumination scales as I3, where I is the incident laser intensity (an indication of a perturbative effect), the third to the seventh harmonics for p-polarized illumination all significantly deviate from perturbative scaling and exhibit a gradual saturation. The harmonic yield is reversible after repeated measurements with pump intensity beyond 11.3 GW cm−2, indicating no permanent damage (see Supplementary Information).
+
+Fig. 2: HHG from CdO.
+The alternative text for this image may have been generated using AI.
+Full size image
+
+a, High-harmonic spectrum of the CdO-based structure. For p-polarized illumination, the spectrum extends from the third to the ninth order (blue and red line). For s-polarized illumination, only third-harmonic generation is observed (orange line). ℏω0 = 0.6 eV is the pump photon energy. Grey dashed lines, photon energy of N × 0.93 ℏω0, where N is the harmonic order, specified by the number in parentheses near the harmonic peaks. b, Harmonic yield as a function of pump intensity. For p-polarized illumination, the third to the seventh harmonics all scale non-perturbatively (blue, red and green dots). For s-polarized illumination, the third-harmonic generation scales perturbatively (orange dots). Solid lines show the power scaling law IN, and are plotted to guide the eye.
+
+To confirm the resonant nature of HHG in the ENZ sample, we measure the fifth harmonic yield with the central wavelength of the excitation pulse tuned across the CdO ENZ wavelength of 2.1 µm under an identical vacuum intensity of 5.6 GW cm−2 (corresponding to a vacuum field strength of 0.2 V nm−1), as illustrated in Fig. 3. Despite the as-expected resonant enhancement of harmonic yield near the ENZ wavelength, we note that the peak of the harmonic yield redshifts to an incident wavelength of 2.13 μm. The redshift of the harmonic peak can be explained by the unique hot-electron dynamics in CdO, as will be detailed in the following.
+
+Fig. 3: Pump wavelength-dependent HHG.
+The alternative text for this image may have been generated using AI.
+Full size image
+
+a, Fifth-harmonic spectra as a function of excitation wavelength λ0, with an identical pump intensity of 5.6 GW cm−2 (corresponding to a vacuum field strength of 0.2 V nm−1). b, Fifth-harmonic yield as a function of λ0. Harmonic yield is determined by integrating the measured fifth-harmonic spectra. λ0 is determined by the third-harmonic spectral peak of a bare silicon wafer multiplied by three. The blue dashed line marks the perfect absorption wavelength λPA of the structure, and the red dashed line marks the ENZ wavelength λENZ of CdO.
+
+On careful examination of the harmonic spectra in Fig. 2a, we find that all the harmonic peaks exhibit substantial, excitation intensity-dependent, red-shifts away from the expected harmonic photon energy Nℏω0, the product of the fundamental photon energy ℏω0 and the harmonic order N, where ℏ is the reduced Planck constant. The measured Nth harmonic peak appears at approximately N × 0.93ℏω0 for all harmonic orders. In Fig. 4a, we present the measured fifth harmonic spectra from the ENZ sample as a function of the excitation intensity. The resonantly enhanced harmonic peak from the ENZ material exhibits a pronounced redshift as the excitation intensity increases, and the redshift saturates at an excitation intensity of 11.3 GW cm−2 (corresponding to a vacuum field strength of 0.29 V nm−1). Moreover, we compare the third-harmonic spectrum of the layered structure under resonant p-polarized excitation and non-resonant s-polarized excitation, and observe that the resonantly enhanced harmonic peak exhibits a broadening as large as 1.71 times. This unique feature of linewidth broadening could be used to tailor or reduce the temporal duration of HHG pulses.
+
+Fig. 4: HHG spectral shift and broadening.
+The alternative text for this image may have been generated using AI.
+Full size image
+
+a, Measured spectra of fifth-harmonic generation (FHG) for p-polarized illumination as a function of pump intensity. Black dashed line, photon energy of 5ℏω0, where ℏω0 = 0.6 eV is the pump photon energy. b, Schematics of the hot-electron dynamics of CdO on photo excitation. c, Calculated spectra of fifth-harmonic generation for p-polarized illumination as a function of pump intensity. d, The evolution of the cavity resonance wavelength λR as a function of time t.
+
+We attribute the microscopic origin of the spectral redshift and broadening of the harmonic radiation to the photo induced heating of electrons in the conduction band and the consequent time-dependent ENZ wavelength of the CdO film. As schematically illustrated in Fig. 4b, following sub-bandgap optical excitation, conduction band electrons in CdO are heated to a much higher temperature Te. The electron heating leads to a modulation of the effective electron mass in CdO and a redshift of CdO’s ENZ wavelength, according to the Drude formula27,28,29. The timescale of the modulation is sub-picosecond, and is comparable to the dwell time of the excitation pulse inside the CdO cavity8, thus leading to a unique feature in our system that the excitation pulse interacts with a time-variant cavity while emitting harmonics. This is manifested in the observed redshift and linewidth broadening of the time-averaged HHG intensity profile. Here, we develop a model to estimate the harmonic spectral peak and bandwidth (see Supplementary Information). We calculate the time-dependent nonlinear current following the pump field being enhanced and modulated by the ENZ cavity at a given excitation intensity and obtain the harmonic spectra from Fourier transformation of the nonlinear current. Figure 4c presents the calculated fifth-harmonic spectra with increasing excitation intensities, which show progressively increasing spectral redshift and broadening, in qualitative agreement with the experimental results. The time-dependent resonant wavelength of the cavity, λR, is schematically shown in Fig. 4d, and is determined from a pump–probe measurement8. Such a time-averaged model also predicts a non-Lorentzian line-shape of the fifth-harmonic spectra, as is observed in the experiment. We observe a similar spectral redshift and broadening in the third-harmonic spectra with p-polarized incidence (see Supplementary Information). At moderately high excitation intensities, a second spectral peak corresponding to non-resonant harmonic generation emerges at a photon energy close to 5ℏω0, which is attributed to harmonic emission before the buildup of the resonant cavity.
+
+The temporal and spectral properties of high harmonics can be further manipulated, for example by introducing a frequency chirp to the pump pulse and matching the instantaneous laser frequency to the temporal evolution of the ENZ frequency. HHG can also serve as an ultrafast probe into unique nonlinear processes in various ENZ materials. The ENZ frequency of CdO is tunable from the near- to mid-infrared by adjusting its doping level either chemically or by electrostatic gating, which means that experiments can be performed at other wavelengths. Finally, because conductive metal oxides such as CdO can be integrated within silicon photonics30, there is a possibility of ultra-compact on-chip EUV and attosecond light sources.
+
+Methods
+HHG measurements
+
+The experimental set-up for measuring the HHG from the ENZ material is shown schematically in the Supplementary Information. The light source is an optical parametric amplifier (OPA, HE-TOPAS-Prime, Light Conversion) pumped by a Ti:sapphire amplifier system (Legend Elite Duo, Coherent) operating at a 1 kHz repetition rate. The 60 fs idler pulse from the OPA, which is tunable from 2.0 to 2.2 µm in wavelength, is loosely focused into the sample at a ~50° angle of incidence. The area of the focal spot on the CdO surface was estimated to be ~0.0297 cm2 from a knife edge measurement. The high-harmonic beam propagating along the specular reflection direction is collected by a lens and focused into the entrance slit of a spectrometer, which consists of a grating-based monochromator (Acton, VM-504, grating: 300 grooves mm−1) and a charge-coupled device (CCD, Andor DO440). Spectrally resolved high-harmonic signals emerging from the ENZ material are recorded by the CCD. The polarization of the idler pulse is tuned by a half-waveplate and the excitation intensity is controlled by a variable neutral density (ND) filter. The reported spectral signals are not corrected for the efficiency of the spectrometer at different wavelengths or for s- or p-polarized pump pulses. To characterize the pump-to-harmonic energy conversion efficiency, we spatially isolated the third-harmonic beam using a prism and measured the energy by a photodiode power sensor (Thorlabs S120VC) at a range of pump energies at 2.08 μm. Higher-order harmonic energies were estimated from the measured third-harmonic energy by referring to Fig. 2b. The lower bound of the energy conversion efficiency for the third, fifth and seventh harmonics were determined to be on the order of 10−5, 10−8 and 10−10, respectively, at a pump intensity of 11.3 GW cm−2. The loss of the generated harmonic signal in the optical path was not taken into account.
+
+Data availability
+
+The data that support the plots within this paper and other findings of this study are available from the corresponding authors on reasonable request.
+
+References
+
+Krausz, F. & Ivanov, M. Attosecond physics. Rev. Mod. Phys. 81, 163–234 (2009).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Ghimire, S. & Reis, D. A. High-harmonic generation from solids. Nat. Phys. 15, 10–16 (2019).
+
+Article
+ 
+Google Scholar
+ 
+
+Alam, M. Z., De Leon, I. & Boyd, R. W. Large optical nonlinearity of indium tin oxide in its epsilon-near-zero region. Science 352, 795–797 (2016).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Caspani, L. et al. Enhanced nonlinear refractive index in epsilon-near-zero materials. Phys. Rev. Lett. 116, 233901 (2016).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Engheta, N. Pursuing near-zero response. Science 340, 286–287 (2013).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Luk, T. S. et al. Enhanced third harmonic generation from the epsilon-near-zero modes of ultrathin films. Appl. Phys. Lett. 106, 151103 (2015).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Niu, X., Hu, X., Chu, S. & Gong, Q. Epsilon-near-zero photonics: a new platform for integrated devices. Adv. Opt. Mater. 6, 1701292 (2018).
+
+Article
+ 
+Google Scholar
+ 
+
+Yang, Y. et al. Femtosecond optical polarization switching using a cadmium oxide-based perfect absorber. Nat. Photon. 11, 390–395 (2017).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+McPherson, A. et al. Studies of multiphoton production of vacuum-ultraviolet radiation in the rare gases. J. Opt. Soc. Am. B 4, 595–601 (1987).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Luu, T. T. et al. Extreme ultraviolet high-harmonic spectroscopy of solids. Nature 521, 498–502 (2015).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Ghimire, S. et al. Observation of high-order harmonic generation in a bulk crystal. Nat. Phys. 7, 138–141 (2010).
+
+Article
+ 
+Google Scholar
+ 
+
+Sivis, M. et al. Tailored semiconductors for high-harmonic optoelectronics. Science 357, 303–306 (2017).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Liu, H. et al. Enhanced high-harmonic generation from an all-dielectric metasurface. Nat. Phys. 14, 1006–1010 (2018).
+
+Article
+ 
+Google Scholar
+ 
+
+Liu, H. et al. High-harmonic generation from an atomically thin semiconductor. Nat. Phys. 13, 262–265 (2017).
+
+Article
+ 
+Google Scholar
+ 
+
+Hafez, H. A. et al. Extremely efficient terahertz high-harmonic generation in graphene by hot Dirac fermions. Nature 561, 507–511 (2018).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Garg, M., Kim, H. Y. & Goulielmakis, E. Ultimate waveform reproducibility of extreme-ultraviolet pulses by high-harmonic generation in quartz. Nat. Photon. 12, 291–296 (2018).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Ghimire, S. et al. Generation and propagation of high-order harmonics in crystals. Phys. Rev. A 85, 043836 (2012).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Han, S. et al. High-harmonic generation by field enhanced femtosecond pulses in metal–sapphire nanostructure. Nat. Commun. 7, 13105 (2016).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Vampa, G. et al. Plasmon-enhanced high-harmonic generation from silicon. Nat. Phys. 13, 659–662 (2017).
+
+Article
+ 
+Google Scholar
+ 
+
+Sachet, E. et al. Dysprosium-doped cadmium oxide as a gateway material for mid-infrared plasmonics. Nat. Mater. 14, 414–420 (2015).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Kelley, K. P., Sachet, E., Shelton, C. T. & Maria, J. P. High mobility yttrium doped cadmium oxide thin films. APL Mater. 5, 076105 (2017).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Naik, G. V., Kim, J. & Boltasseva, A. Oxides and nitrides as alternative plasmonic materials in the optical range. Opt. Mater. Express 1, 1090–1099 (2011).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Stern, E. A. & Ferrell, R. A. Surface plasma oscillations of a degenerate electron gas. Phys. Rev. 120, 130–136 (1960).
+
+Article
+ 
+ADS
+ 
+MathSciNet
+ 
+Google Scholar
+ 
+
+Berreman, D. W. Infrared absorption at longitudinal optic frequency in cubic crystal films. Phys. Rev. 130, 2193–2198 (1963).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Campione, S., Brener, I. & Marquier, F. Theory of epsilon-near-zero modes in ultrathin films. Phys. Rev. B 91, 121408 (2015).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Cimino, A. & Marezio, M. Lattice parameter and defect structure of cadmium oxide containing foreign atoms. J. Phys. Chem. Solids 17, 57–64 (1960).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Guo, P., Schaller, R. D., Ketterson, J. B. & Chang, R. P. H. Ultrafast switching of tunable infrared plasmons in indium tin oxide nanorod arrays with large absolute amplitude. Nat. Photon. 10, 267–273 (2016).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Kane, E. O. Band structure of indium antimonide. J. Phys. Chem. Solids 1, 249–261 (1957).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Turchinovich, D., Hvam, J. M. & Hoffmann, M. C. Self-phase modulation of a single-cycle terahertz pulse by nonlinear free-carrier response in a semiconductor. Phys. Rev. B 85, 201304 (2012).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Wood, M. G. et al. Gigahertz speed operation of epsilon-near-zero silicon photonic modulators. Optica 5, 233–236 (2018).
+
+Article
+ 
+ADS
+ 
+Google Scholar
+ 
+
+Download references
+
+Acknowledgements
+
+This work started when Y.Y. was a postdoctoral researcher at Sandia National Laboratories. The work performed at Sandia National Laboratories was supported by the US Department of Energy (DOE), Office of Basic Energy Sciences, Division of Materials Sciences and Engineering, and performed, in part, at the Center for Integrated Nanotechnologies, an Office of Science User Facility operated for the US DOE Office of Science. Sandia National Laboratories is a multi-mission laboratory managed and operated by National Technology and Engineering Solutions of Sandia, a wholly owned subsidiary of Honeywell International, for the US DOE’s National Nuclear Security Administration under contract DE-NA-0003525. The views expressed in this article do not necessarily represent the views of the US DOE or the United States Government. The work performed at SLAC was primarily supported by the US DOE, Office of Science, Basic Energy Sciences, Chemical Sciences, Geosciences and Biosciences Division through the Early Career Research Program. Y.Y. acknowledges support from the Youth Thousand Talent program of China. A.M. acknowledges the National Science Foundation (grant ECCS-1710697) and the UNM Center for Advanced Research Computing for providing high-performance computing resources. J.-P.M. acknowledges support from the National Science Foundation (grant CHE-1507947) and Army Research Office (grants W911NF16-1-0406 and W911NF-16-1-0037). S.G. thanks U. Thumm for stimulating discussions.
+
+Author information
+Authors and Affiliations
+
+State Key Laboratory of Precision Measurement Technology and Instruments, Department of Precision Instrument, Tsinghua University, Beijing, China
+
+Yuanmu Yang
+
+Stanford PULSE Institute, SLAC National Accelerator Laboratory, Menlo Park, CA, USA
+
+Jian Lu, Hanzhe Liu & Shambhu Ghimire
+
+Department of Physics and Astronomy, University of New Mexico, Albuquerque, NM, USA
+
+Alejandro Manjavacas
+
+Sandia National Laboratories, Albuquerque, NM, USA
+
+Ting S. Luk, Michael B. Sinclair & Igal Brener
+
+Center for Integrated Nanotechnologies, Sandia National Laboratories, Albuquerque, NM, USA
+
+Ting S. Luk & Igal Brener
+
+Department of Materials Science and Engineering, North Carolina State University, Raleigh, NC, USA
+
+Kyle Kelley, Jon-Paul Maria & Evan L. Runnerstrom
+
+Contributions
+
+Y.Y. conceived the idea. J.L., Y.Y., T.S.L. and H.L. carried out optical measurements. A.M. developed the theory. K.K., J.-P.M. and E.L.R. prepared the sample. All authors contributed to analysing the data and writing the manuscript. I.B., S.G., M.B.S. and J.-P.M. supervised the project.
+
+Corresponding authors
+
+Correspondence to Yuanmu Yang or Igal Brener.
+
+Ethics declarations
+Competing interests
+
+The authors declare no competing interests.
+
+Additional information
+
+Peer review information: Nature Physics thanks Dmitry Turchinovich and the other, anonymous, reviewer(s) for their contribution to the peer review of this work.
+
+Publisher’s note: Springer Nature remains neutral with regard to jurisdictional claims in published maps and institutional affiliations.
+
+Supplementary information
+Supplementary Information (download PDF )
+
+Supplementary figures and notes.
+
+Rights and permissions
+
+Reprints and permissions
+
+About this article
+Cite this article
+
+Yang, Y., Lu, J., Manjavacas, A. et al. High-harmonic generation from an epsilon-near-zero material. Nat. Phys. 15, 1022–1026 (2019). https://doi.org/10.1038/s41567-019-0584-7
+
+Download citation
+
+Received
+08 April 2019
+
+Accepted
+05 June 2019
+
+Published
+15 July 2019
+
+Version of record
+15 July 2019
+
+Issue date
+October 2019
+
+DOI
+https://doi.org/10.1038/s41567-019-0584-7
+
+Share this article
+
+Anyone you share the following link with will be able to read this content:
+
+Get shareable link
+
+Provided by the Springer Nature SharedIt content-sharing initiative
+
+Subjects
+High-harmonic generation
+Nonlinear optics
+What is a tagged PDF?
+
+A tagged PDF supports navigation with assistive technologies such as screen readers and braille display devices. Images in our tagged PDFs do not include alternative text.
+
+If you use assistive technology (or are acting on behalf of someone who does), you can request a tagged PDF of this article.
+
+This article is cited by
+Multi-plateau high-harmonic generation in liquids driven by off-site recombination
+Angana MondalOfer NeufeldHans Jakob Wörner
+
+Nature Photonics (2026)
+
+Unconventional high-harmonic generation in resonant membrane metasurfaces
+Pavel TonkaevFelix RichterYuri Kivshar
+
+Nature Communications (2025)
+
+Long-range optical coupling with epsilon-near-zero materials
+Danqing WangZheyu LuJunqiao Wu
+
+Nature Communications (2025)
+
+Pausing ultrafast melting by timed multiple femtosecond-laser pulses
+Tobias ZierEeuwe S. ZijlstraDavid A. Strubbe
+
+Communications Physics (2025)
+
+Biocompatible radio frequency epsilon-near-zero materials for wearable electronics
+Haikun WuYuanyuan QiKai Sun
+
+Advanced Composites and Hybrid Materials (2025)
+
+You have full access to this article via Princeton University.
+
+Download PDF
+
+If you use assistive technology, you can request a tagged PDF.
+
+Sections
+Figures
+References
+Abstract
+Main
+Methods
+Data availability
+References
+Acknowledgements
+Author information
+Ethics declarations
+Additional information
+Supplementary information
+Rights and permissions
+About this article
+What is a tagged PDF?
+This article is cited by
+
+Advertisement
+
+Nature Physics (Nat. Phys.)
+
+ 
+
+ISSN 1745-2481 (online)
+
+ 
+
+ISSN 1745-2473 (print)
+
+nature.com footer links
+About Nature Portfolio
+About us
+Press releases
+Press office
+Contact us
+Discover content
+Journals A-Z
+Articles by subject
+protocols.io
+Nature Index
+Publishing policies
+Nature portfolio policies
+Open access
+Author & Researcher services
+Reprints & permissions
+Research data
+Language editing
+Scientific editing
+Nature Masterclasses
+Research Solutions
+Libraries & institutions
+Librarian service & tools
+Librarian portal
+Open research
+Recommend to library
+Advertising & partnerships
+Advertising
+Partnerships & Services
+Media kits
+Branded content
+Professional development
+Nature Awards
+Nature Careers
+Nature
+ Conferences
+Regional websites
+Nature Africa
+Nature China
+Nature India
+Nature Japan
+Nature Middle East
+Privacy Policy Use of cookies Your privacy choices/Manage cookies Legal notice Accessibility statement Terms & Conditions Your US state privacy rights
+
+© 2026 Springer Nature Limited
