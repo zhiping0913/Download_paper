@@ -50,8 +50,15 @@ class APSHandler(PublisherHandler):
         """Extract figure URLs and captions from APS JSON"""
         return extract_figure_assets_from_fulltext(json_data)
 
-    def convert_to_markdown(self, metadata: dict, fulltext_json: dict) -> str:
-        """Convert extracted data to Markdown using fulltext JSON"""
+    def convert_to_markdown(self, metadata: dict, fulltext_json: dict, add_figure_refs: bool = False) -> str:
+        """Convert extracted data to Markdown using fulltext JSON
+
+        Args:
+            metadata: Paper metadata dict
+            fulltext_json: Full text JSON data
+            add_figure_refs: If True, add figure references in markdown. If False, skip them (default).
+                            Use False when figures haven't been downloaded yet.
+        """
         from json_to_md_converter import convert_json_data_to_markdown
 
         md_content = ""
@@ -126,18 +133,20 @@ class APSHandler(PublisherHandler):
         md_content = re.sub(r'\\mspace\{[^}]+\}', '', md_content)
 
         # ===== 后处理：在FIG. X. 后添加图片引用 =====
-        # 匹配 "FIG. 1." 并在其后插入图片
-        def add_figure_reference(match):
-            fig_text = match.group(0)  # e.g., "FIG. 1."
-            # 提取图片编号
-            fig_match = re.search(r'FIG\.\s*(\d+)', fig_text)
-            if fig_match:
-                fig_num = fig_match.group(1)
-                # 返回FIG文本，加上空行和图片引用
-                return f"{fig_text}\n\n![Figure {fig_num}](figure_{fig_num}.png)"
-            return fig_text
+        # 只在add_figure_refs为True且成功下载图片时添加引用
+        if add_figure_refs:
+            # 匹配 "FIG. 1." 并在其后插入图片
+            def add_figure_reference(match):
+                fig_text = match.group(0)  # e.g., "FIG. 1."
+                # 提取图片编号
+                fig_match = re.search(r'FIG\.\s*(\d+)', fig_text)
+                if fig_match:
+                    fig_num = fig_match.group(1)
+                    # 返回FIG文本，加上空行和图片引用
+                    return f"{fig_text}\n\n![Figure {fig_num}](figure_{fig_num}.png)"
+                return fig_text
 
-        md_content = re.sub(r'FIG\.\s*\d+\.', add_figure_reference, md_content)
+            md_content = re.sub(r'FIG\.\s*\d+\.', add_figure_reference, md_content)
 
         return md_content
 
@@ -190,8 +199,13 @@ def extract_references_from_html(html: str) -> list:
         return []
 
 
-def extract_figure_assets_from_fulltext(fulltext_data: dict) -> dict:
-    """Extract figure URLs and captions from APS fulltext JSON API response"""
+def extract_figure_assets_from_fulltext(fulltext_data: dict, journal_prefix: str = 'prl') -> dict:
+    """Extract figure URLs and captions from APS fulltext JSON API response
+
+    Args:
+        fulltext_data: The fulltext JSON data from APS API
+        journal_prefix: The journal prefix (prl, pre, pra, etc.) - defaults to 'prl'
+    """
     figure_assets = {}
 
     def search_figures(obj, path=""):
@@ -209,9 +223,9 @@ def extract_figure_assets_from_fulltext(fulltext_data: dict) -> dict:
                         caption = extract_text_without_math(caption_html)
                         break
 
-                # Extract figure URL (medium resolution by default)
+                # Extract figure URL using correct journal prefix
                 if 'id' in obj:
-                    url = f"https://journals.aps.org/prl/article/{obj['id']}/figures/1/medium"
+                    url = f"https://journals.aps.org/{journal_prefix}/article/{obj['id']}/figures/1/medium"
 
                 if caption or url:
                     figure_assets[fig_id] = {'caption': caption, 'url': url}
