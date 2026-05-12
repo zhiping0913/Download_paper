@@ -255,6 +255,7 @@ def cleanup_markdown(md_content: str) -> str:
     - \\mspace{...} 命令 (APS LaTeX)
     - \\ensuremath{...} 命令 (LaTeX, KaTeX不支持)
     - \\slash 命令 (LaTeX, KaTeX不支持) -> 转换为 /
+    - HTML引用链接 [N](/path/to/ref#id){...} -> [N]
     - HTML实体转换为纯文本字符
 
     Args:
@@ -273,6 +274,23 @@ def cleanup_markdown(md_content: str) -> str:
     # 转换不兼容KaTeX的 \slash 命令为 /
     # }}\slash{{ -> }}/{{
     md_content = re.sub(r'\\slash', '/', md_content)
+
+    # 清理HTML引用链接，保留引用数字
+    # [N](/articles/path#ref-CR5){#ref-link-...} -> [N]
+    md_content = re.sub(r'\[(\d+)\]\([^)]*\)\{[^}]*\}', r'[\1]', md_content)
+    # [N](/path#ref) -> [N] (不带{...}后缀的情况)
+    md_content = re.sub(r'\[(\d+)\]\([^)]*#[^)]*\)(?!\{)', r'[\1]', md_content)
+
+    # 清理上标引用格式 ^[5],[10],[15]...^ -> [5,10,15...]
+    def clean_superscript_refs(match):
+        ref_text = match.group(1)
+        # 提取所有数字
+        numbers = re.findall(r'\[?(\d+)\]?', ref_text)
+        # 去重并排序
+        unique_nums = sorted(set(int(n) for n in numbers if n))
+        return '[' + ','.join(str(n) for n in unique_nums) + ']'
+
+    md_content = re.sub(r'\^\[([^\]]*(?:\],[^\]]*)*)\]\^', clean_superscript_refs, md_content)
 
     # 转换HTML实体为纯文本字符
     md_content = md_content.replace('&lt;', '<')
