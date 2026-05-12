@@ -7,5 +7,6 @@
 """
 
 from .nature import NatureHandler
+from .aps import APSHandler
 
-__all__ = ['NatureHandler']
+__all__ = ['NatureHandler', 'APSHandler']
