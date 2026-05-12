@@ -59,7 +59,7 @@ class APSHandler(PublisherHandler):
             add_figure_refs: If True, add figure references in markdown. If False, skip them (default).
                             Use False when figures haven't been downloaded yet.
         """
-        from json_to_md_converter import convert_json_data_to_markdown
+        from json_to_md_converter import convert_json_data_to_markdown, cleanup_markdown
 
         md_content = ""
 
@@ -129,19 +129,8 @@ class APSHandler(PublisherHandler):
             for i, ref in enumerate(metadata['references'], 1):
                 md_content += f"[{i}] {ref}\n\n"
 
-        # 清理LaTeX命令
-        md_content = re.sub(r'\\mspace\{[^}]+\}', '', md_content)
-
-        # 移除不兼容KaTeX的\ensuremath命令，保留其中的内容
-        # \ensuremath{\propto} -> \propto
-        md_content = re.sub(r'\\ensuremath\{([^}]*)\}', r'\1', md_content)
-
-        # 转换HTML实体为纯文本字符 (在数学表达式中)
-        md_content = md_content.replace('&lt;', '<')
-        md_content = md_content.replace('&gt;', '>')
-        md_content = md_content.replace('&amp;', '&')
-        md_content = md_content.replace('&quot;', '"')
-        md_content = md_content.replace('&apos;', "'")
+        # 跨发布商通用的清理 (移到 json_to_md_converter.cleanup_markdown)
+        md_content = cleanup_markdown(md_content)
 
         # ===== 后处理：在FIG. X 或 FIG. X. 后添加图片引用 =====
         # 只在add_figure_refs为True且成功下载图片时添加引用
