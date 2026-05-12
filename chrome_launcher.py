@@ -43,7 +43,9 @@ def ensure_chrome_preferences(user_data_dir: str):
                         "plugins": 2  # 2 = Ask, 3 = Block
                     }
                 }
-            }
+            },
+            # 防止在关闭所有标签页时关闭窗口
+            "exit_type": "Normal",
         }
     }
 
@@ -78,6 +80,7 @@ def ensure_chrome_preferences(user_data_dir: str):
     print(f"  - PDF 处理: 默认下载（always_open_pdf_externally=True）")
     print(f"  - 下载目录: {settings_to_apply['download']['default_directory']}")
     print(f"  - 下载提示: 关闭")
+    print(f"  - 窗口保持: 关闭所有标签页后保留窗口")
 
 
 def launch_chrome(use_user_config: bool = False, headless: bool = False):
