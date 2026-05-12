@@ -45,30 +45,8 @@ def run_conversion_workflow(html_file: str, output_dir: str):
     else:
         print("⚠️  未获取到元数据")
 
-    # 1. 提取Author information
-    print("\n1️⃣  提取Author information...")
-    subprocess.run(["python", "extract_author_information.py"], cwd=Path(__file__).parent)
-    author_info_file = output_path / "nature_author_information.md"
-
-    author_info_md = ""
-    if not author_info_file.exists():
-        print("⚠️  Author information未提取，尝试从脚本获取")
-        # 直接导入并运行
-        import sys
-        sys.path.insert(0, str(Path(__file__).parent))
-        from extract_author_information import extract_author_information_from_html
-        author_info_md = extract_author_information_from_html(html_file)
-    else:
-        with open(author_info_file, 'r', encoding='utf-8') as f:
-            author_info_md = f.read()
-
-    if author_info_md:
-        print(f"✓ Author information已提取: {len(author_info_md)} 字符")
-    else:
-        print("⚠️  未获取到Author information")
-
-    # 2. 提取Abstract
-    print("\n2️⃣  提取并转换Abstract...")
+    # 1. 提取Abstract
+    print("\n1️⃣  提取并转换Abstract...")
     subprocess.run(["python", "extract_abstract.py"], cwd=Path(__file__).parent)
     main_with_abstract_file = output_path / "nature_main_with_abstract.md"
 
@@ -78,8 +56,8 @@ def run_conversion_workflow(html_file: str, output_dir: str):
     else:
         print(f"✓ Abstract已添加: {main_with_abstract_file}")
 
-    # 3. 转换主要内容
-    print("\n3️⃣  转换主要内容（段落 + 公式）...")
+    # 2. 转换主要内容
+    print("\n2️⃣  转换主要内容（段落 + 公式）...")
     subprocess.run(["python", "convert_by_paragraph.py"], cwd=Path(__file__).parent)
     main_content_file = output_path / "nature_main_by_paragraph.md"
 
@@ -89,8 +67,8 @@ def run_conversion_workflow(html_file: str, output_dir: str):
 
     print(f"✓ 主要内容已保存: {main_content_file}")
 
-    # 4. 提取引用
-    print("\n4️⃣  提取引用信息...")
+    # 3. 提取引用
+    print("\n3️⃣  提取引用信息...")
     subprocess.run(["python", "extract_references.py"], cwd=Path(__file__).parent)
     references_file = output_path / "nature_references.md"
 
@@ -100,16 +78,16 @@ def run_conversion_workflow(html_file: str, output_dir: str):
 
     print(f"✓ 引用信息已保存: {references_file}")
 
-    # 5. 提取Data availability
-    print("\n5️⃣  提取Data availability...")
+    # 4. 提取Data availability
+    print("\n4️⃣  提取Data availability...")
     subprocess.run(["python", "extract_data_availability.py"], cwd=Path(__file__).parent)
 
-    # 6. 提取Acknowledgements
-    print("\n6️⃣  提取Acknowledgements...")
+    # 5. 提取Acknowledgements
+    print("\n5️⃣  提取Acknowledgements...")
     subprocess.run(["python", "extract_acknowledgements.py"], cwd=Path(__file__).parent)
 
-    # 7. 合并成完整文档
-    print("\n7️⃣  合并为完整文档...")
+    # 6. 合并成完整文档
+    print("\n6️⃣  合并为完整文档...")
     with open(main_with_abstract_file, 'r', encoding='utf-8') as f:
         main_content = f.read()
 
@@ -120,11 +98,10 @@ def run_conversion_workflow(html_file: str, output_dir: str):
     ack_content = "We acknowledge the contributions of the CLF staff, in particular A. Thomas, conversations with M. Zepf's group and the Smilei developers for their assistance with simulations. This work used the ARCHER2 UK National Supercomputing Service (https://www.archer2.ac.uk) through the EPSRC HEC grant (EP/X035336/1). The thin-film analysis was performed by the Ewald Microscopy Facilities in the School of Mathematics and Physics at Queen's University Belfast. This work was funded by the EPSRC HEC grant (grant nos. EP/X035336/1, EP/W017245/1, EP/P010059/1 and EP/P016960/1), the AWAKE2 grant (ST/X005518/1), the JAI grant (ST/V001655/1), the Oxford-Living Optics and Oxford-IBM Computational Discovery grants, the Oxford Clarendon Scholarship scheme, the Deutsche Forschungsgemeinschaft (DFG, German Research Foundation; grant no. 392856280) and the National Science Foundation under award 2126181."
 
     # 生成完整文档
-    # 结构: Metadata → Author information → Abstract & Main → Data availability → Acknowledgements → References
-    author_section = f"## Author information\n\n{author_info_md}\n\n" if author_info_md else ""
+    # 结构: Metadata → Abstract & Main → Data availability → Acknowledgements → References
     complete_doc = f"""{metadata_md}
 
-{author_section}{main_content}
+{main_content}
 
 ## Data availability
 
@@ -146,12 +123,10 @@ The datasets generated during and/or analysed during this study are available fr
     print("📊 转换统计")
     print("=" * 80)
     metadata_lines = len(metadata_md.splitlines()) if metadata_md else 0
-    author_lines = len(author_info_md.splitlines()) if author_info_md else 0
     main_lines = len(main_content.splitlines())
     ref_lines = len(references.splitlines())
     total_chars = len(complete_doc)
     print(f"元数据: {metadata_lines} 行")
-    print(f"Author information: {author_lines} 行")
     print(f"Abstract + Main 部分: {main_lines} 行")
     print(f"Data availability: 2 行")
     print(f"Acknowledgements: 5 行")
@@ -160,13 +135,12 @@ The datasets generated during and/or analysed during this study are available fr
     print(f"\n✅ 完整转换工作流完成！")
     print(f"   输出文件: {complete_file}")
     print(f"\n📄 文档结构:")
-    print(f"   1. # 论文元数据")
-    print(f"   2. ## Author information")
-    print(f"   3. ## Abstract")
-    print(f"   4. ## Main")
-    print(f"   5. ## Data availability")
-    print(f"   6. ## Acknowledgements")
-    print(f"   7. # References")
+    print(f"   1. # 论文元数据（含作者信息、机构、关键词等）")
+    print(f"   2. ## Abstract")
+    print(f"   3. ## Main")
+    print(f"   4. ## Data availability")
+    print(f"   5. ## Acknowledgements")
+    print(f"   6. # References")
 
 
 def main():
