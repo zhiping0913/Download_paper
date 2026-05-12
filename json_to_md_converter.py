@@ -9,6 +9,7 @@ import re
 import os
 from pathlib import Path
 import pypandoc
+from html import unescape
 
 def clean_html_body(html, klass=None):
     """
@@ -318,6 +319,50 @@ def convert_json_data_to_markdown(data: dict) -> str:
         转换后的Markdown文本
     """
     return traverse_json_recursive(data, skip_section_header=False)
+
+
+def mathml_to_latex_pandoc(mathml_html: str) -> str:
+    """Convert MathML to LaTeX using pandoc"""
+    try:
+        html_wrapped = f"<p>{mathml_html}</p>"
+        latex_md = pypandoc.convert_text(
+            html_wrapped,
+            to='gfm',
+            format='html',
+            extra_args=['--mathjax']
+        )
+        result = latex_md.strip()
+        result = re.sub(r'^<p>(.*)</p>$', r'\1', result, flags=re.DOTALL).strip()
+        return result
+    except:
+        return None
+
+
+def extract_text_without_math(html_str: str) -> str:
+    """Extract text and convert inline formulas"""
+    def replace_inline_formula(match):
+        math_section = match.group(0)
+        math_match = re.search(r'<math[^>]*>.*?</math>', math_section, re.DOTALL)
+        if math_match:
+            math_html = math_match.group(0)
+            latex = mathml_to_latex_pandoc(math_html)
+            if latex:
+                return latex
+        return match.group(0)
+
+    result = re.sub(
+        r'<span class="inline-formula">[^<]*<math[^>]*>.*?</math>[^<]*</span>',
+        replace_inline_formula,
+        html_str,
+        flags=re.DOTALL
+    )
+
+    result = re.sub(r'<button[^>]*>.*?</button>', '', result, flags=re.DOTALL)
+    result = re.sub(r'<span[^>]*>', '', result)
+    result = re.sub(r'</span>', '', result)
+    result = unescape(result)
+    result = re.sub(r'\s+', ' ', result).strip()
+    return result
 
 
 def main():
