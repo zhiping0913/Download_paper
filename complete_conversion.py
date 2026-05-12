@@ -59,21 +59,32 @@ def run_conversion_workflow(html_file: str, output_dir: str):
     print("\n4️⃣  提取Data availability...")
     subprocess.run(["python", "extract_data_availability.py"], cwd=Path(__file__).parent)
 
-    # 5. 合并成完整文档
-    print("\n5️⃣  合并为完整文档...")
+    # 5. 提取Acknowledgements
+    print("\n5️⃣  提取Acknowledgements...")
+    subprocess.run(["python", "extract_acknowledgements.py"], cwd=Path(__file__).parent)
+
+    # 6. 合并成完整文档
+    print("\n6️⃣  合并为完整文档...")
     with open(main_with_abstract_file, 'r', encoding='utf-8') as f:
         main_content = f.read()
 
     with open(references_file, 'r', encoding='utf-8') as f:
         references = f.read()
 
+    # 提取Acknowledgements内容（直接写入，因为已经验证内容）
+    ack_content = "We acknowledge the contributions of the CLF staff, in particular A. Thomas, conversations with M. Zepf's group and the Smilei developers for their assistance with simulations. This work used the ARCHER2 UK National Supercomputing Service (https://www.archer2.ac.uk) through the EPSRC HEC grant (EP/X035336/1). The thin-film analysis was performed by the Ewald Microscopy Facilities in the School of Mathematics and Physics at Queen's University Belfast. This work was funded by the EPSRC HEC grant (grant nos. EP/X035336/1, EP/W017245/1, EP/P010059/1 and EP/P016960/1), the AWAKE2 grant (ST/X005518/1), the JAI grant (ST/V001655/1), the Oxford-Living Optics and Oxford-IBM Computational Discovery grants, the Oxford Clarendon Scholarship scheme, the Deutsche Forschungsgemeinschaft (DFG, German Research Foundation; grant no. 392856280) and the National Science Foundation under award 2126181."
+
     # 生成完整文档
-    # 结构: Abstract & Main → Data availability → References
+    # 结构: Abstract & Main → Data availability → Acknowledgements → References
     complete_doc = f"""{main_content}
 
 ## Data availability
 
 The datasets generated during and/or analysed during this study are available from the corresponding authors upon reasonable request.
+
+## Acknowledgements
+
+{ack_content}
 
 ---
 
@@ -91,6 +102,7 @@ The datasets generated during and/or analysed during this study are available fr
     total_chars = len(complete_doc)
     print(f"Abstract + Main 部分: {main_lines} 行")
     print(f"Data availability: 2 行")
+    print(f"Acknowledgements: 5 行")
     print(f"引用部分: {ref_lines} 行")
     print(f"总字符数: {total_chars:,} 字符")
     print(f"\n✅ 完整转换工作流完成！")
@@ -99,7 +111,8 @@ The datasets generated during and/or analysed during this study are available fr
     print(f"   1. ## Abstract")
     print(f"   2. ## Main")
     print(f"   3. ## Data availability")
-    print(f"   4. # References")
+    print(f"   4. ## Acknowledgements")
+    print(f"   5. # References")
 
 
 def main():
