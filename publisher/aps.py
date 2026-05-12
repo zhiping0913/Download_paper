@@ -132,6 +132,10 @@ class APSHandler(PublisherHandler):
         # 清理LaTeX命令
         md_content = re.sub(r'\\mspace\{[^}]+\}', '', md_content)
 
+        # 移除不兼容KaTeX的\ensuremath命令，保留其中的内容
+        # \ensuremath{\propto} -> \propto
+        md_content = re.sub(r'\\ensuremath\{([^}]*)\}', r'\1', md_content)
+
         # ===== 后处理：在FIG. X 或 FIG. X. 后添加图片引用 =====
         # 只在add_figure_refs为True且成功下载图片时添加引用
         if add_figure_refs:
