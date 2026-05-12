@@ -19,8 +19,31 @@ def run_conversion_workflow(html_file: str, output_dir: str):
     output_path.mkdir(parents=True, exist_ok=True)
 
     print("=" * 80)
-    print("🔄 完整论文转换工作流（含Author information）")
+    print("🔄 完整论文转换工作流（含元数据）")
     print("=" * 80)
+
+    # 0. 提取元数据
+    print("\n0️⃣  提取论文元数据...")
+    subprocess.run(["python", "extract_metadata.py"], cwd=Path(__file__).parent)
+    metadata_file = output_path / "nature_metadata.md"
+
+    metadata_md = ""
+    if not metadata_file.exists():
+        print("⚠️  元数据未提取，尝试从脚本获取")
+        # 直接导入并运行
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent))
+        from extract_metadata import extract_metadata_from_html, format_metadata_to_markdown
+        metadata = extract_metadata_from_html(html_file)
+        metadata_md = format_metadata_to_markdown(metadata)
+    else:
+        with open(metadata_file, 'r', encoding='utf-8') as f:
+            metadata_md = f.read()
+
+    if metadata_md:
+        print(f"✓ 元数据已提取: {len(metadata_md)} 字符")
+    else:
+        print("⚠️  未获取到元数据")
 
     # 1. 提取Author information
     print("\n1️⃣  提取Author information...")
@@ -97,9 +120,11 @@ def run_conversion_workflow(html_file: str, output_dir: str):
     ack_content = "We acknowledge the contributions of the CLF staff, in particular A. Thomas, conversations with M. Zepf's group and the Smilei developers for their assistance with simulations. This work used the ARCHER2 UK National Supercomputing Service (https://www.archer2.ac.uk) through the EPSRC HEC grant (EP/X035336/1). The thin-film analysis was performed by the Ewald Microscopy Facilities in the School of Mathematics and Physics at Queen's University Belfast. This work was funded by the EPSRC HEC grant (grant nos. EP/X035336/1, EP/W017245/1, EP/P010059/1 and EP/P016960/1), the AWAKE2 grant (ST/X005518/1), the JAI grant (ST/V001655/1), the Oxford-Living Optics and Oxford-IBM Computational Discovery grants, the Oxford Clarendon Scholarship scheme, the Deutsche Forschungsgemeinschaft (DFG, German Research Foundation; grant no. 392856280) and the National Science Foundation under award 2126181."
 
     # 生成完整文档
-    # 结构: Author information → Abstract & Main → Data availability → Acknowledgements → References
+    # 结构: Metadata → Author information → Abstract & Main → Data availability → Acknowledgements → References
     author_section = f"## Author information\n\n{author_info_md}\n\n" if author_info_md else ""
-    complete_doc = f"""{author_section}{main_content}
+    complete_doc = f"""{metadata_md}
+
+{author_section}{main_content}
 
 ## Data availability
 
@@ -120,10 +145,12 @@ The datasets generated during and/or analysed during this study are available fr
     print("\n" + "=" * 80)
     print("📊 转换统计")
     print("=" * 80)
+    metadata_lines = len(metadata_md.splitlines()) if metadata_md else 0
     author_lines = len(author_info_md.splitlines()) if author_info_md else 0
     main_lines = len(main_content.splitlines())
     ref_lines = len(references.splitlines())
     total_chars = len(complete_doc)
+    print(f"元数据: {metadata_lines} 行")
     print(f"Author information: {author_lines} 行")
     print(f"Abstract + Main 部分: {main_lines} 行")
     print(f"Data availability: 2 行")
@@ -133,12 +160,13 @@ The datasets generated during and/or analysed during this study are available fr
     print(f"\n✅ 完整转换工作流完成！")
     print(f"   输出文件: {complete_file}")
     print(f"\n📄 文档结构:")
-    print(f"   1. ## Author information")
-    print(f"   2. ## Abstract")
-    print(f"   3. ## Main")
-    print(f"   4. ## Data availability")
-    print(f"   5. ## Acknowledgements")
-    print(f"   6. # References")
+    print(f"   1. # 论文元数据")
+    print(f"   2. ## Author information")
+    print(f"   3. ## Abstract")
+    print(f"   4. ## Main")
+    print(f"   5. ## Data availability")
+    print(f"   6. ## Acknowledgements")
+    print(f"   7. # References")
 
 
 def main():
