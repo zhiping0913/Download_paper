@@ -205,39 +205,45 @@ def extract_figure_assets_from_fulltext(fulltext_data: dict, journal_prefix: str
     Args:
         fulltext_data: The fulltext JSON data from APS API
         journal_prefix: The journal prefix (prl, pre, pra, etc.) - defaults to 'prl'
+
+    Note:
+        Figures are stored as 'asset' objects with type='figure' containing:
+        - id: figure identifier (e.g., 'f1', 'f2')
+        - caption: figure caption text (with MathML)
+        - variants: dict with 'thumbnail', 'medium', 'large' URLs
     """
     figure_assets = {}
 
-    def search_figures(obj, path=""):
+    def search_figures(obj):
+        """Recursively search for figure objects in the JSON structure"""
         if isinstance(obj, dict):
-            # Look for objects with figure-related keys
-            if obj.get('type') == 'fig':
-                fig_id = obj.get('id') or f"fig_{len(figure_assets) + 1}"
-                caption = ""
+            # Look for asset objects with type='figure'
+            if obj.get('type') == 'figure' and obj.get('asset'):
+                asset = obj['asset']
+                fig_id = asset.get('id') or f"fig_{len(figure_assets) + 1}"
+                caption = asset.get('caption', '')
                 url = ""
 
-                # Extract caption from fig-caption
-                for component in obj.get('components', []):
-                    if component.get('type') == 'fig-caption':
-                        caption_html = component.get('body', '')
-                        caption = extract_text_without_math(caption_html)
-                        break
+                # Extract figure URL from asset.variants (prefer medium, fallback to large or thumbnail)
+                variants = asset.get('variants', {})
+                if isinstance(variants, dict):
+                    url = variants.get('medium') or variants.get('large') or variants.get('thumbnail')
 
-                # Extract figure URL using correct journal prefix
-                if 'id' in obj:
-                    url = f"https://journals.aps.org/{journal_prefix}/article/{obj['id']}/figures/1/medium"
+                # Convert relative URL to absolute URL if needed
+                if url and url.startswith('/'):
+                    url = f"https://journals.aps.org{url}"
 
-                if caption or url:
+                if url:  # Only add if we have a URL
                     figure_assets[fig_id] = {'caption': caption, 'url': url}
 
-            # Recurse into values
-            for key, value in obj.items():
-                if key not in ['body', 'components']:
-                    search_figures(value, f"{path}/{key}")
+            # Recurse into all values (including 'components')
+            for value in obj.values():
+                if isinstance(value, (dict, list)):
+                    search_figures(value)
 
         elif isinstance(obj, list):
             for item in obj:
-                search_figures(item, path)
+                search_figures(item)
 
     search_figures(fulltext_data)
     return figure_assets
