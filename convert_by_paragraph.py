@@ -18,7 +18,7 @@ from bs4 import BeautifulSoup
 
 
 def extract_paragraphs_from_html(html_file: str):
-    """从HTML中提取main-content里的段落"""
+    """从HTML中提取main-content里的段落和公式"""
 
     with open(html_file, 'r', encoding='utf-8') as f:
         html_content = f.read()
@@ -37,19 +37,32 @@ def extract_paragraphs_from_html(html_file: str):
 
     main_content_html = str(main_content_div)
 
-    # 按 </p> 分割段落
-    # 但要保留 <p> 标签的内容
-    paragraphs = []
+    # 按 </p> 和 </div> 分割段落和公式
+    # 但要保留 <p> 标签和 <div class="c-article-equation"> 的内容
+    items = []
 
     # 找到所有 <p>...</p> 配对
     p_pattern = r'<p[^>]*>(.*?)</p>'
-    matches = re.finditer(p_pattern, main_content_html, re.DOTALL)
+    matches = list(re.finditer(p_pattern, main_content_html, re.DOTALL))
 
+    # 找到所有 <div class="c-article-equation">...</div> 配对
+    div_pattern = r'<div[^>]*class="c-article-equation"[^>]*>(.*?)</div>\s*</div>'
+    div_matches = list(re.finditer(div_pattern, main_content_html, re.DOTALL))
+
+    # 合并并排序（按出现顺序）
+    all_items = []
     for match in matches:
-        p_content = match.group(0)  # 完整的 <p>...</p>
-        paragraphs.append(p_content)
+        all_items.append((match.start(), 'p', match.group(0)))
+    for match in div_matches:
+        all_items.append((match.start(), 'div', match.group(0)))
 
-    return paragraphs
+    all_items.sort(key=lambda x: x[0])
+
+    for _, item_type, content in all_items:
+        items.append(content)
+
+    print(f"✓ 找到 {len(matches)} 个段落和 {len(div_matches)} 个公式")
+    return items
 
 
 def convert_paragraph(p_html: str) -> str:
