@@ -224,10 +224,10 @@ def extract_figure_assets_from_fulltext(fulltext_data: dict, journal_prefix: str
                 caption = asset.get('caption', '')
                 url = ""
 
-                # Extract figure URL from asset.variants (prefer medium, fallback to large or thumbnail)
+                # Extract figure URL from asset.variants (prefer large, fallback to medium or thumbnail)
                 variants = asset.get('variants', {})
                 if isinstance(variants, dict):
-                    url = variants.get('medium') or variants.get('large') or variants.get('thumbnail')
+                    url = variants.get('large') or variants.get('medium') or variants.get('thumbnail')
 
                 # Convert relative URL to absolute URL if needed
                 if url and url.startswith('/'):
