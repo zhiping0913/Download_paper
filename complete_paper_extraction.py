@@ -47,6 +47,8 @@ from publisher.orchestrator import (
 )
 
 OUTPUT_DIR = "captured_data"
+# Publisher IDs that can be fully extracted from the Phase 0 headless page.
+HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature']
 
 
 # ============================================================================
@@ -586,8 +588,8 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
 
     New architecture:
     1. Phase 0 (可选): 使用无头浏览器快速预检 (除非force_headed=True)
-    2. Connect to Chrome
-    3. Navigate to DOI
+    2. If publisher supports headless extraction, process directly from the headless page
+    3. Otherwise connect to headed Chrome and navigate to DOI
     4. Detect publisher
     5. Use handler's extract_all() to get all metadata and links in one go
     6. Download all resources using unified _download_all_resources
@@ -604,6 +606,99 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
 
     # 构建URL
     url = f"https://doi.org/{doi}"
+
+    async def process_nature_with_page(page, context, handler, captured_data, s2_data):
+        """Run the Nature extraction path with an already-loaded page."""
+        print(f"Step 2️⃣  使用NATUREHandler完整提取...")
+        print("=" * 80)
+
+        extraction_result = await handler.extract_all(page, doi, captured=captured_data)
+
+        metadata = extraction_result['metadata']
+        links = extraction_result['links']
+        fulltext_data = extraction_result['fulltext_data']
+        s2_metadata = s2_data or {}
+
+        # Save HTML to captured_data
+        if fulltext_data:
+            output_dir = Path("captured_data") / doi.replace('/', '_')
+            output_dir.mkdir(parents=True, exist_ok=True)
+            html_file = output_dir / "page.html"
+            with open(html_file, 'w', encoding='utf-8') as f:
+                f.write(fulltext_data)
+            print(f"  ✓ HTML已保存: {html_file}")
+
+        # Merge with Semantic Scholar data
+        if s2_metadata:
+            if s2_metadata.get('year') and not metadata.get('year'):
+                metadata['year'] = s2_metadata['year']
+            if s2_metadata.get('title') and not metadata.get('title'):
+                metadata['title'] = s2_metadata['title']
+
+        print(f"  ✓ 标题: {metadata.get('title', 'N/A')[:60]}...")
+        print(f"  ✓ 作者: {len(metadata.get('authors', []))} 位")
+        print(f"  ✓ 期刊: {metadata.get('journal', 'N/A')}")
+        print(f"  ✓ 图片: {len(links.get('figure_urls', {}))} 个")
+        print(f"  ✓ 补充材料: {len(links.get('supplemental_urls', []))} 个")
+        print()
+
+        # Prepare output directory
+        base_output_dir = Path(OUTPUT_DIR)
+        base_output_dir.mkdir(exist_ok=True)
+        paper_output_dir = organize_paper_output(base_output_dir, metadata, s2_metadata)
+
+        # Generate markdown filename
+        year = s2_metadata.get('year') or metadata.get('year') or '0000'
+        title = s2_metadata.get('title') or metadata.get('title') or 'paper'
+        title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:120]
+        markdown_filename = f"{year}--{title_clean}.md"
+        markdown_file = paper_output_dir / markdown_filename
+
+        # Step 3: Download all resources
+        downloads = await _download_all_resources(page, links, paper_output_dir, context, metadata, doi)
+
+        # Step 3.5: Generate markdown with figures
+        print("\nStep 3.5️⃣  生成Markdown...")
+        print("=" * 80)
+        md = handler.convert_to_markdown(metadata, fulltext_data, add_figure_refs=bool(downloads['figures']))
+        with open(markdown_file, 'w', encoding='utf-8') as f:
+            f.write(md)
+        print(f"  ✓ Markdown已保存: {markdown_filename}")
+
+        # Save metadata
+        save_metadata_json(paper_output_dir, metadata, s2_metadata, doi,
+                         downloads['pdf'], downloads['supplemental'])
+
+        # Statistics
+        print("\n" + "=" * 80)
+        print("📊 完成统计")
+        print("=" * 80)
+        lines = md.split('\n')
+        figures = re.findall(r'\[Figure \d+\]', md)
+        display_eqs = len(re.findall(r'\$\$', md)) // 2
+        print(f"  📄 Markdown 行数: {len(lines)}")
+        print(f"  🖼️  图片: {len(figures)} 个")
+        print(f"  📐 Display equations: {display_eqs} 个")
+        if downloads['pdf']:
+            print(f"  📕 PDF: {downloads['pdf']}")
+        if downloads['supplemental']:
+            print(f"  📎 补充材料: {len(downloads['supplemental'])} 个")
+        print(f"  💾 输出目录: {paper_output_dir}")
+        print()
+
+        return True
+
+    async def cleanup_context_pages(context):
+        """Close all pages in a browser context."""
+        print("\n🧹 清理标签页...")
+        print("=" * 80)
+        for context_page in context.pages:
+            try:
+                await context_page.close()
+            except:
+                pass
+        print("  ✓ 标签页已清理")
+        print()
 
     # ========== 阶段0（可选）：使用无头浏览器快速预检 ==========
     # 如果 force_headed=True，跳过此阶段直接使用有头浏览器
@@ -624,7 +719,8 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
         try:
             async with async_playwright() as p:
                 headless_browser = await p.chromium.launch(headless=True)
-                headless_page = await headless_browser.new_page()
+                headless_context = await headless_browser.new_context(accept_downloads=True)
+                headless_page = await headless_context.new_page()
 
                 try:
                     await headless_page.goto(url, wait_until='networkidle', timeout=30000)
@@ -651,12 +747,54 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
 
                     headless_success = True
 
+                    if headless_publisher in HEADLESS_ACCESSIBLE_PUBLISHERS:
+                        print()
+                        print("🟢 无头直连路径：当前出版商支持无头完整提取")
+                        print("=" * 80)
+                        print(f"  出版商类型: {headless_publisher.upper()}")
+                        print("  → 跳过有头Chrome连接，直接使用无头页面进入Handler流程")
+
+                        if headless_publisher == 'nature':
+                            handler = NatureHandler()
+                        else:
+                            handler = get_publisher_handler(headless_publisher)
+
+                        captured_data = None
+                        if hasattr(handler, 'setup_network_capture'):
+                            captured_data = handler.setup_network_capture(headless_page, doi)
+                            print("✓ 网络监听已启动\n")
+
+                        print("Step 1.5️⃣  获取Semantic Scholar元数据...")
+                        print("=" * 80)
+                        s2_data = fetch_semanticscholar(doi)
+                        print()
+
+                        if headless_publisher == 'nature':
+                            result = await process_nature_with_page(
+                                headless_page,
+                                headless_context,
+                                handler,
+                                captured_data,
+                                s2_data,
+                            )
+                            await cleanup_context_pages(headless_context)
+                            await headless_browser.close()
+                            return result
+
+                        print(f"  ⚠️  无头直连出版商尚未实现处理流程: {headless_publisher}")
+
                 except Exception as e:
                     print(f"  ⚠️  无头浏览器访问失败: {type(e).__name__}: {str(e)[:100]}")
                     print(f"  → 这对某些出版商（如APS）是正常的（需要认证/JavaScript渲染）")
                 finally:
-                    await headless_page.close()
-                    await headless_browser.close()
+                    try:
+                        await headless_page.close()
+                    except:
+                        pass
+                    try:
+                        await headless_browser.close()
+                    except:
+                        pass
         except Exception as e:
             print(f"  ⚠️  无头浏览器启动失败: {e}")
 
@@ -666,28 +804,16 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
         # 📌 重要发现：
         # - Nature期刊：无头浏览器可以获取完整页面（包含所有元数据）
         # - APS期刊：无头浏览器无法访问（需要认证或JavaScript渲染）
-        #
-        # 💡 未来优化方向：
-        #    1. 如果headless_publisher == 'nature'，直接从headless_initial.html提取所有数据
-        #    2. 跳过有头浏览器阶段，节省时间和资源
-        #    3. 仅对APS等需要认证的出版商使用有头浏览器
-        #
-        # 实施状态：TBD（待实施）
 
         print("📊 Phase 0分析：评估是否需要有头浏览器...")
         print("=" * 80)
 
-        use_headless_only = False
         if headless_success and headless_publisher:
             print(f"  出版商类型: {headless_publisher.upper()}")
 
-            if headless_publisher == 'nature':
-                print(f"  ℹ️  Nature期刊 → 无头浏览器可以获取完整页面")
-                print(f"  💡 未来优化：可以直接从 headless_initial.html 提取数据")
-                print(f"      - 跳过有头浏览器阶段")
-                print(f"      - 节省时间和资源")
-                use_headless_only = True  # TODO: 实现这个优化
-                print(f"  ⏳ 状态：优化待实施")
+            if headless_publisher in HEADLESS_ACCESSIBLE_PUBLISHERS:
+                print(f"  ℹ️  {headless_publisher.upper()} 支持无头直连")
+                print(f"  ⚠️  无头直连未完成，回退到有头浏览器完整提取")
             elif headless_publisher == 'aps':
                 print(f"  ℹ️  APS期刊 → 无头浏览器无法访问（需要认证/JavaScript渲染）")
                 print(f"  💡 需要有头浏览器进行完整提取")
@@ -700,12 +826,7 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
 
         print()
 
-        if use_headless_only:
-            print("  🟢 优化路径（未来实施）：使用无头浏览器数据")
-            print("     - 优点：快速、轻量、无需显示器")
-            print("     - 当前状态：标记但未实现，仍继续使用有头浏览器")
-        else:
-            print("  🔵 标准路径：使用有头浏览器完整提取")
+        print("  🔵 标准路径：使用有头浏览器完整提取")
 
         print()
     # 检查Chrome是否就绪
@@ -779,7 +900,6 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
                 captured_data = handler.setup_network_capture(page, doi)
                 print("✓ 网络监听已启动\n")
             elif publisher == 'nature':
-                from publisher.nature import NatureHandler
                 handler = NatureHandler()
                 if hasattr(handler, 'setup_network_capture'):
                     captured_data = handler.setup_network_capture(page, doi)
@@ -907,79 +1027,7 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
                 print("=" * 80)
 
                 if publisher == 'nature' and handler:
-                    extraction_result = await handler.extract_all(page, doi, captured=captured_data)
-
-                    metadata = extraction_result['metadata']
-                    links = extraction_result['links']
-                    fulltext_data = extraction_result['fulltext_data']
-                    journal_name = extraction_result.get('journal_name', 'nature')
-
-                    # Save HTML to captured_data
-                    if fulltext_data:
-                        output_dir = Path("captured_data") / doi.replace('/', '_')
-                        output_dir.mkdir(parents=True, exist_ok=True)
-                        html_file = output_dir / "page.html"
-                        with open(html_file, 'w', encoding='utf-8') as f:
-                            f.write(fulltext_data)
-                        print(f"  ✓ HTML已保存: {html_file}")
-
-                    # Merge with Semantic Scholar data
-                    if s2_data:
-                        if s2_data.get('year') and not metadata.get('year'):
-                            metadata['year'] = s2_data['year']
-                        if s2_data.get('title') and not metadata.get('title'):
-                            metadata['title'] = s2_data['title']
-
-                    print(f"  ✓ 标题: {metadata.get('title', 'N/A')[:60]}...")
-                    print(f"  ✓ 作者: {len(metadata.get('authors', []))} 位")
-                    print(f"  ✓ 期刊: {metadata.get('journal', 'N/A')}")
-                    print(f"  ✓ 图片: {len(links.get('figure_urls', {}))} 个")
-                    print(f"  ✓ 补充材料: {len(links.get('supplemental_urls', []))} 个")
-                    print()
-
-                    # Prepare output directory
-                    base_output_dir = Path(OUTPUT_DIR)
-                    base_output_dir.mkdir(exist_ok=True)
-                    paper_output_dir = organize_paper_output(base_output_dir, metadata, s2_data)
-
-                    # Generate markdown filename
-                    year = s2_data.get('year') or metadata.get('year') or '0000'
-                    title = s2_data.get('title') or metadata.get('title') or 'paper'
-                    title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:120]
-                    markdown_filename = f"{year}--{title_clean}.md"
-                    markdown_file = paper_output_dir / markdown_filename
-
-                    # Step 3: Download all resources
-                    downloads = await _download_all_resources(page, links, paper_output_dir, context, metadata, doi)
-
-                    # Step 3.5: Generate markdown with figures
-                    print("\nStep 3.5️⃣  生成Markdown...")
-                    print("=" * 80)
-                    md = handler.convert_to_markdown(metadata, fulltext_data, add_figure_refs=bool(downloads['figures']))
-                    with open(markdown_file, 'w', encoding='utf-8') as f:
-                        f.write(md)
-                    print(f"  ✓ Markdown已保存: {markdown_filename}")
-
-                    # Save metadata
-                    save_metadata_json(paper_output_dir, metadata, s2_data, doi,
-                                     downloads['pdf'], downloads['supplemental'])
-
-                    # Statistics
-                    print("\n" + "=" * 80)
-                    print("📊 完成统计")
-                    print("=" * 80)
-                    lines = md.split('\n')
-                    figures = re.findall(r'\[Figure \d+\]', md)
-                    display_eqs = len(re.findall(r'\$\$', md)) // 2
-                    print(f"  📄 Markdown 行数: {len(lines)}")
-                    print(f"  🖼️  图片: {len(figures)} 个")
-                    print(f"  📐 Display equations: {display_eqs} 个")
-                    if downloads['pdf']:
-                        print(f"  📕 PDF: {downloads['pdf']}")
-                    if downloads['supplemental']:
-                        print(f"  📎 补充材料: {len(downloads['supplemental'])} 个")
-                    print(f"  💾 输出目录: {paper_output_dir}")
-                    print()
+                    await process_nature_with_page(page, context, handler, captured_data, s2_data)
 
                 else:
                     # Other publishers - use Semantic Scholar metadata only
