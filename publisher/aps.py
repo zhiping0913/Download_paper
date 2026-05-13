@@ -259,51 +259,6 @@ async def extract_metadata_from_page(page) -> dict:
     return metadata
 
 
-def extract_references_from_html(html: str) -> list:
-    """从abstract页面HTML提取References列表（包含DOI链接）"""
-    try:
-        # 查找 <ol class="references">...</ol>
-        ref_match = re.search(
-            r'<ol\s+class=["\']?references["\']?\s*>(.+?)</ol>',
-            html,
-            re.DOTALL
-        )
-
-        if not ref_match:
-            return []
-
-        refs_html = ref_match.group(1)
-        references = []
-
-        # 解析每个 <li> 为一条reference
-        for li_match in re.finditer(r'<li[^>]*>(.+?)</li>', refs_html, re.DOTALL):
-            ref_html = li_match.group(1)
-
-            # 提取链接（如果存在）
-            link_match = re.search(r'<a\s+href=["\']([^"\']+)["\']', ref_html)
-            link_url = link_match.group(1) if link_match else None
-
-            # 清理HTML标签，保留文本
-            ref_text = re.sub(r'<[^>]+>', '', ref_html)
-            # 解码HTML实体
-            ref_text = unescape(ref_text)
-            # 清理多余空格
-            ref_text = re.sub(r'\s+', ' ', ref_text).strip()
-
-            if ref_text:
-                # 如果有链接，格式为 [text](url)；否则只有文本
-                if link_url:
-                    ref_entry = f"[{ref_text}]({link_url})"
-                else:
-                    ref_entry = ref_text
-                references.append(ref_entry)
-
-        return references
-    except Exception as e:
-        print(f"  ⚠️  提取References失败: {e}")
-        return []
-
-
 async def get_supplemental_links(page, doi: str, journal_prefix: str = None) -> tuple:
     """获取补充材料的所有下载链接和描述信息
 
@@ -828,31 +783,6 @@ def extract_supplemental_info(html: str) -> str:
         return None
     except:
         return None
-
-
-def extract_references_from_html(html: str) -> list:
-    """Extract References list from abstract page HTML (with DOI links)"""
-    try:
-        references = []
-        ol = re.search(r'<ol class="references"[^>]*>(.*?)</ol>', html, re.DOTALL)
-        if ol:
-            ref_items = re.findall(
-                r'<li[^>]*id="ref-\d+"[^>]*>(.*?)</li>',
-                ol.group(1),
-                re.DOTALL
-            )
-            for ref_item in ref_items:
-                # Extract text and DOI link
-                text = re.sub(r'<[^>]+>', '', ref_item).strip()
-                # Also try to find DOI link if present
-                doi_match = re.search(r'https://dx\.doi\.org/([^"\'<>\s]+)', ref_item)
-                if doi_match:
-                    doi = doi_match.group(1)
-                    text = f"{text.rstrip('.')} (DOI: {doi})"
-                references.append(text)
-        return references
-    except:
-        return []
 
 
 def extract_figure_assets_from_fulltext(fulltext_data: dict) -> dict:
