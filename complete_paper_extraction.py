@@ -735,25 +735,110 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
                 print()
 
             else:
-                # For non-APS publishers, use Semantic Scholar metadata only
-                print("Step 2️⃣  使用Semantic Scholar元数据...")
+                # For non-APS publishers (Nature, etc.)
+                print(f"Step 2️⃣  使用{publisher.upper()}Handler完整提取...")
                 print("=" * 80)
 
-                # Use Semantic Scholar data as the primary metadata source
-                metadata = s2_data or {
-                    'title': 'Unknown Paper',
-                    'authors': [],
-                    'journal': 'Unknown Journal',
-                    'year': None
-                }
-                print(f"  ✓ 标题: {metadata.get('title', 'N/A')[:60]}...")
-                print(f"  ✓ 作者: {len(metadata.get('authors', []))} 位")
-                print(f"  ✓ 期刊: {metadata.get('journal', 'N/A')}")
-                print(f"  ✓ DOI: {doi}")
-                print()
+                if publisher == 'nature':
+                    from publisher.nature import NatureHandler
+                    handler = NatureHandler()
+                    extraction_result = await handler.extract_all(page, doi)
 
-                # [Other publisher logic would go here...]
-                # For now, minimal support - can be extended with NatureHandler etc.
+                    metadata = extraction_result['metadata']
+                    links = extraction_result['links']
+                    fulltext_data = extraction_result['fulltext_data']
+                    journal_name = extraction_result.get('journal_name', 'nature')
+
+                    # Save HTML to captured_data
+                    if fulltext_data:
+                        output_dir = Path("captured_data") / doi.replace('/', '_')
+                        output_dir.mkdir(parents=True, exist_ok=True)
+                        html_file = output_dir / "page.html"
+                        with open(html_file, 'w', encoding='utf-8') as f:
+                            f.write(fulltext_data)
+                        print(f"  ✓ HTML已保存: {html_file}")
+
+                    # Merge with Semantic Scholar data
+                    if s2_data:
+                        if s2_data.get('year') and not metadata.get('year'):
+                            metadata['year'] = s2_data['year']
+                        if s2_data.get('title') and not metadata.get('title'):
+                            metadata['title'] = s2_data['title']
+
+                    print(f"  ✓ 标题: {metadata.get('title', 'N/A')[:60]}...")
+                    print(f"  ✓ 作者: {len(metadata.get('authors', []))} 位")
+                    print(f"  ✓ 期刊: {metadata.get('journal', 'N/A')}")
+                    print(f"  ✓ 图片: {len(links.get('figure_urls', {}))} 个")
+                    print(f"  ✓ 补充材料: {len(links.get('supplemental_urls', []))} 个")
+                    print()
+
+                    # Prepare output directory
+                    base_output_dir = Path(OUTPUT_DIR)
+                    base_output_dir.mkdir(exist_ok=True)
+                    paper_output_dir = organize_paper_output(base_output_dir, metadata, s2_data)
+
+                    # Generate markdown filename
+                    year = s2_data.get('year') or metadata.get('year') or '0000'
+                    title = s2_data.get('title') or metadata.get('title') or 'paper'
+                    title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:120]
+                    markdown_filename = f"{year}--{title_clean}.md"
+                    markdown_file = paper_output_dir / markdown_filename
+
+                    # Step 3: Download all resources
+                    downloads = await _download_all_resources(page, links, paper_output_dir, context, metadata, doi)
+
+                    # Step 3.5: Generate markdown with figures
+                    print("\nStep 3.5️⃣  生成Markdown...")
+                    print("=" * 80)
+                    md = handler.convert_to_markdown(metadata, fulltext_data, add_figure_refs=bool(downloads['figures']))
+                    with open(markdown_file, 'w', encoding='utf-8') as f:
+                        f.write(md)
+                    print(f"  ✓ Markdown已保存: {markdown_filename}")
+
+                    # Save metadata
+                    save_metadata_json(paper_output_dir, metadata, s2_data, doi,
+                                     downloads['pdf'], downloads['supplemental'])
+
+                    # Statistics
+                    print("\n" + "=" * 80)
+                    print("📊 完成统计")
+                    print("=" * 80)
+                    lines = md.split('\n')
+                    figures = re.findall(r'\[Figure \d+\]', md)
+                    display_eqs = len(re.findall(r'\$\$', md)) // 2
+                    print(f"  📄 Markdown 行数: {len(lines)}")
+                    print(f"  🖼️  图片: {len(figures)} 个")
+                    print(f"  📐 Display equations: {display_eqs} 个")
+                    if downloads['pdf']:
+                        print(f"  📕 PDF: {downloads['pdf']}")
+                    if downloads['supplemental']:
+                        print(f"  📎 补充材料: {len(downloads['supplemental'])} 个")
+                    print(f"  💾 输出目录: {paper_output_dir}")
+                    print()
+
+                else:
+                    # Other publishers - use Semantic Scholar metadata only
+                    print("Step 2️⃣  使用Semantic Scholar元数据...")
+                    print("=" * 80)
+
+                    metadata = s2_data or {
+                        'title': 'Unknown Paper',
+                        'authors': [],
+                        'journal': 'Unknown Journal',
+                        'year': None
+                    }
+                    links = {
+                        'pdf_url': None,
+                        'figure_urls': {},
+                        'supplemental_urls': []
+                    }
+                    fulltext_data = None
+
+                    print(f"  ✓ 标题: {metadata.get('title', 'N/A')[:60]}...")
+                    print(f"  ✓ 作者: {len(metadata.get('authors', []))} 位")
+                    print(f"  ✓ 期刊: {metadata.get('journal', 'N/A')}")
+                    print(f"  ✓ DOI: {doi}")
+                    print()
 
             # Clean up pages
             print("\n🧹 清理标签页...")
