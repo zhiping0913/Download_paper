@@ -4,7 +4,6 @@ Handles extraction from Nature and Nature-family journals (Nature Physics, Natur
 """
 
 from publisher.base import PublisherHandler
-from core import extract_text_without_math
 import re
 import json
 from pathlib import Path

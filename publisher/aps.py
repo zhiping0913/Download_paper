@@ -551,9 +551,9 @@ class APSHandler(PublisherHandler):
                         'size': len(html),
                     }
 
-                    # Save HTML file to OUTPUT_DIR
-                    output_dir = Path("captured_data")
-                    output_dir.mkdir(exist_ok=True)
+                    # Save HTML file to captured_data/{doi}/
+                    output_dir = Path("captured_data") / url.replace('https://doi.org/', '').split('?')[0].replace('/', '_')
+                    output_dir.mkdir(parents=True, exist_ok=True)
                     html_filename = f"page_{len(captured['json_responses']):03d}.html"
                     html_path = output_dir / html_filename
                     with open(html_path, 'w', encoding='utf-8') as f:
@@ -561,7 +561,7 @@ class APSHandler(PublisherHandler):
                     captured['document']['file'] = str(html_path)
 
                     print(f"  ✓ HTML文档: {len(html)} 字节")
-                    print(f"    保存到: {html_filename}")
+                    print(f"    保存到: {str(html_path)}")
                 except:
                     pass
 
@@ -579,8 +579,8 @@ class APSHandler(PublisherHandler):
                         if has_paper or len(jstr) > 2000:
                             print(f"  ✓✓ API数据: {len(jstr)} 字节")
 
-                            output_dir = Path("captured_data")
-                            output_dir.mkdir(exist_ok=True)
+                            output_dir = Path("captured_data") / url.replace('https://doi.org/', '').split('?')[0].replace('/', '_')
+                            output_dir.mkdir(parents=True, exist_ok=True)
                             jpath = output_dir / f"api_response_{len(captured['json_responses']):03d}.json"
                             with open(jpath, 'w', encoding='utf-8') as f:
                                 json.dump(jdata, f, indent=2, ensure_ascii=False)
