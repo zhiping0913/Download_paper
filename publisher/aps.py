@@ -9,7 +9,6 @@ import json
 import requests
 from pathlib import Path
 from html import unescape
-from datetime import datetime
 
 try:
     import pypandoc
@@ -20,6 +19,7 @@ except:
     import pypandoc
 
 from publisher.base import PublisherHandler
+from core.network_capture import setup_response_capture
 from json_to_md_converter import mathml_to_latex_pandoc, extract_text_without_math
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
@@ -515,9 +515,11 @@ class APSHandler(PublisherHandler):
 
         self.configure(page=page, doi=doi)
 
+        output_dir = self.captured_data_dir or Path("captured_data") / doi.replace('/', '_')
         captured = {
             'json_responses': [],
             'document': None,
+            'documents': [],
             'timeline': [],
             'abstract_html': None,      # Save abstract page HTML
             'fulltext_data': None,      # Save fulltext JSON (contains text and Acknowledgements)
@@ -525,102 +527,42 @@ class APSHandler(PublisherHandler):
             'journal_prefix': None,     # Journal prefix extracted from URL (prl, pre, pra, etc.)
         }
 
-        async def handle_response(response):
-            rtype = response.request.resource_type
-            status = response.status
+        def should_save_json(response, jdata, jstr):
+            kws = ['abstract', 'article', 'fulltext', 'front', 'back']
+            has_paper = any(kw in jstr.lower() for kw in kws)
+            return has_paper or len(jstr) > 2000
+
+        def on_document(response, html, entry, captured):
             url_str = response.url
-            ts = datetime.now().isoformat()
+            if 'journals.aps.org/' in url_str and not captured['journal_prefix']:
+                match = re.search(r'journals\.aps\.org/([a-z]+)/', url_str)
+                if match:
+                    captured['journal_prefix'] = match.group(1)
+                    print(f"  ✓ 识别期刊: {captured['journal_prefix']}")
 
-            captured['timeline'].append({
-                'timestamp': ts,
-                'type': rtype,
-                'status': status,
-                'url': url_str,
-                'method': response.request.method
-            })
+            # APS pages can load iframe documents; keep only the article page.
+            is_article_html = doi in html or 'citation_doi' in html
+            if '/abstract/' in url_str and is_article_html:
+                captured['abstract_html'] = html
+                print(f"  ✓ 保存abstract HTML: {len(html)} 字节")
 
-            if status == 200:
-                print(f"[{status}] {rtype:10s} {url_str[:70]}")
+        def on_json(response, jdata, jstr, entry, captured):
+            url_str = response.url
+            if '/fulltext/' in url_str:
+                captured['fulltext_data'] = jdata
+                print(f"  ✓ 保存fulltext数据: {len(jstr)} 字节")
+            elif '/supplemental/' in url_str:
+                captured['supplemental_data'] = jdata
+                print(f"  ✓ 保存supplemental数据: {len(jstr)} 字节")
 
-            # Capture HTML document (including abstract page)
-            if rtype == 'document' and status == 200:
-                try:
-                    html = await response.text()
-
-                    # Extract journal prefix from URL (prl, pre, pra, etc.)
-                    if 'journals.aps.org/' in url_str and not captured['journal_prefix']:
-                        match = re.search(r'journals\.aps\.org/([a-z]+)/', url_str)
-                        if match:
-                            captured['journal_prefix'] = match.group(1)
-                            print(f"  ✓ 识别期刊: {captured['journal_prefix']}")
-
-                    # Save abstract page HTML for References extraction.
-                    # APS pages can load iframe documents; keep only the article page.
-                    is_article_html = doi in html or 'citation_doi' in html
-                    if '/abstract/' in url_str and is_article_html:
-                        captured['abstract_html'] = html
-                        print(f"  ✓ 保存abstract HTML: {len(html)} 字节")
-
-                    # Save main HTML document to file
-                    captured['document'] = {
-                        'url': url_str,
-                        'timestamp': ts,
-                        'size': len(html),
-                    }
-
-                    # Save HTML file to captured_data/{doi}/
-                    output_dir = self.captured_data_dir or Path("captured_data") / doi.replace('/', '_')
-                    output_dir.mkdir(parents=True, exist_ok=True)
-                    html_filename = f"page_{len(captured['json_responses']):03d}.html"
-                    html_path = output_dir / html_filename
-                    with open(html_path, 'w', encoding='utf-8') as f:
-                        f.write(html)
-                    captured['document']['file'] = str(html_path)
-
-                    print(f"  ✓ HTML文档: {len(html)} 字节")
-                    print(f"    保存到: {str(html_path)}")
-                except:
-                    pass
-
-            # Capture JSON/API responses
-            elif rtype in ('xhr', 'fetch') and status == 200:
-                try:
-                    ctype = response.headers.get('content-type', '')
-                    if 'json' in ctype.lower():
-                        jdata = await response.json()
-                        jstr = json.dumps(jdata)
-
-                        kws = ['abstract', 'article', 'fulltext', 'front', 'back']
-                        has_paper = any(kw in jstr.lower() for kw in kws)
-
-                        if has_paper or len(jstr) > 2000:
-                            print(f"  ✓✓ API数据: {len(jstr)} 字节")
-
-                            output_dir = self.captured_data_dir or Path("captured_data") / doi.replace('/', '_')
-                            output_dir.mkdir(parents=True, exist_ok=True)
-                            jpath = output_dir / f"api_response_{len(captured['json_responses']):03d}.json"
-                            with open(jpath, 'w', encoding='utf-8') as f:
-                                json.dump(jdata, f, indent=2, ensure_ascii=False)
-
-                            captured['json_responses'].append({
-                                'url': url_str,
-                                'timestamp': ts,
-                                'size': len(jstr),
-                                'file': str(jpath),
-                            })
-
-                            # Save fulltext and supplemental data specially
-                            if '/fulltext/' in url_str:
-                                captured['fulltext_data'] = jdata
-                                print(f"  ✓ 保存fulltext数据: {len(jstr)} 字节")
-                            elif '/supplemental/' in url_str:
-                                captured['supplemental_data'] = jdata
-                                print(f"  ✓ 保存supplemental数据: {len(jstr)} 字节")
-                except:
-                    pass
-
-        page.on("response", handle_response)
-        return captured
+        return setup_response_capture(
+            page,
+            output_dir,
+            captured=captured,
+            json_should_save=should_save_json,
+            on_document=on_document,
+            on_json=on_json,
+        )
 
     async def _capture_network_data(self, page, url: str) -> dict:
         """Monitor network requests and capture JSON API responses
@@ -669,17 +611,24 @@ class APSHandler(PublisherHandler):
             return captured
 
         html_files = sorted(self.captured_data_dir.glob("*.html"))
+        html_files.sort(key=lambda p: (
+            'abstract' not in p.name.lower(),
+            'journals.aps.org' not in p.name.lower(),
+            p.name,
+        ))
         if html_files:
-            html_path = html_files[0]
-            try:
-                html = html_path.read_text(encoding='utf-8')
-                captured['abstract_html'] = html
-                captured['document'] = {
-                    'file': str(html_path),
-                    'size': len(html),
-                }
-            except Exception:
-                pass
+            for html_path in html_files:
+                try:
+                    html = html_path.read_text(encoding='utf-8')
+                    if captured['abstract_html'] is None and ('citation_doi' in html or 'ol class="references"' in html):
+                        captured['abstract_html'] = html
+                    if captured['document'] is None:
+                        captured['document'] = {
+                            'file': str(html_path),
+                            'size': len(html),
+                        }
+                except Exception:
+                    pass
 
         for json_path in sorted(self.captured_data_dir.glob("api_response_*.json")):
             try:

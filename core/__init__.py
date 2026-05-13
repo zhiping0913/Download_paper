@@ -13,6 +13,7 @@ from .utilities import (
     S2_API_URL,
     HEADERS
 )
+from .network_capture import setup_response_capture
 
 __all__ = [
     'fetch_semanticscholar',
@@ -23,5 +24,6 @@ __all__ = [
     'extract_text_without_math',
     'detect_publisher_from_url',
     'S2_API_URL',
-    'HEADERS'
+    'HEADERS',
+    'setup_response_capture',
 ]
