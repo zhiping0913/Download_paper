@@ -597,6 +597,101 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
     # 构建URL
     url = f"https://doi.org/{doi}"
 
+    # ========== 阶段0：使用无头浏览器快速预检 ==========
+    print("\n📋 Phase 0️⃣  使用无头浏览器快速预检页面...")
+    print("=" * 80)
+
+    headless_success = False
+    headless_publisher = None
+    headless_html = None
+
+    try:
+        async with async_playwright() as p:
+            headless_browser = await p.chromium.launch(headless=True)
+            headless_page = await headless_browser.new_page()
+
+            try:
+                await headless_page.goto(url, wait_until='networkidle', timeout=30000)
+
+                # 保存无头浏览器访问结果
+                output_dir = Path("captured_data") / doi.replace('/', '_')
+                output_dir.mkdir(parents=True, exist_ok=True)
+
+                # 保存HTML
+                headless_html = await headless_page.content()
+                headless_html_file = output_dir / "headless_initial.html"
+                with open(headless_html_file, 'w', encoding='utf-8') as f:
+                    f.write(headless_html)
+
+                print(f"  ✓ 页面已保存: {headless_html_file.name} ({len(headless_html)} 字节)")
+
+                # 检测最终URL
+                final_headless_url = headless_page.url
+                print(f"  ✓ 最终URL: {final_headless_url}")
+
+                # 检测出版商
+                headless_publisher = detect_publisher_from_url(final_headless_url)
+                print(f"  ✓ 检测出版商: {headless_publisher.upper()}")
+
+                headless_success = True
+
+            except Exception as e:
+                print(f"  ⚠️  无头浏览器访问失败: {type(e).__name__}: {str(e)[:100]}")
+                print(f"  → 这对某些出版商（如APS）是正常的（需要认证/JavaScript渲染）")
+            finally:
+                await headless_page.close()
+                await headless_browser.close()
+    except Exception as e:
+        print(f"  ⚠️  无头浏览器启动失败: {e}")
+
+    print()
+
+    # ========== Phase 0分析：判断是否需要有头浏览器 ==========
+    # 📌 重要发现：
+    # - Nature期刊：无头浏览器可以获取完整页面（包含所有元数据）
+    # - APS期刊：无头浏览器无法访问（需要认证或JavaScript渲染）
+    #
+    # 💡 未来优化方向：
+    #    1. 如果headless_publisher == 'nature'，直接从headless_initial.html提取所有数据
+    #    2. 跳过有头浏览器阶段，节省时间和资源
+    #    3. 仅对APS等需要认证的出版商使用有头浏览器
+    #
+    # 实施状态：TBD（待实施）
+
+    print("📊 Phase 0分析：评估是否需要有头浏览器...")
+    print("=" * 80)
+
+    use_headless_only = False
+    if headless_success and headless_publisher:
+        print(f"  出版商类型: {headless_publisher.upper()}")
+
+        if headless_publisher == 'nature':
+            print(f"  ℹ️  Nature期刊 → 无头浏览器可以获取完整页面")
+            print(f"  💡 未来优化：可以直接从 headless_initial.html 提取数据")
+            print(f"      - 跳过有头浏览器阶段")
+            print(f"      - 节省时间和资源")
+            use_headless_only = True  # TODO: 实现这个优化
+            print(f"  ⏳ 状态：优化待实施")
+        elif headless_publisher == 'aps':
+            print(f"  ℹ️  APS期刊 → 无头浏览器无法访问（需要认证/JavaScript渲染）")
+            print(f"  💡 需要有头浏览器进行完整提取")
+        else:
+            print(f"  ℹ️  其他出版商: {headless_publisher}")
+            print(f"  💡 根据需要可能需要有头浏览器")
+    else:
+        print(f"  ⚠️  无头浏览器预检失败")
+        print(f"  💡 将使用有头浏览器进行完整提取")
+
+    print()
+
+    if use_headless_only:
+        print("  🟢 优化路径（未来实施）：使用无头浏览器数据")
+        print("     - 优点：快速、轻量、无需显示器")
+        print("     - 当前状态：标记但未实现，仍继续使用有头浏览器")
+    else:
+        print("  🔵 标准路径：使用有头浏览器完整提取")
+
+    print()
     # 检查Chrome是否就绪
     def check_chrome_ready():
         try:
@@ -657,6 +752,23 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
             publisher = detect_publisher_from_url(final_url)
             print(f"✓ 检测出版商: {publisher.upper()}\n")
 
+            # Setup network capture immediately after navigation (Step 1 continuation)
+            print("Step 1.1️⃣  设置网络监听...")
+            print("=" * 80)
+            handler = None
+            captured_data = None
+
+            if publisher == 'aps':
+                handler = APSHandler(journal_prefix='prl')
+                captured_data = handler.setup_network_capture(page, doi)
+                print("✓ 网络监听已启动\n")
+            elif publisher == 'nature':
+                from publisher.nature import NatureHandler
+                handler = NatureHandler()
+                if hasattr(handler, 'setup_network_capture'):
+                    captured_data = handler.setup_network_capture(page, doi)
+                    print("✓ 网络监听已启动\n")
+
             # Get Semantic Scholar metadata early
             print("Step 1.5️⃣  获取Semantic Scholar元数据...")
             print("=" * 80)
@@ -664,11 +776,50 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
             print()
 
             # Step 2: Use handler's extract_all for complete extraction
+            #
+            # handler.extract_all() 返回一个统一的字典结构（所有出版商通用）：
+            # {
+            #     'metadata': {
+            #         'title': str,                    # 论文标题
+            #         'authors': [str],               # 作者列表
+            #         'author_with_affiliations': [   # 带机构的作者信息
+            #             {'author': str, 'affiliations': [str]}
+            #         ],
+            #         'abstract': str,                # 摘要
+            #         'journal': str,                 # 期刊名称
+            #         'year': str,                    # 发表年份
+            #         'volume': str,                  # 卷号
+            #         'issue': str,                   # 期号
+            #         'pages': str,                   # 页码
+            #         'doi': str,                     # DOI
+            #         'publication_date': str,        # 发表日期
+            #         'corresponding_author_emails': [str],  # 通讯作者邮箱
+            #         'references': [str],            # 参考文献列表
+            #     },
+            #     'links': {
+            #         'pdf_url': str,                 # PDF下载链接 (如 https://journals.aps.org/prl/pdf/...)
+            #         'figure_urls': {
+            #             'fig_1': {                  # 图片ID
+            #                 'url': str,             # 图片完整URL
+            #                 'caption': str,         # 图片标题
+            #             },
+            #             ...
+            #         },
+            #         'supplemental_urls': [str],     # 补充材料链接列表
+            #         'supplemental_descriptions': {  # 补充材料描述 (可选)
+            #             'filename': 'description',
+            #             ...
+            #         },
+            #     },
+            #     'fulltext_data': str|dict,          # 文章内容
+            #                                         # APS: JSON dict | Nature: HTML string
+            #     'journal_prefix': str,              # (APS only) prl, pre, pra, prb等
+            #     'journal_name': str,                # (Nature only) nature, nature_physics等
+            # }
             if publisher == 'aps':
                 print("Step 2️⃣  使用APSHandler完整提取...")
                 print("=" * 80)
-                handler = APSHandler(journal_prefix='prl')
-                extraction_result = await handler.extract_all(page, doi)
+                extraction_result = await handler.extract_all(page, doi, captured=captured_data)
 
                 metadata = extraction_result['metadata']
                 links = extraction_result['links']
@@ -739,10 +890,8 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
                 print(f"Step 2️⃣  使用{publisher.upper()}Handler完整提取...")
                 print("=" * 80)
 
-                if publisher == 'nature':
-                    from publisher.nature import NatureHandler
-                    handler = NatureHandler()
-                    extraction_result = await handler.extract_all(page, doi)
+                if publisher == 'nature' and handler:
+                    extraction_result = await handler.extract_all(page, doi, captured=captured_data)
 
                     metadata = extraction_result['metadata']
                     links = extraction_result['links']

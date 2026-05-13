@@ -493,12 +493,18 @@ class APSHandler(PublisherHandler):
         """Extract figure URLs and captions from APS JSON"""
         return extract_figure_assets_from_fulltext(json_data)
 
-    async def _capture_network_data(self, page, url: str) -> dict:
-        """Monitor network requests and capture JSON API responses
+    def setup_network_capture(self, page, doi: str):
+        """Set up network event listener to capture responses
+
+        Call this before page.goto(), so it captures all subsequent network traffic.
+        Returns a dict that will be populated with captured data.
+
+        Args:
+            page: Playwright page object
+            doi: DOI for organizing output files
 
         Returns:
-            dict with keys: 'json_responses', 'document', 'timeline', 'abstract_html',
-                           'fulltext_data', 'supplemental_data', 'journal_prefix'
+            dict that will be populated with captured data
         """
         captured = {
             'json_responses': [],
@@ -552,7 +558,7 @@ class APSHandler(PublisherHandler):
                     }
 
                     # Save HTML file to captured_data/{doi}/
-                    output_dir = Path("captured_data") / url.replace('https://doi.org/', '').split('?')[0].replace('/', '_')
+                    output_dir = Path("captured_data") / doi.replace('/', '_')
                     output_dir.mkdir(parents=True, exist_ok=True)
                     html_filename = f"page_{len(captured['json_responses']):03d}.html"
                     html_path = output_dir / html_filename
@@ -579,7 +585,7 @@ class APSHandler(PublisherHandler):
                         if has_paper or len(jstr) > 2000:
                             print(f"  ✓✓ API数据: {len(jstr)} 字节")
 
-                            output_dir = Path("captured_data") / url.replace('https://doi.org/', '').split('?')[0].replace('/', '_')
+                            output_dir = Path("captured_data") / doi.replace('/', '_')
                             output_dir.mkdir(parents=True, exist_ok=True)
                             jpath = output_dir / f"api_response_{len(captured['json_responses']):03d}.json"
                             with open(jpath, 'w', encoding='utf-8') as f:
@@ -603,6 +609,23 @@ class APSHandler(PublisherHandler):
                     pass
 
         page.on("response", handle_response)
+        return captured
+
+    async def _capture_network_data(self, page, url: str) -> dict:
+        """Monitor network requests and capture JSON API responses
+
+        DEPRECATED: Use setup_network_capture() in Step 1 instead.
+        This method is kept for backward compatibility.
+
+        Returns:
+            dict with keys: 'json_responses', 'document', 'timeline', 'abstract_html',
+                           'fulltext_data', 'supplemental_data', 'journal_prefix'
+        """
+        # Extract DOI from URL
+        doi = url.replace('https://doi.org/', '').split('?')[0]
+
+        # Set up network capture (listener will capture from this point onward)
+        captured = self.setup_network_capture(page, doi)
 
         # Navigate to URL
         print(f"📄 访问: {url}")
@@ -619,8 +642,14 @@ class APSHandler(PublisherHandler):
 
         return captured
 
-    async def extract_all(self, page, doi: str) -> dict:
+    async def extract_all(self, page, doi: str, captured: dict = None) -> dict:
         """Execute complete extraction flow
+
+        Args:
+            page: Playwright page object (should already be navigated to DOI)
+            doi: DOI of the paper
+            captured: Optional dict with already-captured network data from setup_network_capture()
+                     If not provided, will call _capture_network_data() for backward compatibility
 
         Returns:
             dict with keys: 'metadata', 'links', 'fulltext_data', 'journal_prefix'
@@ -629,9 +658,14 @@ class APSHandler(PublisherHandler):
         # 1. Extract metadata
         metadata = await self.extract_metadata(page)
 
-        # 2. Capture network data to get JSON
-        url = f"https://doi.org/{doi}"
-        captured = await self._capture_network_data(page, url)
+        # 2. Use provided captured data or capture it ourselves
+        if captured is None:
+            # Backward compatibility: capture network data if not provided
+            url = f"https://doi.org/{doi}"
+            captured = await self._capture_network_data(page, url)
+        else:
+            # Network capture is already running, just wait for additional requests
+            await asyncio.sleep(3)
 
         # 3. Get fulltext data
         fulltext_data = captured.get('fulltext_data')
