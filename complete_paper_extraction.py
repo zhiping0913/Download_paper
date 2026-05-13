@@ -44,7 +44,7 @@ from publisher.orchestrator import (
     extract_metadata_multi_publisher
 )
 
-OUTPUT_DIR = "captured_data"
+OUTPUT_DIR = str(Path(__file__).resolve().parent / "captured_data")
 # Publisher IDs that can be fully extracted from the Phase 0 headless page.
 HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature']
 
@@ -679,7 +679,7 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
 
     Args:
         doi: 论文的DOI标识符
-        output_file: 输出文件路径 (可选)
+        output_file: 输出目录路径 (可选，和命令行 --output 含义一致)
         force_headed: 是否强制使用有头浏览器，跳过无头预检 (默认: False)
                        - True: 跳过Phase 0，直接使用有头Chrome
                        - False: 先用无头浏览器预检，根据结果决定是否需要有头
@@ -694,8 +694,8 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
     7. Save everything
     """
 
-    output_path = Path(OUTPUT_DIR)
-    output_path.mkdir(exist_ok=True)
+    output_path = Path(output_file or OUTPUT_DIR).expanduser().resolve()
+    output_path.mkdir(parents=True, exist_ok=True)
     captured_data_dir = output_path / doi.replace('/', '_')
     captured_data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -719,11 +719,9 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
         fulltext_data = extraction_result['fulltext_data']
         s2_metadata = s2_data or {}
 
-        # Save HTML to captured_data
-        if fulltext_data:
-            output_dir = Path("captured_data") / doi.replace('/', '_')
-            output_dir.mkdir(parents=True, exist_ok=True)
-            html_file = output_dir / "page.html"
+        # Save HTML to the per-DOI capture directory.
+        if isinstance(fulltext_data, str) and fulltext_data:
+            html_file = captured_data_dir / "page.html"
             with open(html_file, 'w', encoding='utf-8') as f:
                 f.write(fulltext_data)
             print(f"  ✓ HTML已保存: {html_file}")
@@ -743,8 +741,8 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
         print()
 
         # Prepare output directory
-        base_output_dir = Path(OUTPUT_DIR)
-        base_output_dir.mkdir(exist_ok=True)
+        base_output_dir = output_path
+        base_output_dir.mkdir(parents=True, exist_ok=True)
         paper_output_dir = organize_paper_output(base_output_dir, metadata, s2_metadata)
 
         # Generate markdown filename
@@ -1181,8 +1179,8 @@ async def main():
     parser.add_argument(
         '--output',
         type=str,
-        default=None,
-        help='输出目录路径 (默认: ~/Downloads/papers)'
+        default=OUTPUT_DIR,
+        help=f'输出目录路径 (默认: {OUTPUT_DIR})'
     )
 
     parser.add_argument(
@@ -1221,11 +1219,10 @@ async def main():
         print(f"🔧 强制有头浏览器模式启用 - 将跳过无头浏览器预检\n")
 
     # 处理输出路径
-    output_dir = args.output
-    if output_dir:
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        print(f"📁 输出目录: {output_path}\n")
+    output_dir = str(Path(args.output).expanduser().resolve())
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    print(f"📁 输出目录: {output_path}\n")
 
     # 处理多个DOI
     success_count = 0
