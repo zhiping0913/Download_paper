@@ -574,16 +574,24 @@ def extract_pdf_link_from_html(html_content: str) -> str:
 # 第6部分：主工作流
 # ============================================================================
 
-async def complete_extraction_workflow(doi: str, output_file: str = None):
+async def complete_extraction_workflow(doi: str, output_file: str = None, force_headless: bool = False):
     """完整提取工作流 - Phase 4/5 重构版本
 
+    Args:
+        doi: 论文的DOI标识符
+        output_file: 输出文件路径 (可选)
+        force_headless: 是否强制使用有头浏览器，跳过无头预检 (默认: False)
+                       - True: 跳过Phase 0，直接使用有头Chrome
+                       - False: 先用无头浏览器预检，根据结果决定是否需要有头
+
     New architecture:
-    1. Connect to Chrome
-    2. Navigate to DOI
-    3. Detect publisher
-    4. Use handler's extract_all() to get all metadata and links in one go
-    5. Download all resources using unified _download_all_resources
-    6. Save everything
+    1. Phase 0 (可选): 使用无头浏览器快速预检 (除非force_headless=True)
+    2. Connect to Chrome
+    3. Navigate to DOI
+    4. Detect publisher
+    5. Use handler's extract_all() to get all metadata and links in one go
+    6. Download all resources using unified _download_all_resources
+    7. Save everything
     """
 
     output_path = Path(OUTPUT_DIR)
@@ -597,101 +605,109 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
     # 构建URL
     url = f"https://doi.org/{doi}"
 
-    # ========== 阶段0：使用无头浏览器快速预检 ==========
-    print("\n📋 Phase 0️⃣  使用无头浏览器快速预检页面...")
-    print("=" * 80)
+    # ========== 阶段0（可选）：使用无头浏览器快速预检 ==========
+    # 如果 force_headless=True，跳过此阶段直接使用有头浏览器
+    # 典型使用场景：已知目标期刊是APS等必须有头的出版商
 
     headless_success = False
     headless_publisher = None
     headless_html = None
 
-    try:
-        async with async_playwright() as p:
-            headless_browser = await p.chromium.launch(headless=True)
-            headless_page = await headless_browser.new_page()
+    if force_headless:
+        print("\n🔧 强制有头模式 - 跳过无头浏览器预检")
+        print("=" * 80)
+        print("  将直接使用有头Chrome访问\n")
+    else:
+        print("\n📋 Phase 0️⃣  使用无头浏览器快速预检页面...")
+        print("=" * 80)
 
-            try:
-                await headless_page.goto(url, wait_until='networkidle', timeout=30000)
+        try:
+            async with async_playwright() as p:
+                headless_browser = await p.chromium.launch(headless=True)
+                headless_page = await headless_browser.new_page()
 
-                # 保存无头浏览器访问结果
-                output_dir = Path("captured_data") / doi.replace('/', '_')
-                output_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    await headless_page.goto(url, wait_until='networkidle', timeout=30000)
 
-                # 保存HTML
-                headless_html = await headless_page.content()
-                headless_html_file = output_dir / "headless_initial.html"
-                with open(headless_html_file, 'w', encoding='utf-8') as f:
-                    f.write(headless_html)
+                    # 保存无头浏览器访问结果
+                    output_dir = Path("captured_data") / doi.replace('/', '_')
+                    output_dir.mkdir(parents=True, exist_ok=True)
 
-                print(f"  ✓ 页面已保存: {headless_html_file.name} ({len(headless_html)} 字节)")
+                    # 保存HTML
+                    headless_html = await headless_page.content()
+                    headless_html_file = output_dir / "headless_initial.html"
+                    with open(headless_html_file, 'w', encoding='utf-8') as f:
+                        f.write(headless_html)
 
-                # 检测最终URL
-                final_headless_url = headless_page.url
-                print(f"  ✓ 最终URL: {final_headless_url}")
+                    print(f"  ✓ 页面已保存: {headless_html_file.name} ({len(headless_html)} 字节)")
 
-                # 检测出版商
-                headless_publisher = detect_publisher_from_url(final_headless_url)
-                print(f"  ✓ 检测出版商: {headless_publisher.upper()}")
+                    # 检测最终URL
+                    final_headless_url = headless_page.url
+                    print(f"  ✓ 最终URL: {final_headless_url}")
 
-                headless_success = True
+                    # 检测出版商
+                    headless_publisher = detect_publisher_from_url(final_headless_url)
+                    print(f"  ✓ 检测出版商: {headless_publisher.upper()}")
 
-            except Exception as e:
-                print(f"  ⚠️  无头浏览器访问失败: {type(e).__name__}: {str(e)[:100]}")
-                print(f"  → 这对某些出版商（如APS）是正常的（需要认证/JavaScript渲染）")
-            finally:
-                await headless_page.close()
-                await headless_browser.close()
-    except Exception as e:
-        print(f"  ⚠️  无头浏览器启动失败: {e}")
+                    headless_success = True
 
-    print()
+                except Exception as e:
+                    print(f"  ⚠️  无头浏览器访问失败: {type(e).__name__}: {str(e)[:100]}")
+                    print(f"  → 这对某些出版商（如APS）是正常的（需要认证/JavaScript渲染）")
+                finally:
+                    await headless_page.close()
+                    await headless_browser.close()
+        except Exception as e:
+            print(f"  ⚠️  无头浏览器启动失败: {e}")
 
-    # ========== Phase 0分析：判断是否需要有头浏览器 ==========
-    # 📌 重要发现：
-    # - Nature期刊：无头浏览器可以获取完整页面（包含所有元数据）
-    # - APS期刊：无头浏览器无法访问（需要认证或JavaScript渲染）
-    #
-    # 💡 未来优化方向：
-    #    1. 如果headless_publisher == 'nature'，直接从headless_initial.html提取所有数据
-    #    2. 跳过有头浏览器阶段，节省时间和资源
-    #    3. 仅对APS等需要认证的出版商使用有头浏览器
-    #
-    # 实施状态：TBD（待实施）
+        print()
 
-    print("📊 Phase 0分析：评估是否需要有头浏览器...")
-    print("=" * 80)
+        # ========== Phase 0分析：判断是否需要有头浏览器 ==========
+        # 📌 重要发现：
+        # - Nature期刊：无头浏览器可以获取完整页面（包含所有元数据）
+        # - APS期刊：无头浏览器无法访问（需要认证或JavaScript渲染）
+        #
+        # 💡 未来优化方向：
+        #    1. 如果headless_publisher == 'nature'，直接从headless_initial.html提取所有数据
+        #    2. 跳过有头浏览器阶段，节省时间和资源
+        #    3. 仅对APS等需要认证的出版商使用有头浏览器
+        #
+        # 实施状态：TBD（待实施）
 
-    use_headless_only = False
-    if headless_success and headless_publisher:
-        print(f"  出版商类型: {headless_publisher.upper()}")
+        print("📊 Phase 0分析：评估是否需要有头浏览器...")
+        print("=" * 80)
 
-        if headless_publisher == 'nature':
-            print(f"  ℹ️  Nature期刊 → 无头浏览器可以获取完整页面")
-            print(f"  💡 未来优化：可以直接从 headless_initial.html 提取数据")
-            print(f"      - 跳过有头浏览器阶段")
-            print(f"      - 节省时间和资源")
-            use_headless_only = True  # TODO: 实现这个优化
-            print(f"  ⏳ 状态：优化待实施")
-        elif headless_publisher == 'aps':
-            print(f"  ℹ️  APS期刊 → 无头浏览器无法访问（需要认证/JavaScript渲染）")
-            print(f"  💡 需要有头浏览器进行完整提取")
+        use_headless_only = False
+        if headless_success and headless_publisher:
+            print(f"  出版商类型: {headless_publisher.upper()}")
+
+            if headless_publisher == 'nature':
+                print(f"  ℹ️  Nature期刊 → 无头浏览器可以获取完整页面")
+                print(f"  💡 未来优化：可以直接从 headless_initial.html 提取数据")
+                print(f"      - 跳过有头浏览器阶段")
+                print(f"      - 节省时间和资源")
+                use_headless_only = True  # TODO: 实现这个优化
+                print(f"  ⏳ 状态：优化待实施")
+            elif headless_publisher == 'aps':
+                print(f"  ℹ️  APS期刊 → 无头浏览器无法访问（需要认证/JavaScript渲染）")
+                print(f"  💡 需要有头浏览器进行完整提取")
+            else:
+                print(f"  ℹ️  其他出版商: {headless_publisher}")
+                print(f"  💡 根据需要可能需要有头浏览器")
         else:
-            print(f"  ℹ️  其他出版商: {headless_publisher}")
-            print(f"  💡 根据需要可能需要有头浏览器")
-    else:
-        print(f"  ⚠️  无头浏览器预检失败")
-        print(f"  💡 将使用有头浏览器进行完整提取")
+            print(f"  ⚠️  无头浏览器预检失败")
+            print(f"  💡 将使用有头浏览器进行完整提取")
 
-    print()
+        print()
 
-    if use_headless_only:
-        print("  🟢 优化路径（未来实施）：使用无头浏览器数据")
-        print("     - 优点：快速、轻量、无需显示器")
-        print("     - 当前状态：标记但未实现，仍继续使用有头浏览器")
-    else:
-        print("  🔵 标准路径：使用有头浏览器完整提取")
+        if use_headless_only:
+            print("  🟢 优化路径（未来实施）：使用无头浏览器数据")
+            print("     - 优点：快速、轻量、无需显示器")
+            print("     - 当前状态：标记但未实现，仍继续使用有头浏览器")
+        else:
+            print("  🔵 标准路径：使用有头浏览器完整提取")
 
-    print()
+        print()
     # 检查Chrome是否就绪
     def check_chrome_ready():
         try:
@@ -1030,24 +1046,141 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
 # ============================================================================
 
 async def main():
-    import sys
+    """Entry point with argparse support
 
-    if len(sys.argv) < 2:
-        print("""
-使用方法：
-    python complete_paper_extraction.py <DOI> [输出文件路径]
+    Examples:
+        # 单个DOI
+        python complete_paper_extraction.py --doi 10.1103/PhysRevLett.109.245005
 
+        # 从文件列表
+        python complete_paper_extraction.py --file doi_list.txt
+
+        # 指定输出目录
+        python complete_paper_extraction.py --doi 10.1103/PhysRevLett.109.245005 --output ~/Downloads
+
+        # 强制使用有头浏览器（跳过无头预检）
+        python complete_paper_extraction.py --doi 10.1103/PhysRevLett.109.245005 --force-headless
+
+        # DOI列表 + 强制有头
+        python complete_paper_extraction.py --file doi_list.txt --force-headless
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="完整论文提取工作流 - 从DOI到完整Markdown的端到端解决方案",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
 示例：
-    python complete_paper_extraction.py 10.1103/PhysRevLett.109.245005
-    python complete_paper_extraction.py 10.1103/PhysRevLett.109.245005 ~/Downloads/paper.md
-""")
+  单个DOI:
+    python %(prog)s --doi 10.1103/PhysRevLett.109.245005
+
+  从文件列表:
+    python %(prog)s --file doi_list.txt
+
+  指定输出目录:
+    python %(prog)s --doi 10.1103/PhysRevLett.109.245005 --output ~/Downloads
+
+  强制使用有头浏览器（跳过无头预检）:
+    python %(prog)s --doi 10.1103/PhysRevLett.109.245005 --force-headless
+        """
+    )
+
+    # 创建互斥组用于--doi和--file
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
+        '--doi',
+        type=str,
+        help='单个DOI (例如: 10.1103/PhysRevLett.109.245005)'
+    )
+    input_group.add_argument(
+        '--file',
+        type=str,
+        metavar='FILE',
+        help='包含DOI列表的文件 (每行一个DOI)'
+    )
+
+    parser.add_argument(
+        '--output',
+        type=str,
+        default=None,
+        help='输出目录路径 (默认: ~/Downloads/papers)'
+    )
+
+    parser.add_argument(
+        '--force-headless',
+        action='store_true',
+        default=False,
+        help='强制使用有头浏览器，跳过无头预检阶段 (默认: False，使用智能检测)'
+    )
+
+    args = parser.parse_args()
+
+    # 构建DOI列表
+    dois = []
+    if args.doi:
+        dois = [args.doi]
+        print(f"📌 单个DOI: {args.doi}\n")
+    elif args.file:
+        try:
+            with open(args.file, 'r', encoding='utf-8') as f:
+                dois = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
+            print(f"📌 从文件读取 {len(dois)} 个DOI: {args.file}\n")
+        except FileNotFoundError:
+            print(f"❌ 文件不存在: {args.file}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ 读取文件时出错: {e}")
+            sys.exit(1)
+
+    if not dois:
+        print("❌ 没有有效的DOI")
         sys.exit(1)
 
-    doi = sys.argv[1]
-    output_file = sys.argv[2] if len(sys.argv) > 2 else None
+    # 处理force_headless参数
+    force_headless_mode = args.force_headless
+    if force_headless_mode:
+        print(f"🔧 强制有头模式启用 - 将跳过无头浏览器预检\n")
 
-    success = await complete_extraction_workflow(doi, output_file)
-    sys.exit(0 if success else 1)
+    # 处理输出路径
+    output_dir = args.output
+    if output_dir:
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        print(f"📁 输出目录: {output_path}\n")
+
+    # 处理多个DOI
+    success_count = 0
+    fail_count = 0
+
+    for i, doi in enumerate(dois, 1):
+        print(f"\n{'='*80}")
+        print(f"处理论文 {i}/{len(dois)}: {doi}")
+        print(f"{'='*80}\n")
+
+        try:
+            success = await complete_extraction_workflow(
+                doi,
+                output_file=output_dir,
+                force_headless=force_headless_mode
+            )
+            if success:
+                success_count += 1
+            else:
+                fail_count += 1
+        except Exception as e:
+            print(f"❌ 处理失败: {e}")
+            fail_count += 1
+
+    # 显示统计信息
+    if len(dois) > 1:
+        print(f"\n{'='*80}")
+        print(f"📊 处理完成")
+        print(f"{'='*80}")
+        print(f"✓ 成功: {success_count}/{len(dois)}")
+        print(f"✗ 失败: {fail_count}/{len(dois)}")
+
+    sys.exit(0 if fail_count == 0 else 1)
+
 
 
 if __name__ == "__main__":
