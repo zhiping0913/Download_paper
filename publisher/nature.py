@@ -11,6 +11,9 @@ from datetime import datetime
 from typing import Optional, Dict, List
 import asyncio
 
+from bs4 import BeautifulSoup
+from json_to_md_converter import cleanup_markdown, convert_html_to_markdown
+
 
 class NatureHandler(PublisherHandler):
     """Handler for Nature and Springer Nature journals"""
@@ -381,6 +384,96 @@ class NatureHandler(PublisherHandler):
 
         return references
 
+    def extract_paragraphs_from_html_content(self, html_content: str) -> List[str]:
+        """Extract paragraph and equation HTML blocks from Nature main-content."""
+        soup = BeautifulSoup(html_content, 'html.parser')
+        main_content_div = soup.find('div', {'class': 'main-content'})
+
+        if not main_content_div:
+            main_content_div = soup.find('div', {'class': 'main-content', 'data-nosnippet': ''})
+
+        if not main_content_div:
+            print("  ⚠️  main-content div not found")
+            return []
+
+        main_content_html = str(main_content_div)
+
+        paragraph_matches = list(re.finditer(r'<p[^>]*>(.*?)</p>', main_content_html, re.DOTALL))
+        equation_matches = list(
+            re.finditer(
+                r'<div[^>]*class="c-article-equation"[^>]*>(.*?)</div>\s*</div>',
+                main_content_html,
+                re.DOTALL,
+            )
+        )
+
+        ordered_items = []
+        for match in paragraph_matches:
+            ordered_items.append((match.start(), match.group(0)))
+        for match in equation_matches:
+            ordered_items.append((match.start(), match.group(0)))
+
+        ordered_items.sort(key=lambda item: item[0])
+        items = [content for _, content in ordered_items]
+
+        print(f"  ✅ Main content blocks: {len(paragraph_matches)} paragraphs, {len(equation_matches)} equations")
+        return items
+
+    def extract_paragraphs_from_html(self, html_file: str) -> List[str]:
+        """Extract paragraph and equation HTML blocks from a Nature HTML file."""
+        with open(html_file, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+        return self.extract_paragraphs_from_html_content(html_content)
+
+    def convert_paragraph(self, paragraph_html: str) -> str:
+        """Convert one HTML paragraph/equation block to cleaned Markdown."""
+        try:
+            md = convert_html_to_markdown(paragraph_html)
+            md = cleanup_markdown(md)
+            md = re.sub(r'\s+', ' ', md)
+            return md.strip()
+        except Exception as e:
+            print(f"  ⚠️  Paragraph conversion error: {str(e)[:50]}")
+            return ""
+
+    def convert_main_content_by_paragraph(self, html_content: str) -> str:
+        """Convert Nature main-content to Markdown one paragraph at a time."""
+        paragraphs = self.extract_paragraphs_from_html_content(html_content)
+        converted_paragraphs = []
+
+        for idx, paragraph_html in enumerate(paragraphs, 1):
+            md = self.convert_paragraph(paragraph_html)
+            if md:
+                converted_paragraphs.append(md)
+                if idx <= 3 or idx % 10 == 0:
+                    print(f"  ✓ Paragraph {idx}: {len(md)} chars")
+
+        final_markdown = "\n\n".join(converted_paragraphs)
+        final_markdown = re.sub(r'\n\n\n+', '\n\n', final_markdown)
+
+        if final_markdown:
+            final_markdown = "## Main\n\n" + final_markdown
+
+        print(f"  ✅ Converted main paragraphs: {len(converted_paragraphs)}")
+        return final_markdown
+
+    def convert_by_paragraph(self, html_file: str, output_file: str) -> dict:
+        """Convert a Nature HTML file's main content by paragraph and save Markdown."""
+        with open(html_file, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+
+        final_markdown = self.convert_main_content_by_paragraph(html_content)
+
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(final_markdown)
+
+        return {
+            'output_file': output_file,
+            'size': len(final_markdown),
+            'lines': len(final_markdown.splitlines()),
+            'paragraphs': max((len(final_markdown.split("\n\n")) - 1), 0),
+        }
+
     async def get_figures(self, page) -> Dict[str, dict]:
         """Extract figure URLs and captions from HTML img tags"""
         print("  🔍 Extracting figures...")
@@ -402,7 +495,7 @@ class NatureHandler(PublisherHandler):
 
                 // Upgrade to high-res version if possible
                 if (src.includes('media.springernature.com')) {
-                    src = src.replace(/w\d+h\d+/, 'lw685');
+                    src = src.replace(/w\\d+h\\d+/, 'lw685');
                 }
 
                 // Convert to full URL if relative
@@ -503,20 +596,18 @@ class NatureHandler(PublisherHandler):
             md_content += f"{metadata['abstract']}\n\n"
             md_content += "---\n\n"
 
-        # ===== Article Content =====
+        # ===== Main Content =====
         if fulltext_data:
-            md_content += "## Article Content\n\n"
-            try:
-                import pypandoc
-                # For Nature, fulltext_data is HTML
-                if isinstance(fulltext_data, str) and fulltext_data.strip().startswith('<'):
-                    article_md = pypandoc.convert_text(fulltext_data, 'md', format='html')
-                    md_content += article_md
+            # For Nature, extract_all() keeps the unified contract by returning
+            # the page HTML as fulltext_data. Convert only main-content here.
+            if isinstance(fulltext_data, str) and fulltext_data.strip().startswith('<'):
+                article_md = self.convert_main_content_by_paragraph(fulltext_data)
+                if article_md:
+                    md_content += f"{article_md}\n\n"
                 else:
-                    md_content += "[Article content available but could not be converted]\n"
-            except Exception as e:
-                print(f"  ⚠️  Could not convert article content: {e}")
-                md_content += "[Article content available but conversion failed]\n"
+                    md_content += "## Main\n\n[Article main content not found]\n"
+            else:
+                md_content += "## Main\n\n[Article content available but could not be converted]\n"
 
         md_content += "\n---\n\n"
 
@@ -577,4 +668,3 @@ def detect_nature_journal(url: str) -> Optional[str]:
         else:
             return 'nature'  # default
     return None
-
