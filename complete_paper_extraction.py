@@ -574,18 +574,18 @@ def extract_pdf_link_from_html(html_content: str) -> str:
 # 第6部分：主工作流
 # ============================================================================
 
-async def complete_extraction_workflow(doi: str, output_file: str = None, force_headless: bool = False):
+async def complete_extraction_workflow(doi: str, output_file: str = None, force_headed: bool = False):
     """完整提取工作流 - Phase 4/5 重构版本
 
     Args:
         doi: 论文的DOI标识符
         output_file: 输出文件路径 (可选)
-        force_headless: 是否强制使用有头浏览器，跳过无头预检 (默认: False)
+        force_headed: 是否强制使用有头浏览器，跳过无头预检 (默认: False)
                        - True: 跳过Phase 0，直接使用有头Chrome
                        - False: 先用无头浏览器预检，根据结果决定是否需要有头
 
     New architecture:
-    1. Phase 0 (可选): 使用无头浏览器快速预检 (除非force_headless=True)
+    1. Phase 0 (可选): 使用无头浏览器快速预检 (除非force_headed=True)
     2. Connect to Chrome
     3. Navigate to DOI
     4. Detect publisher
@@ -606,14 +606,14 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
     url = f"https://doi.org/{doi}"
 
     # ========== 阶段0（可选）：使用无头浏览器快速预检 ==========
-    # 如果 force_headless=True，跳过此阶段直接使用有头浏览器
+    # 如果 force_headed=True，跳过此阶段直接使用有头浏览器
     # 典型使用场景：已知目标期刊是APS等必须有头的出版商
 
     headless_success = False
     headless_publisher = None
     headless_html = None
 
-    if force_headless:
+    if force_headed:
         print("\n🔧 强制有头模式 - 跳过无头浏览器预检")
         print("=" * 80)
         print("  将直接使用有头Chrome访问\n")
@@ -1136,7 +1136,7 @@ async def main():
         print("❌ 没有有效的DOI")
         sys.exit(1)
 
-    # 处理force_headless参数
+    # 处理force_headed参数
     force_headed_mode = args.force_headed
     if force_headed_mode:
         print(f"🔧 强制有头浏览器模式启用 - 将跳过无头浏览器预检\n")
@@ -1161,7 +1161,7 @@ async def main():
             success = await complete_extraction_workflow(
                 doi,
                 output_file=output_dir,
-                force_headless=force_headed_mode
+                force_headed=force_headed_mode
             )
             if success:
                 success_count += 1
