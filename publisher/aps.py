@@ -451,24 +451,6 @@ async def get_supplemental_links(page, doi: str, journal_prefix: str = None) -> 
         return [], {}
 
 
-async def aps_download_pdf(page, doi: str, output_dir: Path, journal_prefix: str = None) -> str:
-    """下载 PDF - APS 专用"""
-    from complete_paper_extraction import download_pdf
-    return await download_pdf(page, doi, output_dir, journal_prefix)
-
-
-def aps_extract_figure_assets_from_fulltext(fulltext_data: dict, journal_prefix: str = None) -> dict:
-    """从 fulltext JSON 提取图片资源 - APS 专用"""
-    from complete_paper_extraction import extract_figure_assets_from_fulltext
-    return extract_figure_assets_from_fulltext(fulltext_data)
-
-
-async def aps_download_figure(page, fig_url: str, fig_num: int, output_dir: Path) -> str:
-    """下载图片 - APS 专用"""
-    from complete_paper_extraction import download_figure
-    return await download_figure(page, fig_url, fig_num, output_dir)
-
-
 class APSHandler(PublisherHandler):
     """Handler for American Physical Society (APS) journals"""
 
@@ -1014,34 +996,6 @@ def extract_figure_caption(comp: dict) -> tuple:
             caption = re.sub(r'^FIG\.\s*\d+\.\s*', '', caption)
 
     return fig_num, caption
-
-
-async def download_figure(page, doi: str, fig_num: int, output_dir: Path) -> str:
-    """Download figure using authenticated browser"""
-    try:
-        fig_url = f"https://journals.aps.org/prl/article/{doi}/figures/{fig_num}/large"
-        print(f"  📥 下载 Figure {fig_num}...")
-
-        await page.goto(fig_url, wait_until='networkidle', timeout=30000)
-        img_elements = await page.query_selector_all('img')
-
-        if img_elements:
-            img_src = await img_elements[0].get_attribute('src')
-            if img_src:
-                response = await page.goto(img_src, wait_until='networkidle', timeout=30000)
-                image_data = await response.body()
-                img_filename = f"figure_{fig_num}.png"
-
-                img_path = output_dir / img_filename
-                with open(img_path, 'wb') as f:
-                    f.write(image_data)
-                print(f"    ✓ 保存: {img_filename}")
-                return img_filename
-
-    except Exception as e:
-        print(f"    ❌ 下载失败: {e}")
-
-    return None
 
 
 def process_component(comp: dict, doi: str = None, output_dir: Path = None,
