@@ -280,10 +280,14 @@ async def _download_all_resources(page, links: dict, output_dir: Path, context, 
         print("Step 4️⃣  下载论文PDF...")
         print("=" * 80)
         try:
-            pdf_filename = await download_pdf(page, doi or "", output_dir,
-                                            journal_prefix=None,
-                                            publisher='aps')
-            downloads['pdf'] = pdf_filename
+            # Build PDF filename from metadata
+            year = metadata.get('year', '0000')
+            title = metadata.get('title', 'paper')
+            title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:120]
+            pdf_filename = f"{year}--{title_clean}.pdf"
+
+            pdf_result = await download_pdf(pdf_url, output_dir, pdf_filename)
+            downloads['pdf'] = pdf_result
         except Exception as e:
             print(f"⚠️  PDF下载失败: {e}")
 
@@ -330,85 +334,63 @@ async def _download_all_resources(page, links: dict, output_dir: Path, context, 
 # ============================================================================
 
 
-async def download_pdf(page, doi: str, output_dir: Path, journal_prefix: str = None, publisher: str = None) -> str:
-    """下载论文PDF - 配合Chrome下载设置"""
+async def download_pdf(pdf_url: str, output_dir: Path, filename: str = "paper.pdf") -> str:
+    """下载论文PDF
+
+    Args:
+        pdf_url: 完整的PDF URL
+        output_dir: 输出目录
+        filename: 保存的文件名 (默认: paper.pdf)
+
+    Returns:
+        保存的文件名，或None如果下载失败
+    """
+    if not pdf_url:
+        print("❌ PDF URL为空")
+        return None
+
     try:
-        # 根据出版商构造正确的PDF URL
-        if publisher == 'nature':
-            # Nature论文：使用DOI直接获取PDF
-            pdf_url = f"https://doi.org/{doi}"
-        elif publisher == 'aps':
-            # APS论文：使用APS特定的PDF格式
-            if not journal_prefix:
-                journal_prefix = 'prl'  # PhysRevLett默认值
-            pdf_url = f"https://journals.aps.org/{journal_prefix}/pdf/{doi}"
-        else:
-            # 未知发布商：尝试APS格式作为默认值
-            if not journal_prefix:
-                journal_prefix = 'prl'
-            pdf_url = f"https://journals.aps.org/{journal_prefix}/pdf/{doi}"
+        from playwright.async_api import async_playwright
 
         print(f"  📥 下载 PDF...")
         print(f"     链接: {pdf_url}")
 
-        # 由于Chrome设置为下载PDF，我们需要监听下载事件
-        pdf_filename = None
+        # 创建临时的页面用于下载
+        async with async_playwright() as p:
+            browser = await p.chromium.connect_over_cdp("http://localhost:9222")
+            context = await browser.new_context(accept_downloads=True)
+            page = await context.new_page()
 
-        async def handle_download(download):
-            nonlocal pdf_filename
-            # 获取建议的文件名
-            pdf_filename = download.suggested_filename
-            # 获取下载的文件路径
-            pdf_path_temp = await download.path()
+            async def handle_download(download):
+                """处理下载事件"""
+                pdf_path_temp = await download.path()
+                final_path = output_dir / filename
 
-            # 复制到输出目录
-            final_filename = f"paper.pdf"
-            final_path = output_dir / final_filename
+                import shutil
+                shutil.copy(str(pdf_path_temp), str(final_path))
 
-            import shutil
-            shutil.copy(str(pdf_path_temp), str(final_path))
+                pdf_size_mb = final_path.stat().st_size / (1024 * 1024)
+                print(f"    ✓ 保存: {filename} ({pdf_size_mb:.2f} MB)")
 
-            pdf_size_mb = final_path.stat().st_size / (1024 * 1024)
-            print(f"    ✓ 保存: {final_filename} ({pdf_size_mb:.2f} MB)")
-            return final_filename
+            page.on("download", handle_download)
 
-        # 注册下载监听器
-        page.on("download", handle_download)
-
-        # 导航到PDF链接（会自动下载）
-        try:
-            await page.goto(pdf_url, timeout=15000, wait_until='commit')
-        except:
-            # 下载开始时页面加载会中断，这是正常的
-            pass
-
-        # 等待下载完成
-        await asyncio.sleep(3)
-
-        if pdf_filename:
-            return "paper.pdf"
-        else:
-            print(f"    ⚠️  未捕获到下载事件，尝试从Downloads查找...")
-            # 降级方案：从Downloads目录查找
             try:
-                downloads_dir = Path.home() / "Downloads"
-                pdf_files = sorted(downloads_dir.glob("*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
-                if pdf_files:
-                    latest_pdf = pdf_files[0]
-                    import time
-                    mtime = latest_pdf.stat().st_mtime
-                    current_time = time.time()
-                    if current_time - mtime < 60:  # 60秒内
-                        final_path = output_dir / "paper.pdf"
-                        import shutil
-                        shutil.copy(str(latest_pdf), str(final_path))
-                        pdf_size_mb = final_path.stat().st_size / (1024 * 1024)
-                        print(f"    ✓ 从Downloads移动: paper.pdf ({pdf_size_mb:.2f} MB)")
-                        return "paper.pdf"
+                await page.goto(pdf_url, timeout=15000, wait_until='commit')
             except:
+                # 下载开始时页面加载会中断，这是正常的
                 pass
 
+            # 等待下载完成
+            await asyncio.sleep(3)
+
+            await context.close()
+
+        return filename
+
+    except Exception as e:
+        print(f"    ❌ 下载失败: {e}")
         return None
+
 
     except Exception as e:
         print(f"    ⚠️  PDF下载失败: {str(e)[:100]}")
