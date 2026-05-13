@@ -304,21 +304,6 @@ def extract_references_from_html(html: str) -> list:
         return []
 
 
-async def aps_extract_metadata_from_page(page) -> dict:
-    """从页面meta标签提取完整元数据（作者、单位、摘要等）- APS 专用"""
-    return await extract_metadata_from_page(page)
-
-
-def aps_extract_references_from_html(html: str) -> list:
-    """从HTML提取References - APS 专用"""
-    return extract_references_from_html(html)
-
-
-async def aps_get_supplemental_links(page, doi: str, journal_prefix: str = None) -> tuple:
-    """获取补充材料链接 - APS 专用"""
-    return await get_supplemental_links(page, doi, journal_prefix)
-
-
 async def get_supplemental_links(page, doi: str, journal_prefix: str = None) -> tuple:
     """获取补充材料的所有下载链接和描述信息
 
@@ -499,7 +484,7 @@ class APSHandler(PublisherHandler):
 
     async def extract_metadata(self, page) -> dict:
         """Extract metadata from APS abstract page"""
-        return await aps_extract_metadata_from_page(page)
+        return await extract_metadata_from_page(page)
 
     async def get_fulltext_url(self, doi: str) -> str:
         """Get URL for full article text API endpoint"""
@@ -520,7 +505,7 @@ class APSHandler(PublisherHandler):
 
     async def extract_references(self, html: str) -> list:
         """Parse references from HTML"""
-        return aps_extract_references_from_html(html)
+        return extract_references_from_html(html)
 
     async def get_figures(self, json_data: dict) -> dict:
         """Extract figure URLs and captions from APS JSON"""

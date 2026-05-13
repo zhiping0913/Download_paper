@@ -45,16 +45,6 @@ from publisher.orchestrator import (
     get_publisher_handler,
     extract_metadata_multi_publisher
 )
-from publisher.aps import (
-    extract_figure_assets_from_fulltext,
-    get_supplemental_links,
-    extract_supplemental_descriptions,
-    extract_references_from_html
-)
-
-# 导入 APS 特定函数
-# 注意：这些函数在本文件中定义，但也在 publisher/aps.py 中有对应的接口
-# 在未来的重构中，这些函数应该从 publisher/aps.py 导入
 
 OUTPUT_DIR = "captured_data"
 
@@ -92,12 +82,6 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'Accept': 'application/json'
 }
-
-
-# ============================================================================
-# 第1部分：元数据提取 - 从 publisher.aps 导入
-# ============================================================================
-
 
 
 
