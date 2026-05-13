@@ -286,7 +286,7 @@ async def _download_all_resources(page, links: dict, output_dir: Path, context, 
             title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:120]
             pdf_filename = f"{year}--{title_clean}.pdf"
 
-            pdf_result = await download_pdf(pdf_url, output_dir, pdf_filename)
+            pdf_result = await download_pdf(page, pdf_url, output_dir, pdf_filename)
             downloads['pdf'] = pdf_result
         except Exception as e:
             print(f"⚠️  PDF下载失败: {e}")
@@ -334,10 +334,11 @@ async def _download_all_resources(page, links: dict, output_dir: Path, context, 
 # ============================================================================
 
 
-async def download_pdf(pdf_url: str, output_dir: Path, filename: str = "paper.pdf") -> str:
+async def download_pdf(page, pdf_url: str, output_dir: Path, filename: str = "paper.pdf") -> str:
     """下载论文PDF
 
     Args:
+        page: Playwright page instance
         pdf_url: 完整的PDF URL
         output_dir: 输出目录
         filename: 保存的文件名 (默认: paper.pdf)
@@ -350,42 +351,42 @@ async def download_pdf(pdf_url: str, output_dir: Path, filename: str = "paper.pd
         return None
 
     try:
-        from playwright.async_api import async_playwright
-
         print(f"  📥 下载 PDF...")
         print(f"     链接: {pdf_url}")
 
-        # 创建临时的页面用于下载
-        async with async_playwright() as p:
-            browser = await p.chromium.connect_over_cdp("http://localhost:9222")
-            context = await browser.new_context(accept_downloads=True)
-            page = await context.new_page()
+        pdf_downloaded = False
 
-            async def handle_download(download):
-                """处理下载事件"""
-                pdf_path_temp = await download.path()
-                final_path = output_dir / filename
+        async def handle_download(download):
+            """处理下载事件"""
+            nonlocal pdf_downloaded
+            pdf_path_temp = await download.path()
+            final_path = output_dir / filename
 
-                import shutil
-                shutil.copy(str(pdf_path_temp), str(final_path))
+            import shutil
+            shutil.copy(str(pdf_path_temp), str(final_path))
 
-                pdf_size_mb = final_path.stat().st_size / (1024 * 1024)
-                print(f"    ✓ 保存: {filename} ({pdf_size_mb:.2f} MB)")
+            pdf_size_mb = final_path.stat().st_size / (1024 * 1024)
+            print(f"    ✓ 保存: {filename} ({pdf_size_mb:.2f} MB)")
+            pdf_downloaded = True
 
-            page.on("download", handle_download)
+        page.on("download", handle_download)
 
-            try:
-                await page.goto(pdf_url, timeout=15000, wait_until='commit')
-            except:
-                # 下载开始时页面加载会中断，这是正常的
-                pass
+        try:
+            await page.goto(pdf_url, timeout=15000, wait_until='commit')
+        except:
+            # 下载开始时页面加载会中断，这是正常的
+            pass
 
-            # 等待下载完成
-            await asyncio.sleep(3)
+        # 等待下载完成
+        await asyncio.sleep(3)
 
-            await context.close()
+        page.remove_listener("download", handle_download)
 
-        return filename
+        if pdf_downloaded:
+            return filename
+        else:
+            print(f"    ⚠️  未成功下载PDF")
+            return None
 
     except Exception as e:
         print(f"    ❌ 下载失败: {e}")
