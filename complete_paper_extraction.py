@@ -290,6 +290,7 @@ async def _download_all_resources(page, links: dict, output_dir: Path, context, 
     figure_urls = links.get('figure_urls', {})
     if figure_urls:
         print("\n🖼️  下载图片...")
+        print(f"  📊 找到 {len(figure_urls)} 个图片")
         for fig_id, fig_info in figure_urls.items():
             try:
                 fig_url = fig_info.get('url') if isinstance(fig_info, dict) else fig_info
@@ -301,6 +302,8 @@ async def _download_all_resources(page, links: dict, output_dir: Path, context, 
                     downloads['figures'][fig_num] = img_filename
             except Exception as e:
                 print(f"⚠️  Figure {fig_id} 下载失败: {e}")
+    else:
+        print("\n⚠️  未找到图片链接")
 
     # Download supplemental materials
     supp_urls = links.get('supplemental_urls', [])
