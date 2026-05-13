@@ -484,13 +484,6 @@ async def aps_download_figure(page, fig_url: str, fig_num: int, output_dir: Path
     return await download_figure(page, fig_url, fig_num, output_dir)
 
 
-async def aps_json_to_markdown_complete(json_file: str, doi: str, metadata: dict,
-                                        journal_prefix: str, paper_output_dir, figure_map: dict = None) -> str:
-    """从 JSON 转换为 Markdown - APS 专用"""
-    from complete_paper_extraction import json_to_markdown_complete
-    return await json_to_markdown_complete(json_file, doi, metadata, journal_prefix, paper_output_dir, figure_map)
-
-
 class APSHandler(PublisherHandler):
     """Handler for American Physical Society (APS) journals"""
 
@@ -1122,95 +1115,3 @@ def process_component(comp: dict, doi: str = None, output_dir: Path = None,
     return (text, None, None)
 
 
-async def json_to_markdown_complete(json_file: str, doi: str, output_file: str = None) -> str:
-    """Complete conversion: metadata + content + figures"""
-
-    print("📊 正在获取元数据...\n")
-    metadata = get_paper_metadata_from_semantic_scholar(doi)
-
-    with open(json_file, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-
-    output_dir = Path(output_file).parent if output_file else Path.cwd()
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    md_content = ""
-
-    # ===== 标题部分 =====
-    title = metadata.get('title') or "Academic Paper"
-    md_content += f"# {title}\n\n"
-
-    # ===== 作者信息 =====
-    if metadata.get('authors'):
-        md_content += "## Authors\n\n"
-        for author in metadata['authors']:
-            md_content += f"- {author}\n"
-        md_content += "\n"
-
-    # ===== 期刊和发表信息 =====
-    md_content += "## Publication\n\n"
-    if metadata.get('journal'):
-        md_content += f"**Journal:** {metadata['journal']}\n\n"
-    if metadata.get('publication_year'):
-        md_content += f"**Year:** {metadata['publication_year']}\n\n"
-    if doi:
-        md_content += f"**DOI:** {doi}\n\n"
-    if metadata.get('citations_count'):
-        md_content += f"**Citations:** {metadata['citations_count']}\n\n"
-
-    md_content += "---\n\n"
-
-    # ===== 论文正文 =====
-    downloaded_figures = {}
-    async with async_playwright() as p:
-        try:
-            browser = await p.chromium.connect_over_cdp("http://localhost:9222")
-            contexts = browser.contexts
-            context = contexts[0] if contexts else await browser.new_context()
-            page = await context.new_page()
-
-            print("🔗 已连接Chrome\n")
-
-            # Process front matter
-            if 'front' in data:
-                front = data['front']
-                for comp in front.get('components', []):
-                    comp_type = comp.get('type', 'p')
-                    klass = comp.get('klass', '')
-
-                    if 'figure' in klass.lower():
-                        fig_num, caption = extract_figure_caption(comp)
-                        if fig_num:
-                            print(f"📊 处理 Figure {fig_num}...")
-                            img_filename = await download_figure(page, doi, int(fig_num), output_dir)
-                            if img_filename:
-                                downloaded_figures[fig_num] = (img_filename, caption)
-
-                                md_content += f"\n## Figure {fig_num}\n\n"
-                                md_content += f"![Figure {fig_num}]({img_filename})\n\n"
-                                if caption:
-                                    md_content += f"*{caption}*\n\n"
-                    else:
-                        text, _, _ = process_component(comp, doi, output_dir, downloaded_figures)
-                        md_content += text
-
-            # Process back matter
-            if 'back' in data:
-                back = data['back']
-                md_content += "\n## References\n"
-                for comp in back.get('components', []):
-                    text, _, _ = process_component(comp, doi, output_dir, downloaded_figures)
-                    md_content += text
-
-            await browser.close()
-
-        except Exception as e:
-            print(f"⚠️  浏览器错误: {e}")
-
-    # Save markdown
-    if output_file:
-        with open(output_file, 'w', encoding='utf-8') as f:
-            f.write(md_content)
-        print(f"\n✅ Markdown已保存: {output_file}")
-
-    return md_content
