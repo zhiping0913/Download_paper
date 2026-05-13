@@ -4,10 +4,10 @@ Handles extraction from Nature and Nature-family journals (Nature Physics, Natur
 """
 
 from publisher.base import PublisherHandler
+from core.network_capture import setup_response_capture
 import re
 import json
 from pathlib import Path
-from datetime import datetime
 from typing import Optional, Dict, List
 import asyncio
 
@@ -131,83 +131,24 @@ class NatureHandler(PublisherHandler):
 
         self.configure(page=page, doi=doi)
 
+        output_dir = self.captured_data_dir or Path("captured_data") / doi.replace('/', '_')
         captured = {
             'json_responses': [],
             'document': None,
+            'documents': [],
             'timeline': [],
             'html': None,              # Save page HTML
         }
 
-        async def handle_response(response):
-            rtype = response.request.resource_type
-            status = response.status
-            url_str = response.url
-            ts = datetime.now().isoformat()
+        def on_document(response, html, entry, captured):
+            captured['html'] = html
 
-            captured['timeline'].append({
-                'timestamp': ts,
-                'type': rtype,
-                'status': status,
-                'url': url_str,
-                'method': response.request.method
-            })
-
-            if status == 200:
-                print(f"[{status}] {rtype:10s} {url_str[:70]}")
-
-            # Capture HTML document
-            if rtype == 'document' and status == 200:
-                try:
-                    html = await response.text()
-
-                    # Save main HTML document to file
-                    captured['document'] = {
-                        'url': url_str,
-                        'timestamp': ts,
-                        'size': len(html),
-                    }
-
-                    # Save HTML file to captured_data/{doi}/
-                    output_dir = self.captured_data_dir or Path("captured_data") / doi.replace('/', '_')
-                    output_dir.mkdir(parents=True, exist_ok=True)
-                    html_filename = f"page_{len(captured['json_responses']):03d}.html"
-                    html_path = output_dir / html_filename
-                    with open(html_path, 'w', encoding='utf-8') as f:
-                        f.write(html)
-                    captured['document']['file'] = str(html_path)
-
-                    print(f"  ✓ HTML文档: {len(html)} 字节")
-                    print(f"    保存到: {str(html_path)}")
-                except:
-                    pass
-
-            # Capture JSON/API responses
-            elif rtype in ('xhr', 'fetch') and status == 200:
-                try:
-                    ctype = response.headers.get('content-type', '')
-                    if 'json' in ctype.lower():
-                        jdata = await response.json()
-                        jstr = json.dumps(jdata)
-
-                        print(f"  ✓✓ API数据: {len(jstr)} 字节")
-
-                        output_dir = self.captured_data_dir or Path("captured_data") / doi.replace('/', '_')
-                        output_dir.mkdir(parents=True, exist_ok=True)
-                        jpath = output_dir / f"api_response_{len(captured['json_responses']):03d}.json"
-                        with open(jpath, 'w', encoding='utf-8') as f:
-                            json.dump(jdata, f, indent=2, ensure_ascii=False)
-
-                        captured['json_responses'].append({
-                            'url': url_str,
-                            'timestamp': ts,
-                            'size': len(jstr),
-                            'file': str(jpath),
-                        })
-                except:
-                    pass
-
-        page.on("response", handle_response)
-        return captured
+        return setup_response_capture(
+            page,
+            output_dir,
+            captured=captured,
+            on_document=on_document,
+        )
 
     async def extract_metadata(self, page) -> dict:
         """Extract metadata from Nature article page
