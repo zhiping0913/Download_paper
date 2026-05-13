@@ -38,8 +38,6 @@ from core import (
     mathml_to_latex_pandoc,
     extract_text_without_math
 )
-from publisher import APSHandler
-from publisher.nature import NatureHandler
 from publisher.orchestrator import (
     detect_publisher_from_url,
     get_publisher_handler,
@@ -67,14 +65,14 @@ def detect_publisher(url: str) -> str:
     return detect_publisher_from_url(url)
 
 
-def get_publisher_handler_factory(publisher: str):
+def get_publisher_handler_factory(publisher: str, **kwargs):
     """
     Factory function to get appropriate publisher handler
 
     Note: This is a wrapper around orchestrator.get_publisher_handler
     for backward compatibility. New code should use the orchestrator module.
     """
-    return get_publisher_handler(publisher)
+    return get_publisher_handler(publisher, **kwargs)
 
 # ============================================================================
 # Semantic Scholar API 配置
@@ -97,8 +95,7 @@ async def capture_network_data(page, url: str) -> dict:
     This function is kept for backward compatibility with existing code.
     New code should use APSHandler.extract_all() instead.
     """
-    from publisher.aps import APSHandler
-    handler = APSHandler()
+    handler = get_publisher_handler('aps', page=page)
     return await handler._capture_network_data(page, url)
 
 
@@ -256,7 +253,15 @@ def extract_text_without_math(html_str: str) -> str:
 # Phase 4: Unified Download Manager
 # ============================================================================
 
-async def _download_all_resources(page, links: dict, output_dir: Path, context, metadata: dict, doi: str = None) -> dict:
+async def _download_all_resources(
+    page,
+    links: dict,
+    output_dir: Path,
+    context,
+    metadata: dict,
+    doi: str = None,
+    force_headed: bool = False,
+) -> dict:
     """Unified download manager for all resources (PDF, figures, supplemental)
 
     Args:
@@ -276,57 +281,107 @@ async def _download_all_resources(page, links: dict, output_dir: Path, context, 
         'supplemental': []
     }
 
-    # Download PDF
-    pdf_url = links.get('pdf_url')
-    if pdf_url:
-        print("Step 4️⃣  下载论文PDF...")
-        print("=" * 80)
-        try:
-            # Build PDF filename from metadata
+    download_playwright = None
+    download_browser = None
+    download_context = context
+    download_page = page
+
+    if not force_headed:
+        download_playwright = await async_playwright().start()
+        download_browser = await download_playwright.chromium.launch(headless=True)
+        download_context = await download_browser.new_context(accept_downloads=True)
+        download_page = await download_context.new_page()
+        print("  ✓ 使用无头浏览器执行资源下载")
+
+    try:
+        # Download PDF
+        pdf_url = links.get('pdf_url')
+        if pdf_url:
+            print("Step 4️⃣  下载论文PDF...")
+            print("=" * 80)
+            try:
+                # Build PDF filename from metadata
+                year = metadata.get('year', '0000')
+                title = metadata.get('title', 'paper')
+                title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:120]
+                pdf_filename = f"{year}--{title_clean}.pdf"
+
+                pdf_result = await download_pdf(
+                    download_page,
+                    pdf_url,
+                    output_dir,
+                    pdf_filename,
+                    download_context,
+                    force_headed,
+                )
+                downloads['pdf'] = pdf_result
+            except Exception as e:
+                print(f"⚠️  PDF下载失败: {e}")
+
+        # Download figures
+        figure_urls = links.get('figure_urls', {})
+        if figure_urls:
+            print("\n🖼️  下载图片...")
+            print(f"  📊 找到 {len(figure_urls)} 个图片")
+            for fig_id, fig_info in figure_urls.items():
+                try:
+                    fig_url = fig_info.get('url') if isinstance(fig_info, dict) else fig_info
+                    fig_match = re.search(r'(\d+)$', str(fig_id))
+                    fig_num = fig_match.group(1) if fig_match else str(fig_id)
+
+                    img_filename = await download_figure(
+                        download_page,
+                        fig_url,
+                        int(fig_num),
+                        output_dir,
+                        download_context,
+                        force_headed,
+                    )
+                    if img_filename:
+                        downloads['figures'][fig_num] = img_filename
+                except Exception as e:
+                    print(f"⚠️  Figure {fig_id} 下载失败: {e}")
+        else:
+            print("\n⚠️  未找到图片链接")
+
+        # Download supplemental materials
+        supp_urls = links.get('supplemental_urls', [])
+        if supp_urls:
+            print("\nStep 5️⃣  下载补充材料...")
+            print("=" * 80)
             year = metadata.get('year', '0000')
             title = metadata.get('title', 'paper')
-            title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:120]
-            pdf_filename = f"{year}--{title_clean}.pdf"
 
-            pdf_result = await download_pdf(page, pdf_url, output_dir, pdf_filename)
-            downloads['pdf'] = pdf_result
-        except Exception as e:
-            print(f"⚠️  PDF下载失败: {e}")
+            supp_descriptions = links.get('supplemental_descriptions', {})
 
-    # Download figures
-    figure_urls = links.get('figure_urls', {})
-    if figure_urls:
-        print("\n🖼️  下载图片...")
-        print(f"  📊 找到 {len(figure_urls)} 个图片")
-        for fig_id, fig_info in figure_urls.items():
+            count, descriptions = await download_supplemental_materials(
+                supp_urls,
+                output_dir,
+                year,
+                title,
+                download_context,
+                supp_descriptions,
+                download_page,
+                force_headed,
+            )
+            downloads['supplemental'] = list(descriptions.keys())
+
+    finally:
+        if download_page is not page:
             try:
-                fig_url = fig_info.get('url') if isinstance(fig_info, dict) else fig_info
-                # Extract figure number (f1 -> 1, f2 -> 2)
-                fig_num = fig_id[1:] if fig_id.startswith('f') else fig_id
-
-                img_filename = await download_figure(page, fig_url, int(fig_num), output_dir)
-                if img_filename:
-                    downloads['figures'][fig_num] = img_filename
-            except Exception as e:
-                print(f"⚠️  Figure {fig_id} 下载失败: {e}")
-    else:
-        print("\n⚠️  未找到图片链接")
-
-    # Download supplemental materials
-    supp_urls = links.get('supplemental_urls', [])
-    if supp_urls:
-        print("\nStep 5️⃣  下载补充材料...")
-        print("=" * 80)
-        year = metadata.get('year', '0000')
-        title = metadata.get('title', 'paper')
-        title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:120]
-
-        supp_descriptions = links.get('supplemental_descriptions', {})
-
-        count, descriptions = await download_supplemental_materials(
-            supp_urls, output_dir, year, title, context, supp_descriptions
-        )
-        downloads['supplemental'] = list(descriptions.keys())
+                await download_page.close()
+            except:
+                pass
+        if download_browser is not None:
+            try:
+                await download_browser.close()
+            except:
+                pass
+        if download_playwright is not None:
+            try:
+                await download_playwright.stop()
+            except:
+                pass
 
     return downloads
 
@@ -336,7 +391,14 @@ async def _download_all_resources(page, links: dict, output_dir: Path, context, 
 # ============================================================================
 
 
-async def download_pdf(page, pdf_url: str, output_dir: Path, filename: str = "paper.pdf") -> str:
+async def download_pdf(
+    page,
+    pdf_url: str,
+    output_dir: Path,
+    filename: str = "paper.pdf",
+    context=None,
+    force_headed: bool = False,
+) -> str:
     """下载论文PDF
 
     Args:
@@ -371,10 +433,11 @@ async def download_pdf(page, pdf_url: str, output_dir: Path, filename: str = "pa
             print(f"    ✓ 保存: {filename} ({pdf_size_mb:.2f} MB)")
             pdf_downloaded = True
 
-        page.on("download", handle_download)
+        download_page = await context.new_page() if force_headed and context is not None else page
+        download_page.on("download", handle_download)
 
         try:
-            await page.goto(pdf_url, timeout=15000, wait_until='commit')
+            await download_page.goto(pdf_url, timeout=15000, wait_until='commit')
         except:
             # 下载开始时页面加载会中断，这是正常的
             pass
@@ -382,7 +445,9 @@ async def download_pdf(page, pdf_url: str, output_dir: Path, filename: str = "pa
         # 等待下载完成
         await asyncio.sleep(3)
 
-        page.remove_listener("download", handle_download)
+        download_page.remove_listener("download", handle_download)
+        if download_page is not page:
+            await download_page.close()
 
         if pdf_downloaded:
             return filename
@@ -403,7 +468,16 @@ async def download_pdf(page, pdf_url: str, output_dir: Path, filename: str = "pa
     return None
 
 
-async def download_supplemental_materials(supplemental_links: list, output_dir: Path, year: str, title: str, context, descriptions: dict = None) -> tuple:
+async def download_supplemental_materials(
+    supplemental_links: list,
+    output_dir: Path,
+    year: str,
+    title: str,
+    context,
+    descriptions: dict = None,
+    page=None,
+    force_headed: bool = False,
+) -> tuple:
     """在浏览器中打开新标签页下载补充材料文件（保持登录态）
 
     Args:
@@ -435,7 +509,7 @@ async def download_supplemental_materials(supplemental_links: list, output_dir: 
 
     for i, link in enumerate(supplemental_links, 1):
         try:
-            url = link.get('url', link.get('href', ''))
+            url = link if isinstance(link, str) else link.get('url', link.get('href', ''))
             if not url:
                 continue
 
@@ -453,8 +527,8 @@ async def download_supplemental_materials(supplemental_links: list, output_dir: 
             print(f"  📥 下载补充材料 ({i}/{len(supplemental_links)}): {filename}")
             print(f"     URL: {url}")
 
-            # 创建新页面用于下载
-            download_page = await context.new_page()
+            # force-headed mode avoids navigating the article tab.
+            download_page = await context.new_page() if force_headed or page is None else page
 
             # 设置下载事件处理
             downloaded_file = None
@@ -495,7 +569,8 @@ async def download_supplemental_materials(supplemental_links: list, output_dir: 
             else:
                 print(f"    ⚠️  未捕获到下载事件: {filename}")
 
-            await download_page.close()
+            if download_page is not page:
+                await download_page.close()
 
         except Exception as e:
             print(f"    ⚠️  处理链接失败: {str(e)[:100]}")
@@ -507,21 +582,36 @@ async def download_supplemental_materials(supplemental_links: list, output_dir: 
 
 
 
-async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path) -> str:
+async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, context=None, force_headed: bool = False) -> str:
     """下载高分辨率图片 - 使用API响应中的URL"""
     try:
         if not fig_url:
             return None
 
+        if fig_url.startswith('https://www.nature.com//'):
+            fig_url = fig_url.replace('https://www.nature.com//', 'https://', 1)
+
         print(f"  📥 下载 Figure {fig_num}: {fig_url}")
 
-        await page.goto(fig_url, wait_until='networkidle', timeout=30000)
-        img_elements = await page.query_selector_all('img')
+        download_page = await context.new_page() if force_headed and context is not None else page
+
+        response = await download_page.goto(fig_url, wait_until='networkidle', timeout=30000)
+        content_type = response.headers.get('content-type', '') if response else ''
+        if response and content_type.startswith('image/'):
+            image_data = await response.body()
+            img_filename = f"figure_{fig_num}.png"
+            img_path = output_dir / img_filename
+            with open(img_path, 'wb') as f:
+                f.write(image_data)
+            print(f"    ✓ 保存: {img_filename}")
+            return img_filename
+
+        img_elements = await download_page.query_selector_all('img')
 
         if img_elements:
             img_src = await img_elements[0].get_attribute('src')
             if img_src:
-                response = await page.goto(img_src, wait_until='networkidle', timeout=30000)
+                response = await download_page.goto(img_src, wait_until='networkidle', timeout=30000)
                 image_data = await response.body()
                 img_filename = f"figure_{fig_num}.png"
 
@@ -529,10 +619,18 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path) ->
                 with open(img_path, 'wb') as f:
                     f.write(image_data)
                 print(f"    ✓ 保存: {img_filename}")
+                if download_page is not page:
+                    await download_page.close()
                 return img_filename
 
     except Exception as e:
         print(f"    ❌ 下载失败: {e}")
+    finally:
+        try:
+            if 'download_page' in locals() and download_page is not page:
+                await download_page.close()
+        except:
+            pass
 
     return None
 
@@ -598,6 +696,8 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
 
     output_path = Path(OUTPUT_DIR)
     output_path.mkdir(exist_ok=True)
+    captured_data_dir = output_path / doi.replace('/', '_')
+    captured_data_dir.mkdir(parents=True, exist_ok=True)
 
     print("\n" + "=" * 80)
     print("🔍 论文完整提取工作流 (Phase 4-5)")
@@ -607,12 +707,12 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
     # 构建URL
     url = f"https://doi.org/{doi}"
 
-    async def process_nature_with_page(page, context, handler, captured_data, s2_data):
-        """Run the Nature extraction path with an already-loaded page."""
-        print(f"Step 2️⃣  使用NATUREHandler完整提取...")
+    async def process_with_handler(page, context, handler, publisher, captured_data, s2_data, force_headed_downloads):
+        """Run publisher extraction and shared output/download steps."""
+        print(f"Step 2️⃣  使用{publisher.upper()}Handler完整提取...")
         print("=" * 80)
 
-        extraction_result = await handler.extract_all(page, doi, captured=captured_data)
+        extraction_result = await handler.extract_all(captured=captured_data)
 
         metadata = extraction_result['metadata']
         links = extraction_result['links']
@@ -655,7 +755,15 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
         markdown_file = paper_output_dir / markdown_filename
 
         # Step 3: Download all resources
-        downloads = await _download_all_resources(page, links, paper_output_dir, context, metadata, doi)
+        downloads = await _download_all_resources(
+            page,
+            links,
+            paper_output_dir,
+            context,
+            metadata,
+            doi,
+            force_headed_downloads,
+        )
 
         # Step 3.5: Generate markdown with figures
         print("\nStep 3.5️⃣  生成Markdown...")
@@ -702,7 +810,7 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
 
     # ========== 阶段0（可选）：使用无头浏览器快速预检 ==========
     # 如果 force_headed=True，跳过此阶段直接使用有头浏览器
-    # 典型使用场景：已知目标期刊是APS等必须有头的出版商
+    # 典型使用场景：已知目标期刊必须使用有头浏览器访问
 
     headless_success = False
     headless_publisher = None
@@ -726,13 +834,13 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
                     await headless_page.goto(url, wait_until='networkidle', timeout=30000)
 
                     # 保存无头浏览器访问结果
-                    output_dir = Path("captured_data") / doi.replace('/', '_')
-                    output_dir.mkdir(parents=True, exist_ok=True)
-
                     # 保存HTML
                     headless_html = await headless_page.content()
-                    headless_html_file = output_dir / "headless_initial.html"
+                    headless_html_file = captured_data_dir / "headless_initial.html"
+                    page_html_file = captured_data_dir / "page.html"
                     with open(headless_html_file, 'w', encoding='utf-8') as f:
+                        f.write(headless_html)
+                    with open(page_html_file, 'w', encoding='utf-8') as f:
                         f.write(headless_html)
 
                     print(f"  ✓ 页面已保存: {headless_html_file.name} ({len(headless_html)} 字节)")
@@ -754,10 +862,12 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
                         print(f"  出版商类型: {headless_publisher.upper()}")
                         print("  → 跳过有头Chrome连接，直接使用无头页面进入Handler流程")
 
-                        if headless_publisher == 'nature':
-                            handler = NatureHandler()
-                        else:
-                            handler = get_publisher_handler(headless_publisher)
+                        handler = get_publisher_handler(
+                            headless_publisher,
+                            page=headless_page,
+                            captured_data_dir=captured_data_dir,
+                            doi=doi,
+                        )
 
                         captured_data = None
                         if hasattr(handler, 'setup_network_capture'):
@@ -769,23 +879,22 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
                         s2_data = fetch_semanticscholar(doi)
                         print()
 
-                        if headless_publisher == 'nature':
-                            result = await process_nature_with_page(
-                                headless_page,
-                                headless_context,
-                                handler,
-                                captured_data,
-                                s2_data,
-                            )
-                            await cleanup_context_pages(headless_context)
-                            await headless_browser.close()
-                            return result
-
-                        print(f"  ⚠️  无头直连出版商尚未实现处理流程: {headless_publisher}")
+                        result = await process_with_handler(
+                            headless_page,
+                            headless_context,
+                            handler,
+                            headless_publisher,
+                            captured_data,
+                            s2_data,
+                            force_headed,
+                        )
+                        await cleanup_context_pages(headless_context)
+                        await headless_browser.close()
+                        return result
 
                 except Exception as e:
                     print(f"  ⚠️  无头浏览器访问失败: {type(e).__name__}: {str(e)[:100]}")
-                    print(f"  → 这对某些出版商（如APS）是正常的（需要认证/JavaScript渲染）")
+                    print(f"  → 这对某些需要认证或完整JavaScript渲染的出版商是正常的")
                 finally:
                     try:
                         await headless_page.close()
@@ -801,9 +910,6 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
         print()
 
         # ========== Phase 0分析：判断是否需要有头浏览器 ==========
-        # 📌 重要发现：
-        # - Nature期刊：无头浏览器可以获取完整页面（包含所有元数据）
-        # - APS期刊：无头浏览器无法访问（需要认证或JavaScript渲染）
 
         print("📊 Phase 0分析：评估是否需要有头浏览器...")
         print("=" * 80)
@@ -814,12 +920,9 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
             if headless_publisher in HEADLESS_ACCESSIBLE_PUBLISHERS:
                 print(f"  ℹ️  {headless_publisher.upper()} 支持无头直连")
                 print(f"  ⚠️  无头直连未完成，回退到有头浏览器完整提取")
-            elif headless_publisher == 'aps':
-                print(f"  ℹ️  APS期刊 → 无头浏览器无法访问（需要认证/JavaScript渲染）")
-                print(f"  💡 需要有头浏览器进行完整提取")
             else:
-                print(f"  ℹ️  其他出版商: {headless_publisher}")
-                print(f"  💡 根据需要可能需要有头浏览器")
+                print(f"  ℹ️  {headless_publisher.upper()} 未配置无头直连")
+                print(f"  💡 将使用有头浏览器进行完整提取")
         else:
             print(f"  ⚠️  无头浏览器预检失败")
             print(f"  💡 将使用有头浏览器进行完整提取")
@@ -878,6 +981,18 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
             # Step 1: Navigate and detect publisher
             print("Step 1️⃣  导航到DOI并检测出版商...")
             print("=" * 80)
+            publisher = detect_publisher_from_url(url)
+            handler = get_publisher_handler(
+                publisher,
+                page=page,
+                captured_data_dir=captured_data_dir,
+                doi=doi,
+            )
+            captured_data = None
+            if hasattr(handler, 'setup_network_capture'):
+                captured_data = handler.setup_network_capture()
+                print("✓ 网络监听已启动\n")
+
             try:
                 await page.goto(url, wait_until='networkidle', timeout=60000)
             except:
@@ -886,24 +1001,23 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
             final_url = page.url
             print(f"✓ 最终 URL: {final_url}")
 
-            publisher = detect_publisher_from_url(final_url)
-            print(f"✓ 检测出版商: {publisher.upper()}\n")
-
-            # Setup network capture immediately after navigation (Step 1 continuation)
-            print("Step 1.1️⃣  设置网络监听...")
-            print("=" * 80)
-            handler = None
-            captured_data = None
-
-            if publisher == 'aps':
-                handler = APSHandler(journal_prefix='prl')
-                captured_data = handler.setup_network_capture(page, doi)
-                print("✓ 网络监听已启动\n")
-            elif publisher == 'nature':
-                handler = NatureHandler()
+            final_publisher = detect_publisher_from_url(final_url)
+            if final_publisher != publisher:
+                publisher = final_publisher
+                handler = get_publisher_handler(
+                    publisher,
+                    page=page,
+                    captured_data_dir=captured_data_dir,
+                    doi=doi,
+                )
+                captured_data = None
                 if hasattr(handler, 'setup_network_capture'):
-                    captured_data = handler.setup_network_capture(page, doi)
+                    captured_data = handler.setup_network_capture()
                     print("✓ 网络监听已启动\n")
+            else:
+                handler.configure(page=page, captured_data_dir=captured_data_dir, doi=doi)
+
+            print(f"✓ 检测出版商: {publisher.upper()}\n")
 
             # Get Semantic Scholar metadata early
             print("Step 1.5️⃣  获取Semantic Scholar元数据...")
@@ -947,111 +1061,28 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
             #             ...
             #         },
             #     },
-            #     'fulltext_data': str|dict,          # 文章内容
-            #                                         # APS: JSON dict | Nature: HTML string
-            #     'journal_prefix': str,              # (APS only) prl, pre, pra, prb等
-            #     'journal_name': str,                # (Nature only) nature, nature_physics等
+            #     'fulltext_data': str|dict,          # 文章内容，格式由PublisherHandler决定
+            #     'journal_prefix' / 'journal_name': str, # 可选的出版商扩展字段
             # }
-            if publisher == 'aps':
-                print("Step 2️⃣  使用APSHandler完整提取...")
+            if callable(getattr(handler, 'extract_all', None)):
+                await process_with_handler(page, context, handler, publisher, captured_data, s2_data, force_headed)
+            else:
+                # Other publishers - use Semantic Scholar metadata only
+                print("Step 2️⃣  使用Semantic Scholar元数据...")
                 print("=" * 80)
-                extraction_result = await handler.extract_all(page, doi, captured=captured_data)
 
-                metadata = extraction_result['metadata']
-                links = extraction_result['links']
-                fulltext_data = extraction_result['fulltext_data']
-                journal_prefix = extraction_result['journal_prefix']
-
-                # Merge with Semantic Scholar data
-                if s2_data:
-                    if s2_data.get('year') and not metadata.get('year'):
-                        metadata['year'] = s2_data['year']
-                    if s2_data.get('title') and not metadata.get('title'):
-                        metadata['title'] = s2_data['title']
+                metadata = s2_data or {
+                    'title': 'Unknown Paper',
+                    'authors': [],
+                    'journal': 'Unknown Journal',
+                    'year': None
+                }
 
                 print(f"  ✓ 标题: {metadata.get('title', 'N/A')[:60]}...")
                 print(f"  ✓ 作者: {len(metadata.get('authors', []))} 位")
                 print(f"  ✓ 期刊: {metadata.get('journal', 'N/A')}")
-                print(f"  ✓ 图片: {len(links.get('figure_urls', {}))} 个")
-                print(f"  ✓ 补充材料: {len(links.get('supplemental_urls', []))} 个")
+                print(f"  ✓ DOI: {doi}")
                 print()
-
-                # Prepare output directory
-                base_output_dir = Path(output_file).parent if output_file else Path.home() / "Downloads"
-                base_output_dir = base_output_dir / "papers"
-                base_output_dir.mkdir(parents=True, exist_ok=True)
-                paper_output_dir = organize_paper_output(base_output_dir, metadata, s2_data)
-
-                # Generate markdown filename
-                year = s2_data.get('year') or metadata.get('year') or '0000'
-                title = s2_data.get('title') or metadata.get('title') or 'paper'
-                title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:120]
-                markdown_filename = f"{year}--{title_clean}.md"
-                markdown_file = paper_output_dir / markdown_filename
-
-                # Step 3: Download all resources
-                downloads = await _download_all_resources(page, links, paper_output_dir, context, metadata, doi)
-
-                # Step 3.5: Generate markdown with figures
-                print("\nStep 3.5️⃣  生成Markdown...")
-                print("=" * 80)
-                md = handler.convert_to_markdown(metadata, fulltext_data, add_figure_refs=bool(downloads['figures']))
-                with open(markdown_file, 'w', encoding='utf-8') as f:
-                    f.write(md)
-                print(f"  ✓ Markdown已保存: {markdown_filename}")
-
-                # Save metadata
-                save_metadata_json(paper_output_dir, metadata, s2_data, doi,
-                                 downloads['pdf'], downloads['supplemental'])
-
-                # Statistics
-                print("\n" + "=" * 80)
-                print("📊 完成统计")
-                print("=" * 80)
-                lines = md.split('\n')
-                figures = re.findall(r'\[Figure \d+\]', md)
-                display_eqs = len(re.findall(r'\$\$', md)) // 2
-                print(f"  📄 Markdown 行数: {len(lines)}")
-                print(f"  🖼️  图片: {len(figures)} 个")
-                print(f"  📐 Display equations: {display_eqs} 个")
-                if downloads['pdf']:
-                    print(f"  📕 PDF: {downloads['pdf']}")
-                if downloads['supplemental']:
-                    print(f"  📎 补充材料: {len(downloads['supplemental'])} 个")
-                print(f"  💾 输出目录: {paper_output_dir}")
-                print()
-
-            else:
-                # For non-APS publishers (Nature, etc.)
-                print(f"Step 2️⃣  使用{publisher.upper()}Handler完整提取...")
-                print("=" * 80)
-
-                if publisher == 'nature' and handler:
-                    await process_nature_with_page(page, context, handler, captured_data, s2_data)
-
-                else:
-                    # Other publishers - use Semantic Scholar metadata only
-                    print("Step 2️⃣  使用Semantic Scholar元数据...")
-                    print("=" * 80)
-
-                    metadata = s2_data or {
-                        'title': 'Unknown Paper',
-                        'authors': [],
-                        'journal': 'Unknown Journal',
-                        'year': None
-                    }
-                    links = {
-                        'pdf_url': None,
-                        'figure_urls': {},
-                        'supplemental_urls': []
-                    }
-                    fulltext_data = None
-
-                    print(f"  ✓ 标题: {metadata.get('title', 'N/A')[:60]}...")
-                    print(f"  ✓ 作者: {len(metadata.get('authors', []))} 位")
-                    print(f"  ✓ 期刊: {metadata.get('journal', 'N/A')}")
-                    print(f"  ✓ DOI: {doi}")
-                    print()
 
             # Clean up pages
             print("\n🧹 清理标签页...")

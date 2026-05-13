@@ -56,14 +56,14 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
     if publisher == 'nature':
         return NatureHandler(**kwargs)
     elif publisher == 'aps':
-        journal_prefix = kwargs.get('journal_prefix', 'prl')
-        return APSHandler(journal_prefix=journal_prefix)
+        return APSHandler(**kwargs)
     elif publisher == 'arxiv':
         # ArXiv uses APS-like handler
-        return APSHandler(journal_prefix='arxiv')
+        kwargs.setdefault('journal_prefix', 'arxiv')
+        return APSHandler(**kwargs)
     else:
         # Default to APS handler for unknown
-        return APSHandler()
+        return APSHandler(**kwargs)
 
 
 async def extract_metadata_multi_publisher(page, publisher: str = None) -> dict:
