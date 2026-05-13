@@ -524,10 +524,6 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path) ->
         if not fig_url:
             return None
 
-        # 构建完整URL（如果是相对URL）
-        if fig_url.startswith('/'):
-            fig_url = f"https://journals.aps.org{fig_url}"
-
         print(f"  📥 下载 Figure {fig_num}: {fig_url}")
 
         await page.goto(fig_url, wait_until='networkidle', timeout=30000)
