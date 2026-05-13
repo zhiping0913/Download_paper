@@ -1059,10 +1059,10 @@ async def main():
         python complete_paper_extraction.py --doi 10.1103/PhysRevLett.109.245005 --output ~/Downloads
 
         # 强制使用有头浏览器（跳过无头预检）
-        python complete_paper_extraction.py --doi 10.1103/PhysRevLett.109.245005 --force-headless
+        python complete_paper_extraction.py --doi 10.1103/PhysRevLett.109.245005 --force-headed
 
         # DOI列表 + 强制有头
-        python complete_paper_extraction.py --file doi_list.txt --force-headless
+        python complete_paper_extraction.py --file doi_list.txt --force-headed
     """
     import argparse
 
@@ -1081,7 +1081,7 @@ async def main():
     python %(prog)s --doi 10.1103/PhysRevLett.109.245005 --output ~/Downloads
 
   强制使用有头浏览器（跳过无头预检）:
-    python %(prog)s --doi 10.1103/PhysRevLett.109.245005 --force-headless
+    python %(prog)s --doi 10.1103/PhysRevLett.109.245005 --force-headed
         """
     )
 
@@ -1107,7 +1107,7 @@ async def main():
     )
 
     parser.add_argument(
-        '--force-headless',
+        '--force-headed',
         action='store_true',
         default=False,
         help='强制使用有头浏览器，跳过无头预检阶段 (默认: False，使用智能检测)'
@@ -1137,9 +1137,9 @@ async def main():
         sys.exit(1)
 
     # 处理force_headless参数
-    force_headless_mode = args.force_headless
-    if force_headless_mode:
-        print(f"🔧 强制有头模式启用 - 将跳过无头浏览器预检\n")
+    force_headed_mode = args.force_headed
+    if force_headed_mode:
+        print(f"🔧 强制有头浏览器模式启用 - 将跳过无头浏览器预检\n")
 
     # 处理输出路径
     output_dir = args.output
@@ -1161,7 +1161,7 @@ async def main():
             success = await complete_extraction_workflow(
                 doi,
                 output_file=output_dir,
-                force_headless=force_headless_mode
+                force_headless=force_headed_mode
             )
             if success:
                 success_count += 1
