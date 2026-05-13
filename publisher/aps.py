@@ -23,6 +23,7 @@ from publisher.base import PublisherHandler
 from json_to_md_converter import mathml_to_latex_pandoc, extract_text_without_math
 from paper_components_extractor import extract_references_from_html
 from playwright.async_api import async_playwright
+from bs4 import BeautifulSoup
 
 
 # ============================================================================
@@ -30,6 +31,65 @@ from playwright.async_api import async_playwright
 # ============================================================================
 # 注意：这些是从 complete_paper_extraction.py 中提取的 APS 专用函数
 # 保持原有逻辑，避免修改
+
+
+def _clean_aps_reference_text(text: str) -> str:
+    """Normalize APS reference text extracted from the abstract page."""
+    text = re.sub(r'\s+', ' ', text or '').strip()
+    text = re.sub(r'^(?:\[\s*)?\d+[\].\s]+', '', text)
+    text = re.sub(r'\s*(?:Article Lookup|Google Scholar|Crossref|PubMed|Web of Science)\s*', ' ', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _extract_aps_references_from_html(html_content: str) -> list:
+    """Extract references from APS abstract/fulltext HTML."""
+    if not html_content:
+        return []
+
+    soup = BeautifulSoup(html_content, 'html.parser')
+    for tag in soup(['script', 'style', 'noscript', 'svg']):
+        tag.decompose()
+
+    containers = []
+    selectors = [
+        '#references',
+        '.references',
+        '.article-references',
+        '[data-title*="Reference"]',
+        '[aria-label*="Reference"]',
+        '[class*="reference"]',
+        '[id*="reference"]',
+    ]
+    for selector in selectors:
+        containers.extend(soup.select(selector))
+
+    for heading in soup.find_all(['h2', 'h3', 'h4']):
+        if 'reference' in heading.get_text(' ', strip=True).lower():
+            parent = heading.find_parent(['section', 'div', 'article'])
+            if parent:
+                containers.append(parent)
+            next_list = heading.find_next(['ol', 'ul'])
+            if next_list:
+                containers.append(next_list)
+
+    references = []
+    seen = set()
+    for container in containers:
+        items = container.find_all(['li', 'p', 'div'], id=re.compile(r'^c\d+$'))
+        if not items:
+            items = container.find_all('li')
+
+        for item in items:
+            text = _clean_aps_reference_text(item.get_text(' ', strip=True))
+            if len(text) < 20:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            references.append(text)
+
+    return references
 
 
 async def extract_metadata_from_page(page) -> dict:
@@ -444,6 +504,9 @@ class APSHandler(PublisherHandler):
 
     async def extract_references(self, html: str) -> list:
         """Parse references from HTML"""
+        references = _extract_aps_references_from_html(html)
+        if references:
+            return references
         return extract_references_from_html(html)
 
     async def get_figures(self, json_data: dict) -> dict:
@@ -511,8 +574,10 @@ class APSHandler(PublisherHandler):
                             captured['journal_prefix'] = match.group(1)
                             print(f"  ✓ 识别期刊: {captured['journal_prefix']}")
 
-                    # Save abstract page HTML for References extraction
-                    if '/abstract/' in url_str or '/prl/abstract/' in url_str:
+                    # Save abstract page HTML for References extraction.
+                    # APS pages can load iframe documents; keep only the article page.
+                    is_article_html = doi in html or 'citation_doi' in html
+                    if '/abstract/' in url_str and is_article_html:
                         captured['abstract_html'] = html
                         print(f"  ✓ 保存abstract HTML: {len(html)} 字节")
 
@@ -701,7 +766,26 @@ class APSHandler(PublisherHandler):
             # Network capture is already running, just wait for additional requests
             await asyncio.sleep(3)
 
-        # 3. Get fulltext data
+        # 3. Extract references from the headed APS abstract page.
+        if not metadata.get('references'):
+            reference_html_candidates = []
+            if captured.get('abstract_html'):
+                reference_html_candidates.append(captured['abstract_html'])
+            try:
+                current_html = await page.content()
+                if current_html:
+                    reference_html_candidates.append(current_html)
+            except Exception:
+                pass
+
+            for html in reference_html_candidates:
+                references = await self.extract_references(html)
+                if references:
+                    metadata['references'] = references
+                    print(f"  ✓ 参考文献: {len(references)} 条")
+                    break
+
+        # 4. Get fulltext data
         fulltext_data = captured.get('fulltext_data')
         if not fulltext_data and captured.get('json_responses'):
             try:
@@ -711,14 +795,14 @@ class APSHandler(PublisherHandler):
             except:
                 fulltext_data = {}
 
-        # 4. Extract all links from fulltext data
+        # 5. Extract all links from fulltext data
         links = {
             'pdf_url': f"https://journals.aps.org/{self.journal_prefix}/pdf/{doi}",
             'figure_urls': extract_figure_assets_from_fulltext(fulltext_data),
             'supplemental_urls': []
         }
 
-        # 5. Get supplemental links if available
+        # 6. Get supplemental links if available
         try:
             supp_links, supp_descriptions = await get_supplemental_links(page, doi, self.journal_prefix)
             links['supplemental_urls'] = supp_links
