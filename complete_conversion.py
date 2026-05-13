@@ -3,9 +3,10 @@
 Complete paper conversion workflow:
 1. Extract metadata
 2. Extract abstract
-3. Extract references
-4. Extract supplementary materials
-5. Merge into complete document
+3. Convert main content by paragraph
+4. Extract references
+5. Extract supplementary materials
+6. Merge into complete document
 """
 
 import argparse
@@ -15,6 +16,7 @@ import re
 from pathlib import Path
 
 from bs4 import BeautifulSoup
+from json_to_md_converter import cleanup_markdown, convert_html_to_markdown
 
 
 # ============================================================================
@@ -328,6 +330,115 @@ def extract_data_availability_from_html(html_content: str) -> str:
     return data_section.get_text(strip=True)
 
 
+# ============================================================================
+# Main Content Conversion
+# ============================================================================
+
+def extract_paragraphs_from_html_content(html_content: str) -> list:
+    """Extract paragraph and equation HTML blocks from Nature main-content."""
+    soup = BeautifulSoup(html_content, 'html.parser')
+    main_content_div = soup.find('div', {'class': 'main-content'})
+
+    if not main_content_div:
+        main_content_div = soup.find('div', {'class': 'main-content', 'data-nosnippet': ''})
+
+    if not main_content_div:
+        print("❌ main-content div not found")
+        return []
+
+    main_content_html = str(main_content_div)
+
+    paragraph_matches = list(re.finditer(r'<p[^>]*>(.*?)</p>', main_content_html, re.DOTALL))
+    equation_matches = list(
+        re.finditer(
+            r'<div[^>]*class="c-article-equation"[^>]*>(.*?)</div>\s*</div>',
+            main_content_html,
+            re.DOTALL,
+        )
+    )
+
+    ordered_items = []
+    for match in paragraph_matches:
+        ordered_items.append((match.start(), match.group(0)))
+    for match in equation_matches:
+        ordered_items.append((match.start(), match.group(0)))
+
+    ordered_items.sort(key=lambda item: item[0])
+    items = [content for _, content in ordered_items]
+
+    print(f"✓ Found {len(paragraph_matches)} paragraphs and {len(equation_matches)} equations")
+    return items
+
+
+def extract_paragraphs_from_html(html_file: str) -> list:
+    """Extract paragraph and equation HTML blocks from a file."""
+    with open(html_file, 'r', encoding='utf-8') as f:
+        html_content = f.read()
+    return extract_paragraphs_from_html_content(html_content)
+
+
+def convert_paragraph(p_html: str) -> str:
+    """Convert one HTML paragraph/equation block to cleaned Markdown."""
+    try:
+        md = convert_html_to_markdown(p_html)
+        md = cleanup_markdown(md)
+        md = re.sub(r'\s+', ' ', md)
+        return md.strip()
+    except Exception as e:
+        print(f"⚠️  Paragraph conversion error: {str(e)[:50]}")
+        return ""
+
+
+def convert_main_content_by_paragraph(html_content: str) -> str:
+    """Convert Nature main-content to Markdown one paragraph at a time."""
+    print("\n   Extracting main-content paragraphs...")
+    paragraphs = extract_paragraphs_from_html_content(html_content)
+    print(f"   ✓ Found {len(paragraphs)} paragraph/equation blocks")
+
+    converted_paragraphs = []
+    for idx, p_html in enumerate(paragraphs, 1):
+        md = convert_paragraph(p_html)
+        if md:
+            converted_paragraphs.append(md)
+            if idx <= 3 or idx % 10 == 0:
+                print(f"   ✓ Paragraph {idx}: {len(md)} characters")
+
+    final_markdown = "\n\n".join(converted_paragraphs)
+    final_markdown = re.sub(r'\n\n\n+', '\n\n', final_markdown)
+    final_markdown = "## Main\n\n" + final_markdown if final_markdown else ""
+
+    print(f"   ✓ Converted {len(converted_paragraphs)} valid paragraphs")
+    return final_markdown
+
+
+def convert_by_paragraph(html_file: str, output_file: str):
+    """Convert an HTML file's main content by paragraph and save Markdown."""
+    print("=" * 80)
+    print("📖 Converting HTML by paragraph")
+    print("=" * 80)
+
+    with open(html_file, 'r', encoding='utf-8') as f:
+        html_content = f.read()
+
+    final_markdown = convert_main_content_by_paragraph(html_content)
+
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(final_markdown)
+
+    result = {
+        'output_file': output_file,
+        'size': len(final_markdown),
+        'lines': len(final_markdown.splitlines()),
+        'paragraphs': max((len(final_markdown.split("\n\n")) - 1), 0),
+    }
+
+    print("\n✅ Paragraph conversion complete")
+    print(f"   Output: {output_file}")
+    print(f"   Size: {result['size']} characters")
+    print(f"   Lines: {result['lines']} lines")
+    return result
+
+
 def run_conversion_workflow(html_file: str, output_dir: str):
     """Execute complete paper conversion workflow"""
 
@@ -362,8 +473,20 @@ def run_conversion_workflow(html_file: str, output_dir: str):
         abstract_md = ""
         print("⚠️  No abstract found")
 
-    # 2. Extract references
-    print("\n2️⃣  Extracting references...")
+    # 2. Convert main content by paragraph
+    print("\n2️⃣  Converting main content by paragraph...")
+    main_md = convert_main_content_by_paragraph(html_content)
+    if main_md:
+        main_file = output_path / "nature_main_by_paragraph.md"
+        with open(main_file, 'w', encoding='utf-8') as f:
+            f.write(main_md)
+        print(f"✓ Main content converted: {len(main_md)} characters")
+        print(f"   Main output file: {main_file}")
+    else:
+        print("⚠️  No main content found")
+
+    # 3. Extract references
+    print("\n3️⃣  Extracting references...")
     references_list = extract_references_from_html(html_content)
     if references_list:
         references_md = "## References\n\n" + "\n\n".join(references_list) + "\n"
@@ -372,8 +495,8 @@ def run_conversion_workflow(html_file: str, output_dir: str):
         references_md = ""
         print("⚠️  No references found")
 
-    # 3. Extract supplementary information
-    print("\n3️⃣  Extracting supplementary information...")
+    # 4. Extract supplementary information
+    print("\n4️⃣  Extracting supplementary information...")
     supp_md = extract_supplementary_information_from_html(html_content)
     if supp_md:
         supp_section = f"## Supplementary information\n\n{supp_md}\n"
@@ -382,8 +505,8 @@ def run_conversion_workflow(html_file: str, output_dir: str):
         supp_section = ""
         print("⚠️  No supplementary information found")
 
-    # 4. Extract extended data
-    print("\n4️⃣  Extracting extended data figures and tables...")
+    # 5. Extract extended data
+    print("\n5️⃣  Extracting extended data figures and tables...")
     extended_md = extract_extended_data_from_html(html_content)
     if extended_md:
         extended_section = f"## Extended data\n\n{extended_md}\n"
@@ -392,8 +515,8 @@ def run_conversion_workflow(html_file: str, output_dir: str):
         extended_section = ""
         print("⚠️  No extended data found")
 
-    # 5. Extract data availability
-    print("\n5️⃣  Extracting data availability...")
+    # 6. Extract data availability
+    print("\n6️⃣  Extracting data availability...")
     data_avail = extract_data_availability_from_html(html_content)
     if data_avail:
         data_avail_section = f"## Data availability\n\n{data_avail}\n"
@@ -402,8 +525,8 @@ def run_conversion_workflow(html_file: str, output_dir: str):
         data_avail_section = "## Data availability\n\nData available upon request from corresponding authors.\n"
         print("⚠️  No data availability info found")
 
-    # 6. Extract acknowledgements
-    print("\n6️⃣  Extracting acknowledgements...")
+    # 7. Extract acknowledgements
+    print("\n7️⃣  Extracting acknowledgements...")
     ack_md = extract_acknowledgements_from_html(html_content)
     if ack_md:
         ack_section = f"## Acknowledgements\n\n{ack_md}\n"
@@ -412,10 +535,12 @@ def run_conversion_workflow(html_file: str, output_dir: str):
         ack_section = ""
         print("⚠️  No acknowledgements found")
 
-    # 7. Merge into complete document
-    print("\n7️⃣  Merging into complete document...")
+    # 8. Merge into complete document
+    print("\n8️⃣  Merging into complete document...")
     complete_doc = f"""{metadata_md}
-{abstract_md}{data_avail_section}{ack_section}{extended_section}{supp_section}{references_md}"""
+{abstract_md}{main_md}
+
+{data_avail_section}{ack_section}{extended_section}{supp_section}{references_md}"""
 
     complete_file = output_path / "paper_complete.md"
     with open(complete_file, 'w', encoding='utf-8') as f:
@@ -426,6 +551,7 @@ def run_conversion_workflow(html_file: str, output_dir: str):
     print("=" * 80)
     metadata_lines = len(metadata_md.splitlines()) if metadata_md else 0
     abstract_lines = len(abstract_md.splitlines()) if abstract_md else 0
+    main_lines = len(main_md.splitlines()) if main_md else 0
     ref_lines = len(references_md.splitlines()) if references_md else 0
     data_avail_lines = len(data_avail_section.splitlines()) if data_avail_section else 0
     ack_lines = len(ack_section.splitlines()) if ack_section else 0
@@ -435,6 +561,7 @@ def run_conversion_workflow(html_file: str, output_dir: str):
 
     print(f"Metadata: {metadata_lines} lines")
     print(f"Abstract: {abstract_lines} lines")
+    print(f"Main: {main_lines} lines")
     print(f"Data availability: {data_avail_lines} lines")
     print(f"Acknowledgements: {ack_lines} lines")
     print(f"Extended data: {extended_lines} lines")
@@ -446,11 +573,12 @@ def run_conversion_workflow(html_file: str, output_dir: str):
     print(f"\nDocument structure:")
     print(f"   1. Metadata (title, authors, affiliations, keywords)")
     print(f"   2. Abstract")
-    print(f"   3. Data availability")
-    print(f"   4. Acknowledgements")
-    print(f"   5. Extended data")
-    print(f"   6. Supplementary information")
-    print(f"   7. References")
+    print(f"   3. Main")
+    print(f"   4. Data availability")
+    print(f"   5. Acknowledgements")
+    print(f"   6. Extended data")
+    print(f"   7. Supplementary information")
+    print(f"   8. References")
 
 
 def find_default_html_file(project_root: Path) -> Path:
