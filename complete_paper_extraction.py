@@ -254,7 +254,7 @@ def extract_text_without_math(html_str: str) -> str:
 # Phase 4: Unified Download Manager
 # ============================================================================
 
-async def _download_all_resources(page, links: dict, output_dir: Path, context, metadata: dict) -> dict:
+async def _download_all_resources(page, links: dict, output_dir: Path, context, metadata: dict, doi: str = None) -> dict:
     """Unified download manager for all resources (PDF, figures, supplemental)
 
     Args:
@@ -263,6 +263,7 @@ async def _download_all_resources(page, links: dict, output_dir: Path, context, 
         output_dir: Output directory for downloads
         context: Playwright browser context (for new tabs)
         metadata: Paper metadata (for supplemental material naming)
+        doi: DOI for constructing PDF URL if pdf_url not provided
 
     Returns:
         dict with 'pdf', 'figures', 'supplemental' keys
@@ -279,7 +280,7 @@ async def _download_all_resources(page, links: dict, output_dir: Path, context, 
         print("Step 4️⃣  下载论文PDF...")
         print("=" * 80)
         try:
-            pdf_filename = await download_pdf(page, "", output_dir,
+            pdf_filename = await download_pdf(page, doi or "", output_dir,
                                             journal_prefix=None,
                                             publisher='aps')
             downloads['pdf'] = pdf_filename
@@ -719,7 +720,7 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
                 markdown_file = paper_output_dir / markdown_filename
 
                 # Step 3: Download all resources
-                downloads = await _download_all_resources(page, links, paper_output_dir, context, metadata)
+                downloads = await _download_all_resources(page, links, paper_output_dir, context, metadata, doi)
 
                 # Step 3.5: Generate markdown with figures
                 print("\nStep 3.5️⃣  生成Markdown...")
