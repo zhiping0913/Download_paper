@@ -21,6 +21,7 @@ except:
 
 from publisher.base import PublisherHandler
 from json_to_md_converter import mathml_to_latex_pandoc, extract_text_without_math
+from paper_components_extractor import extract_references_from_html
 from playwright.async_api import async_playwright
 
 
