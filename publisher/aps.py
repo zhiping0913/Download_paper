@@ -410,13 +410,14 @@ async def get_supplemental_links(page, doi: str, journal_prefix: str = None) -> 
 class APSHandler(PublisherHandler):
     """Handler for American Physical Society (APS) journals"""
 
-    def __init__(self, journal_prefix: str = 'prl'):
+    def __init__(self, journal_prefix: str = 'prl', page=None, captured_data_dir=None, doi: str = None):
         """
         Initialize APS handler
 
         Args:
             journal_prefix: Journal code (prl, pre, pra, prb, etc.)
         """
+        super().__init__(page=page, captured_data_dir=captured_data_dir, doi=doi)
         self.journal_prefix = journal_prefix
         self.base_url = f"https://journals.aps.org/{journal_prefix}"
 
@@ -449,7 +450,7 @@ class APSHandler(PublisherHandler):
         """Extract figure URLs and captions from APS JSON"""
         return extract_figure_assets_from_fulltext(json_data)
 
-    def setup_network_capture(self, page, doi: str):
+    def setup_network_capture(self, page=None, doi: str = None):
         """Set up network event listener to capture responses
 
         Call this before page.goto(), so it captures all subsequent network traffic.
@@ -462,6 +463,15 @@ class APSHandler(PublisherHandler):
         Returns:
             dict that will be populated with captured data
         """
+        page = page or self.page
+        doi = doi or self.doi
+        if page is None:
+            raise ValueError("APSHandler.setup_network_capture() requires a Playwright page")
+        if doi is None:
+            raise ValueError("APSHandler.setup_network_capture() requires a DOI")
+
+        self.configure(page=page, doi=doi)
+
         captured = {
             'json_responses': [],
             'document': None,
@@ -514,7 +524,7 @@ class APSHandler(PublisherHandler):
                     }
 
                     # Save HTML file to captured_data/{doi}/
-                    output_dir = Path("captured_data") / doi.replace('/', '_')
+                    output_dir = self.captured_data_dir or Path("captured_data") / doi.replace('/', '_')
                     output_dir.mkdir(parents=True, exist_ok=True)
                     html_filename = f"page_{len(captured['json_responses']):03d}.html"
                     html_path = output_dir / html_filename
@@ -541,7 +551,7 @@ class APSHandler(PublisherHandler):
                         if has_paper or len(jstr) > 2000:
                             print(f"  ✓✓ API数据: {len(jstr)} 字节")
 
-                            output_dir = Path("captured_data") / doi.replace('/', '_')
+                            output_dir = self.captured_data_dir or Path("captured_data") / doi.replace('/', '_')
                             output_dir.mkdir(parents=True, exist_ok=True)
                             jpath = output_dir / f"api_response_{len(captured['json_responses']):03d}.json"
                             with open(jpath, 'w', encoding='utf-8') as f:
@@ -598,7 +608,64 @@ class APSHandler(PublisherHandler):
 
         return captured
 
-    async def extract_all(self, page, doi: str, captured: dict = None) -> dict:
+    def load_captured_data(self) -> dict:
+        """Load APS response data from the configured captured data directory."""
+        captured = {
+            'json_responses': [],
+            'document': None,
+            'timeline': [],
+            'abstract_html': None,
+            'fulltext_data': None,
+            'supplemental_data': None,
+            'journal_prefix': self.journal_prefix,
+        }
+
+        if not self.captured_data_dir or not self.captured_data_dir.exists():
+            return captured
+
+        html_files = sorted(self.captured_data_dir.glob("*.html"))
+        if html_files:
+            html_path = html_files[0]
+            try:
+                html = html_path.read_text(encoding='utf-8')
+                captured['abstract_html'] = html
+                captured['document'] = {
+                    'file': str(html_path),
+                    'size': len(html),
+                }
+            except Exception:
+                pass
+
+        for json_path in sorted(self.captured_data_dir.glob("api_response_*.json")):
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                jstr = json.dumps(data)
+                item = {
+                    'file': str(json_path),
+                    'size': len(jstr),
+                }
+                captured['json_responses'].append(item)
+
+                filename = json_path.name.lower()
+                content = jstr.lower()
+                if captured['fulltext_data'] is None and ('fulltext' in filename or 'fulltext' in content):
+                    captured['fulltext_data'] = data
+                elif captured['supplemental_data'] is None and ('supplemental' in filename or 'supplemental' in content):
+                    captured['supplemental_data'] = data
+            except Exception:
+                continue
+
+        if captured['fulltext_data'] is None and captured['json_responses']:
+            try:
+                with open(captured['json_responses'][0]['file'], 'r', encoding='utf-8') as f:
+                    captured['fulltext_data'] = json.load(f)
+            except Exception:
+                pass
+
+        return captured
+
+    async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
         """Execute complete extraction flow
 
         Args:
@@ -611,14 +678,25 @@ class APSHandler(PublisherHandler):
             dict with keys: 'metadata', 'links', 'fulltext_data', 'journal_prefix'
             where 'links' contains: 'pdf_url', 'figure_urls', 'supplemental_urls'
         """
+        page = page or self.page
+        doi = doi or self.doi
+        if page is None:
+            raise ValueError("APSHandler.extract_all() requires a Playwright page")
+        if doi is None:
+            raise ValueError("APSHandler.extract_all() requires a DOI")
+
+        self.configure(page=page, doi=doi)
+
         # 1. Extract metadata
         metadata = await self.extract_metadata(page)
 
         # 2. Use provided captured data or capture it ourselves
         if captured is None:
-            # Backward compatibility: capture network data if not provided
-            url = f"https://doi.org/{doi}"
-            captured = await self._capture_network_data(page, url)
+            captured = self.load_captured_data()
+            if not captured.get('fulltext_data') and not captured.get('json_responses'):
+                # Backward compatibility: capture network data if not provided
+                url = f"https://doi.org/{doi}"
+                captured = await self._capture_network_data(page, url)
         else:
             # Network capture is already running, just wait for additional requests
             await asyncio.sleep(3)
@@ -994,5 +1072,3 @@ def process_component(comp: dict, doi: str = None, output_dir: Path = None,
                 text += f"\n\n{body}\n"
 
     return (text, None, None)
-
-

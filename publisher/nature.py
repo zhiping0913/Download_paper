@@ -18,17 +18,18 @@ from json_to_md_converter import cleanup_markdown, convert_html_to_markdown
 class NatureHandler(PublisherHandler):
     """Handler for Nature and Springer Nature journals"""
 
-    def __init__(self, journal_name: str = 'nature'):
+    def __init__(self, journal_name: str = 'nature', page=None, captured_data_dir=None, doi: str = None):
         """
         Initialize Nature handler
 
         Args:
             journal_name: Journal name (nature, nature_physics, nature_materials, etc.)
         """
+        super().__init__(page=page, captured_data_dir=captured_data_dir, doi=doi)
         self.journal_name = journal_name
         self.base_url = "https://www.nature.com"
 
-    async def extract_all(self, page, doi: str, captured: dict = None) -> dict:
+    async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
         """Execute complete extraction flow for Nature articles
 
         Args:
@@ -40,6 +41,15 @@ class NatureHandler(PublisherHandler):
             dict with keys: 'metadata', 'links', 'fulltext_data', 'journal_name'
             where 'links' contains: 'pdf_url', 'figure_urls', 'supplemental_urls'
         """
+        page = page or self.page
+        doi = doi or self.doi
+        if page is None:
+            raise ValueError("NatureHandler.extract_all() requires a Playwright page")
+        if doi is None:
+            raise ValueError("NatureHandler.extract_all() requires a DOI")
+
+        self.configure(page=page, doi=doi)
+
         # 1. Extract metadata
         metadata = await self.extract_metadata(page)
         metadata['doi'] = doi
@@ -99,7 +109,7 @@ class NatureHandler(PublisherHandler):
             'journal_name': self.journal_name
         }
 
-    def setup_network_capture(self, page, doi: str):
+    def setup_network_capture(self, page=None, doi: str = None):
         """Set up network event listener to capture responses
 
         Call this before or after page navigation, so it captures network traffic.
@@ -112,6 +122,15 @@ class NatureHandler(PublisherHandler):
         Returns:
             dict that will be populated with captured data
         """
+        page = page or self.page
+        doi = doi or self.doi
+        if page is None:
+            raise ValueError("NatureHandler.setup_network_capture() requires a Playwright page")
+        if doi is None:
+            raise ValueError("NatureHandler.setup_network_capture() requires a DOI")
+
+        self.configure(page=page, doi=doi)
+
         captured = {
             'json_responses': [],
             'document': None,
@@ -149,7 +168,7 @@ class NatureHandler(PublisherHandler):
                     }
 
                     # Save HTML file to captured_data/{doi}/
-                    output_dir = Path("captured_data") / doi.replace('/', '_')
+                    output_dir = self.captured_data_dir or Path("captured_data") / doi.replace('/', '_')
                     output_dir.mkdir(parents=True, exist_ok=True)
                     html_filename = f"page_{len(captured['json_responses']):03d}.html"
                     html_path = output_dir / html_filename
@@ -172,7 +191,7 @@ class NatureHandler(PublisherHandler):
 
                         print(f"  ✓✓ API数据: {len(jstr)} 字节")
 
-                        output_dir = Path("captured_data") / doi.replace('/', '_')
+                        output_dir = self.captured_data_dir or Path("captured_data") / doi.replace('/', '_')
                         output_dir.mkdir(parents=True, exist_ok=True)
                         jpath = output_dir / f"api_response_{len(captured['json_responses']):03d}.json"
                         with open(jpath, 'w', encoding='utf-8') as f:
@@ -499,7 +518,9 @@ class NatureHandler(PublisherHandler):
                 }
 
                 // Convert to full URL if relative
-                if (!src.startsWith('http')) {
+                if (src.startsWith('//')) {
+                    src = 'https:' + src;
+                } else if (!src.startsWith('http')) {
                     src = 'https://www.nature.com' + src;
                 }
 
