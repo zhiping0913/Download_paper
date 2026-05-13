@@ -16,11 +16,8 @@ from bs4 import BeautifulSoup
 # Metadata Extraction
 # ============================================================================
 
-def extract_metadata_from_html(html_file: str) -> dict:
-    """Extract JSON-LD metadata from HTML file"""
-    with open(html_file, 'r', encoding='utf-8') as f:
-        html_content = f.read()
-
+def extract_metadata_from_html(html_content: str) -> dict:
+    """Extract JSON-LD metadata from HTML content"""
     soup = BeautifulSoup(html_content, 'html.parser')
     ld_json_script = soup.find('script', {'type': 'application/ld+json'})
 
@@ -126,11 +123,8 @@ def save_metadata_to_file(metadata_md: str, output_file: str):
 # References Extraction
 # ============================================================================
 
-def extract_references_from_html(html_file: str) -> list:
-    """Extract references from HTML file"""
-    with open(html_file, 'r', encoding='utf-8') as f:
-        html_content = f.read()
-
+def extract_references_from_html(html_content: str) -> list:
+    """Extract references from HTML content"""
     soup = BeautifulSoup(html_content, 'html.parser')
 
     # Try Nature format first
@@ -186,11 +180,8 @@ def save_references(references: list, output_file: str):
 # Supplementary Materials Extraction
 # ============================================================================
 
-def extract_supplementary_information_from_html(html_file: str) -> str:
-    """Extract supplementary information from HTML file"""
-    with open(html_file, 'r', encoding='utf-8') as f:
-        html_content = f.read()
-
+def extract_supplementary_information_from_html(html_content: str) -> str:
+    """Extract supplementary information from HTML content"""
     soup = BeautifulSoup(html_content, 'html.parser')
     supp_section = soup.find('section', {'data-title': 'Supplementary information'})
 
@@ -231,11 +222,8 @@ def extract_supplementary_information_from_html(html_file: str) -> str:
 # Extended Data Extraction
 # ============================================================================
 
-def extract_extended_data_from_html(html_file: str) -> str:
-    """Extract extended data figures and tables from HTML file"""
-    with open(html_file, 'r', encoding='utf-8') as f:
-        html_content = f.read()
-
+def extract_extended_data_from_html(html_content: str) -> str:
+    """Extract extended data figures and tables from HTML content"""
     soup = BeautifulSoup(html_content, 'html.parser')
     extended_section = soup.find('section', {'data-title': 'Extended data figures and tables'})
 
@@ -281,11 +269,8 @@ def extract_extended_data_from_html(html_file: str) -> str:
 # Abstract Extraction
 # ============================================================================
 
-def extract_abstract_from_html(html_file: str) -> str:
-    """Extract abstract from HTML file"""
-    with open(html_file, 'r', encoding='utf-8') as f:
-        html_content = f.read()
-
+def extract_abstract_from_html(html_content: str) -> str:
+    """Extract abstract from HTML content"""
     soup = BeautifulSoup(html_content, 'html.parser')
 
     # Try to find abstract section
@@ -305,11 +290,8 @@ def extract_abstract_from_html(html_file: str) -> str:
 # Acknowledgements Extraction
 # ============================================================================
 
-def extract_acknowledgements_from_html(html_file: str) -> str:
-    """Extract acknowledgements from HTML file"""
-    with open(html_file, 'r', encoding='utf-8') as f:
-        html_content = f.read()
-
+def extract_acknowledgements_from_html(html_content: str) -> str:
+    """Extract acknowledgements from HTML content"""
     soup = BeautifulSoup(html_content, 'html.parser')
 
     ack_section = soup.find('section', {'data-title': 'Acknowledgements'})
@@ -325,11 +307,8 @@ def extract_acknowledgements_from_html(html_file: str) -> str:
 # Author Information Extraction
 # ============================================================================
 
-def extract_author_information_from_html(html_file: str) -> str:
-    """Extract author information from HTML file"""
-    with open(html_file, 'r', encoding='utf-8') as f:
-        html_content = f.read()
-
+def extract_author_information_from_html(html_content: str) -> str:
+    """Extract author information from HTML content"""
     soup = BeautifulSoup(html_content, 'html.parser')
 
     author_section = soup.find('section', {'data-title': 'Author information'})
@@ -345,11 +324,8 @@ def extract_author_information_from_html(html_file: str) -> str:
 # Data Availability Extraction
 # ============================================================================
 
-def extract_data_availability_from_html(html_file: str) -> str:
-    """Extract data availability from HTML file"""
-    with open(html_file, 'r', encoding='utf-8') as f:
-        html_content = f.read()
-
+def extract_data_availability_from_html(html_content: str) -> str:
+    """Extract data availability from HTML content"""
     soup = BeautifulSoup(html_content, 'html.parser')
 
     data_section = soup.find('section', {'data-title': 'Data availability'})

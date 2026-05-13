@@ -31,13 +31,17 @@ def run_conversion_workflow(html_file: str, output_dir: str):
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
+    # Read HTML content once
+    with open(html_file, 'r', encoding='utf-8') as f:
+        html_content = f.read()
+
     print("=" * 80)
     print("🔄 Complete Paper Conversion Workflow")
     print("=" * 80)
 
     # 0. Extract metadata
     print("\n0️⃣  Extracting paper metadata...")
-    metadata = extract_metadata_from_html(html_file)
+    metadata = extract_metadata_from_html(html_content)
     metadata_md = format_metadata_to_markdown(metadata)
 
     if metadata_md:
@@ -47,7 +51,7 @@ def run_conversion_workflow(html_file: str, output_dir: str):
 
     # 1. Extract abstract
     print("\n1️⃣  Extracting abstract...")
-    abstract = extract_abstract_from_html(html_file)
+    abstract = extract_abstract_from_html(html_content)
     if abstract:
         abstract_md = f"## Abstract\n\n{abstract}\n"
         print(f"✓ Abstract extracted: {len(abstract)} characters")
@@ -57,7 +61,7 @@ def run_conversion_workflow(html_file: str, output_dir: str):
 
     # 2. Extract references
     print("\n2️⃣  Extracting references...")
-    references_list = extract_references_from_html(html_file)
+    references_list = extract_references_from_html(html_content)
     if references_list:
         references_md = "## References\n\n" + "\n\n".join(references_list) + "\n"
         print(f"✓ References extracted: {len(references_list)} items")
@@ -67,7 +71,7 @@ def run_conversion_workflow(html_file: str, output_dir: str):
 
     # 3. Extract supplementary information
     print("\n3️⃣  Extracting supplementary information...")
-    supp_md = extract_supplementary_information_from_html(html_file)
+    supp_md = extract_supplementary_information_from_html(html_content)
     if supp_md:
         supp_section = f"## Supplementary information\n\n{supp_md}\n"
         print(f"✓ Supplementary info extracted: {len(supp_md)} characters")
@@ -77,7 +81,7 @@ def run_conversion_workflow(html_file: str, output_dir: str):
 
     # 4. Extract extended data
     print("\n4️⃣  Extracting extended data figures and tables...")
-    extended_md = extract_extended_data_from_html(html_file)
+    extended_md = extract_extended_data_from_html(html_content)
     if extended_md:
         extended_section = f"## Extended data\n\n{extended_md}\n"
         print(f"✓ Extended data extracted: {len(extended_md)} characters")
@@ -87,7 +91,7 @@ def run_conversion_workflow(html_file: str, output_dir: str):
 
     # 5. Extract data availability
     print("\n5️⃣  Extracting data availability...")
-    data_avail = extract_data_availability_from_html(html_file)
+    data_avail = extract_data_availability_from_html(html_content)
     if data_avail:
         data_avail_section = f"## Data availability\n\n{data_avail}\n"
         print(f"✓ Data availability extracted: {len(data_avail)} characters")
@@ -97,7 +101,7 @@ def run_conversion_workflow(html_file: str, output_dir: str):
 
     # 6. Extract acknowledgements
     print("\n6️⃣  Extracting acknowledgements...")
-    ack_md = extract_acknowledgements_from_html(html_file)
+    ack_md = extract_acknowledgements_from_html(html_content)
     if ack_md:
         ack_section = f"## Acknowledgements\n\n{ack_md}\n"
         print(f"✓ Acknowledgements extracted: {len(ack_md)} characters")
