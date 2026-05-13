@@ -533,6 +533,178 @@ class APSHandler(PublisherHandler):
         """Extract figure URLs and captions from APS JSON"""
         return extract_figure_assets_from_fulltext(json_data)
 
+    async def _capture_network_data(self, page, url: str) -> dict:
+        """Monitor network requests and capture JSON API responses
+
+        Returns:
+            dict with keys: 'json_responses', 'document', 'timeline', 'abstract_html',
+                           'fulltext_data', 'supplemental_data', 'journal_prefix'
+        """
+        captured = {
+            'json_responses': [],
+            'document': None,
+            'timeline': [],
+            'abstract_html': None,      # Save abstract page HTML
+            'fulltext_data': None,      # Save fulltext JSON (contains text and Acknowledgements)
+            'supplemental_data': None,  # Save supplemental information
+            'journal_prefix': None,     # Journal prefix extracted from URL (prl, pre, pra, etc.)
+        }
+
+        async def handle_response(response):
+            rtype = response.request.resource_type
+            status = response.status
+            url_str = response.url
+            ts = datetime.now().isoformat()
+
+            captured['timeline'].append({
+                'timestamp': ts,
+                'type': rtype,
+                'status': status,
+                'url': url_str,
+                'method': response.request.method
+            })
+
+            if status == 200:
+                print(f"[{status}] {rtype:10s} {url_str[:70]}")
+
+            # Capture HTML document (including abstract page)
+            if rtype == 'document' and status == 200:
+                try:
+                    html = await response.text()
+
+                    # Extract journal prefix from URL (prl, pre, pra, etc.)
+                    if 'journals.aps.org/' in url_str and not captured['journal_prefix']:
+                        match = re.search(r'journals\.aps\.org/([a-z]+)/', url_str)
+                        if match:
+                            captured['journal_prefix'] = match.group(1)
+                            print(f"  ✓ 识别期刊: {captured['journal_prefix']}")
+
+                    # Save abstract page HTML for References extraction
+                    if '/abstract/' in url_str or '/prl/abstract/' in url_str:
+                        captured['abstract_html'] = html
+                        print(f"  ✓ 保存abstract HTML: {len(html)} 字节")
+
+                    # Save main HTML document to file
+                    captured['document'] = {
+                        'url': url_str,
+                        'timestamp': ts,
+                        'size': len(html),
+                    }
+
+                    # Save HTML file to OUTPUT_DIR
+                    output_dir = Path("captured_data")
+                    output_dir.mkdir(exist_ok=True)
+                    html_filename = f"page_{len(captured['json_responses']):03d}.html"
+                    html_path = output_dir / html_filename
+                    with open(html_path, 'w', encoding='utf-8') as f:
+                        f.write(html)
+                    captured['document']['file'] = str(html_path)
+
+                    print(f"  ✓ HTML文档: {len(html)} 字节")
+                    print(f"    保存到: {html_filename}")
+                except:
+                    pass
+
+            # Capture JSON/API responses
+            elif rtype in ('xhr', 'fetch') and status == 200:
+                try:
+                    ctype = response.headers.get('content-type', '')
+                    if 'json' in ctype.lower():
+                        jdata = await response.json()
+                        jstr = json.dumps(jdata)
+
+                        kws = ['abstract', 'article', 'fulltext', 'front', 'back']
+                        has_paper = any(kw in jstr.lower() for kw in kws)
+
+                        if has_paper or len(jstr) > 2000:
+                            print(f"  ✓✓ API数据: {len(jstr)} 字节")
+
+                            output_dir = Path("captured_data")
+                            output_dir.mkdir(exist_ok=True)
+                            jpath = output_dir / f"api_response_{len(captured['json_responses']):03d}.json"
+                            with open(jpath, 'w', encoding='utf-8') as f:
+                                json.dump(jdata, f, indent=2, ensure_ascii=False)
+
+                            captured['json_responses'].append({
+                                'url': url_str,
+                                'timestamp': ts,
+                                'size': len(jstr),
+                                'file': str(jpath),
+                            })
+
+                            # Save fulltext and supplemental data specially
+                            if '/fulltext/' in url_str:
+                                captured['fulltext_data'] = jdata
+                                print(f"  ✓ 保存fulltext数据: {len(jstr)} 字节")
+                            elif '/supplemental/' in url_str:
+                                captured['supplemental_data'] = jdata
+                                print(f"  ✓ 保存supplemental数据: {len(jstr)} 字节")
+                except:
+                    pass
+
+        page.on("response", handle_response)
+
+        # Navigate to URL
+        print(f"📄 访问: {url}")
+        print("=" * 80)
+
+        try:
+            await page.goto(url, wait_until='networkidle', timeout=60000)
+            print("✓ 页面加载完成")
+        except Exception as e:
+            print(f"⚠️  {type(e).__name__}: {str(e)[:100]}")
+
+        # Wait for additional requests
+        await asyncio.sleep(3)
+
+        return captured
+
+    async def extract_all(self, page, doi: str) -> dict:
+        """Execute complete extraction flow
+
+        Returns:
+            dict with keys: 'metadata', 'links', 'fulltext_data', 'journal_prefix'
+            where 'links' contains: 'pdf_url', 'figure_urls', 'supplemental_urls'
+        """
+        # 1. Extract metadata
+        metadata = await self.extract_metadata(page)
+
+        # 2. Capture network data to get JSON
+        url = f"https://doi.org/{doi}"
+        captured = await self._capture_network_data(page, url)
+
+        # 3. Get fulltext data
+        fulltext_data = captured.get('fulltext_data')
+        if not fulltext_data and captured.get('json_responses'):
+            try:
+                json_file = captured['json_responses'][0]['file']
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    fulltext_data = json.load(f)
+            except:
+                fulltext_data = {}
+
+        # 4. Extract all links from fulltext data
+        links = {
+            'pdf_url': f"https://journals.aps.org/{self.journal_prefix}/pdf/{doi}",
+            'figure_urls': extract_figure_assets_from_fulltext(fulltext_data),
+            'supplemental_urls': []
+        }
+
+        # 5. Get supplemental links if available
+        try:
+            supp_links, supp_descriptions = await get_supplemental_links(page, doi, self.journal_prefix)
+            links['supplemental_urls'] = supp_links
+            links['supplemental_descriptions'] = supp_descriptions
+        except:
+            pass
+
+        return {
+            'metadata': metadata,
+            'links': links,
+            'fulltext_data': fulltext_data,
+            'journal_prefix': self.journal_prefix
+        }
+
     def convert_to_markdown(self, metadata: dict, fulltext_json: dict, add_figure_refs: bool = False) -> str:
         """Convert extracted data to Markdown using fulltext JSON
 
