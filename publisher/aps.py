@@ -981,35 +981,6 @@ def extract_pdf_link_from_html(html_content: str) -> str:
 # APS Paper Conversion Functions - From convert_complete_paper.py
 # ============================================================================
 
-def get_paper_metadata_from_semantic_scholar(doi: str) -> dict:
-    """从Semantic Scholar API获取论文元数据"""
-    metadata = {
-        'title': None,
-        'authors': [],
-        'journal': None,
-        'publication_year': None,
-        'citations_count': 0,
-    }
-
-    try:
-        s2_url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}"
-        params = {'fields': 'title,authors,abstract,year,journal,venue,citationCount'}
-        headers = {'User-Agent': 'Mozilla/5.0'}
-
-        response = requests.get(s2_url, params=params, headers=headers, timeout=15)
-        if response.status_code == 200:
-            data = response.json()
-            metadata['title'] = data.get('title')
-            metadata['journal'] = data.get('journal', {}).get('name') or data.get('venue')
-            metadata['publication_year'] = data.get('year')
-            metadata['citations_count'] = data.get('citationCount', 0)
-
-            for author in data.get('authors', []):
-                metadata['authors'].append(author.get('name'))
-    except Exception as e:
-        print(f"⚠️  获取Semantic Scholar数据失败: {e}")
-
-    return metadata
 
 
 def extract_figure_caption(comp: dict) -> tuple:
