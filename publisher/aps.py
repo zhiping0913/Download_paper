@@ -21,7 +21,6 @@ except:
 
 from publisher.base import PublisherHandler
 from json_to_md_converter import mathml_to_latex_pandoc, extract_text_without_math
-from paper_components_extractor import extract_references_from_html
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 
@@ -36,58 +35,42 @@ from bs4 import BeautifulSoup
 def _clean_aps_reference_text(text: str) -> str:
     """Normalize APS reference text extracted from the abstract page."""
     text = re.sub(r'\s+', ' ', text or '').strip()
-    text = re.sub(r'^(?:\[\s*)?\d+[\].\s]+', '', text)
-    text = re.sub(r'\s*(?:Article Lookup|Google Scholar|Crossref|PubMed|Web of Science)\s*', ' ', text)
+    text = re.sub(r'\s+([,.;:])', r'\1', text)
+    text = re.sub(r'\(\s+', '(', text)
+    text = re.sub(r'\s+\)', ')', text)
     return re.sub(r'\s+', ' ', text).strip()
 
 
 def _extract_aps_references_from_html(html_content: str) -> list:
-    """Extract references from APS abstract/fulltext HTML."""
+    """Extract references from APS abstract HTML.
+
+    APS references are rendered as:
+    <ol class="references"><li id="c1">...</li></ol>
+    """
     if not html_content:
         return []
 
     soup = BeautifulSoup(html_content, 'html.parser')
-    for tag in soup(['script', 'style', 'noscript', 'svg']):
+    references_list = soup.select_one('ol.references')
+    if not references_list:
+        return []
+
+    for tag in references_list(['script', 'style', 'noscript', 'svg']):
         tag.decompose()
 
-    containers = []
-    selectors = [
-        '#references',
-        '.references',
-        '.article-references',
-        '[data-title*="Reference"]',
-        '[aria-label*="Reference"]',
-        '[class*="reference"]',
-        '[id*="reference"]',
-    ]
-    for selector in selectors:
-        containers.extend(soup.select(selector))
-
-    for heading in soup.find_all(['h2', 'h3', 'h4']):
-        if 'reference' in heading.get_text(' ', strip=True).lower():
-            parent = heading.find_parent(['section', 'div', 'article'])
-            if parent:
-                containers.append(parent)
-            next_list = heading.find_next(['ol', 'ul'])
-            if next_list:
-                containers.append(next_list)
-
     references = []
-    seen = set()
-    for container in containers:
-        items = container.find_all(['li', 'p', 'div'], id=re.compile(r'^c\d+$'))
-        if not items:
-            items = container.find_all('li')
+    for item in references_list.find_all('li', id=re.compile(r'^c\d+$'), recursive=False):
+        text = _clean_aps_reference_text(item.get_text(' ', strip=True))
+        if len(text) < 20:
+            continue
 
-        for item in items:
-            text = _clean_aps_reference_text(item.get_text(' ', strip=True))
-            if len(text) < 20:
-                continue
-            key = text.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            references.append(text)
+        doi_link = item.find('a', href=re.compile(r'https?://(?:dx\.)?doi\.org/10\.'))
+        if doi_link:
+            href = doi_link.get('href', '').strip()
+            if href and href not in text:
+                text = f"{text} DOI: {href}"
+
+        references.append(text)
 
     return references
 
@@ -504,10 +487,7 @@ class APSHandler(PublisherHandler):
 
     async def extract_references(self, html: str) -> list:
         """Parse references from HTML"""
-        references = _extract_aps_references_from_html(html)
-        if references:
-            return references
-        return extract_references_from_html(html)
+        return _extract_aps_references_from_html(html)
 
     async def get_figures(self, json_data: dict) -> dict:
         """Extract figure URLs and captions from APS JSON"""
