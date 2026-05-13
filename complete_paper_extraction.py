@@ -49,7 +49,6 @@ from publisher.aps import (
     extract_figure_assets_from_fulltext,
     get_supplemental_links,
     extract_supplemental_descriptions,
-    extract_metadata_from_page,
     extract_references_from_html
 )
 
@@ -99,7 +98,7 @@ HEADERS = {
 # 第1部分：元数据提取 - 从 publisher.aps 导入
 # ============================================================================
 
-# extract_metadata_from_page 已移至 publisher/aps.py
+
 
 
 
@@ -769,21 +768,25 @@ async def complete_extraction_workflow(doi: str, output_file: str = None):
                 print()
 
             else:
-                # For non-APS publishers, use old logic
-                print("Step 2️⃣  监听网络请求并捕获数据...")
+                # For non-APS publishers, use Semantic Scholar metadata only
+                print("Step 2️⃣  使用Semantic Scholar元数据...")
                 print("=" * 80)
-                page2 = await context.new_page()
-                captured = await capture_network_data(page2, url)
 
-                metadata = await extract_metadata_from_page(page)
-                if s2_data:
-                    if s2_data.get('year') and not metadata.get('year'):
-                        metadata['year'] = s2_data['year']
-                    if s2_data.get('title') and not metadata.get('title'):
-                        metadata['title'] = s2_data['title']
+                # Use Semantic Scholar data as the primary metadata source
+                metadata = s2_data or {
+                    'title': 'Unknown Paper',
+                    'authors': [],
+                    'journal': 'Unknown Journal',
+                    'year': None
+                }
+                print(f"  ✓ 标题: {metadata.get('title', 'N/A')[:60]}...")
+                print(f"  ✓ 作者: {len(metadata.get('authors', []))} 位")
+                print(f"  ✓ 期刊: {metadata.get('journal', 'N/A')}")
+                print(f"  ✓ DOI: {doi}")
+                print()
 
-                # [Existing logic for other publishers...]
-                # For brevity, kept minimal for other publishers
+                # [Other publisher logic would go here...]
+                # For now, minimal support - can be extended with NatureHandler etc.
 
             # Clean up pages
             print("\n🧹 清理标签页...")
