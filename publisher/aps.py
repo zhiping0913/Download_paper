@@ -825,6 +825,8 @@ def extract_figure_assets_from_fulltext(fulltext_data: dict) -> dict:
     """
     从fulltext API响应中提取图片资源信息
     返回: {fig_id: {"url": "...", "caption": "..."}, ...}
+
+    Note: 确保返回完整的URL（如果是相对路径则自动补全）
     """
     figure_assets = {}
 
@@ -843,6 +845,10 @@ def extract_figure_assets_from_fulltext(fulltext_data: dict) -> dict:
                 fig_url = variants.get('large') or variants.get('medium')
 
                 if fig_url and fig_id:
+                    # 如果是相对路径，构建完整URL
+                    if fig_url.startswith('/'):
+                        fig_url = f"https://journals.aps.org{fig_url}"
+
                     figure_assets[fig_id] = {
                         'url': fig_url,
                         'caption': obj.get('caption', '')
