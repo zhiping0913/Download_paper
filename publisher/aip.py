@@ -2,12 +2,20 @@
 AIP Publishing handler skeleton.
 
 This module wires AIP into the shared PublisherHandler contract. Detailed
-metadata/body/reference extraction for pubs.aip.org is intentionally left for a
-future pass.
+body/reference extraction for pubs.aip.org is intentionally left for a future
+pass.
 """
 
+import re
+
+from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 
+from json_to_md_converter import (
+    cleanup_markdown,
+    convert_html_to_markdown,
+    remove_newlines_in_paragraph,
+)
 from publisher.base import PublisherHandler
 
 
@@ -19,20 +27,25 @@ class AIPHandler(PublisherHandler):
         self.base_url = "https://pubs.aip.org"
 
     async def extract_metadata(self, page) -> dict:
-        """Return a minimal metadata payload until AIP parsing is implemented."""
+        """Return a minimal metadata payload with AIP main abstract when available."""
         title = None
+        abstract = ''
         if page is not None:
             try:
                 title = await page.title()
             except Exception:
                 title = None
+            try:
+                abstract = self.extract_main_abstract_from_html(await page.content())
+            except Exception:
+                abstract = ''
 
         return {
             'title': title or 'AIP Article',
             'authors': [],
             'author_with_affiliations': [],
             'corresponding_author_emails': [],
-            'abstract': '',
+            'abstract': abstract,
             'journal': 'AIP Publishing',
             'publication_date': None,
             'doi': self.doi,
@@ -42,6 +55,33 @@ class AIPHandler(PublisherHandler):
             'year': None,
             'references': [],
         }
+
+    @staticmethod
+    def extract_main_abstract_from_html(html_content: str) -> str:
+        """Extract AIP Main abstract and convert each paragraph to Markdown."""
+        if not html_content:
+            return ''
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        abstract_section = soup.find('section', class_='abstract', attrs={'aria-label': 'Main abstract'})
+        if not abstract_section:
+            return ''
+
+        paragraphs = abstract_section.find_all('p')
+        converted_paragraphs = []
+        for paragraph in paragraphs:
+            paragraph_html = str(paragraph)
+            try:
+                md = convert_html_to_markdown(paragraph_html)
+                md = cleanup_markdown(md)
+                md = remove_newlines_in_paragraph(md, "", "p")
+                md = re.sub(r'\s+', ' ', md).strip()
+                if md:
+                    converted_paragraphs.append(md)
+            except Exception as e:
+                print(f"  ⚠️  AIP abstract段落转换失败: {str(e)[:80]}")
+
+        return "\n\n".join(converted_paragraphs)
 
     async def get_fulltext_url(self, page) -> str:
         if page is not None:
@@ -97,6 +137,8 @@ class AIPHandler(PublisherHandler):
                 fulltext_html = await page.content()
             except Exception:
                 fulltext_html = ''
+            if fulltext_html and not metadata.get('abstract'):
+                metadata['abstract'] = self.extract_main_abstract_from_html(fulltext_html)
 
             return {
                 'metadata': metadata,
@@ -142,6 +184,16 @@ class AIPHandler(PublisherHandler):
 
         if metadata.get('doi'):
             md_parts.extend([f"**DOI:** {metadata['doi']}", ""])
+
+        if metadata.get('abstract'):
+            md_parts.extend([
+                "---",
+                "",
+                "## Abstract",
+                "",
+                metadata['abstract'],
+                "",
+            ])
 
         md_parts.extend([
             "---",
