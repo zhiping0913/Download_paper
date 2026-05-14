@@ -116,6 +116,13 @@ class AIPHandler(PublisherHandler):
         for tag in soup(['script', 'style', 'noscript']):
             tag.decompose()
 
+        # Collapse xref-bibr links to plain [number] brackets.
+        for a_tag in soup.select('a.xref-bibr'):
+            sup_tag = a_tag.find('sup')
+            ref_text = sup_tag.get_text(' ', strip=True) if sup_tag else a_tag.get_text(' ', strip=True)
+            if ref_text:
+                a_tag.replace_with(NavigableString(f"[{ref_text}]"))
+
         # Inline formulas are rendered as large MathJax CHTML trees with
         # assistive MathML. Keep only the MathML-derived LaTeX.
         for formula in soup.select('span.inline-formula'):
