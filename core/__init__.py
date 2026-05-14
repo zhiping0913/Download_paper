@@ -6,8 +6,6 @@ from .utilities import (
     fetch_semanticscholar,
     organize_paper_output,
     save_metadata_json,
-    mathml_to_latex_pandoc,
-    extract_text_without_math,
     detect_publisher_from_url,
     S2_API_URL,
     HEADERS
@@ -18,8 +16,6 @@ __all__ = [
     'fetch_semanticscholar',
     'organize_paper_output',
     'save_metadata_json',
-    'mathml_to_latex_pandoc',
-    'extract_text_without_math',
     'detect_publisher_from_url',
     'S2_API_URL',
     'HEADERS',

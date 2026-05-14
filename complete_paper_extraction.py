@@ -18,25 +18,14 @@ import requests
 import sys
 from pathlib import Path
 from datetime import datetime
-from html import unescape
 from urllib.parse import unquote, urljoin, urlparse
 from playwright.async_api import async_playwright
-
-# 导入转换工具
-try:
-    import pypandoc
-except:
-    import subprocess
-    subprocess.check_call(['pip', 'install', 'pypandoc', '-q'])
-    import pypandoc
 
 # 导入核心模块 (Phase 2 refactoring)
 from core import (
     fetch_semanticscholar,
     organize_paper_output,
-    save_metadata_json,
-    mathml_to_latex_pandoc,
-    extract_text_without_math
+    save_metadata_json
 )
 from publisher.orchestrator import (
     detect_publisher_from_url,
@@ -129,90 +118,6 @@ def original_image_filename(image_url: str, fig_num: int, default_ext: str = '.p
             return basename
 
     return f"figure_{fig_num}{default_ext}"
-
-
-def mathml_to_latex_pandoc(mathml_html: str) -> str:
-    """MathML转LaTeX"""
-    try:
-        html_wrapped = f"<p>{mathml_html}</p>"
-        latex_md = pypandoc.convert_text(
-            html_wrapped,
-            to='gfm',
-            format='html',
-            extra_args=['--mathjax']
-        )
-        result = latex_md.strip()
-        result = re.sub(r'^<p>(.*)</p>$', r'\1', result, flags=re.DOTALL).strip()
-
-        # 清理不支持的LaTeX命令
-        # 移除 \mspace{...} 命令（KaTeX不支持）
-        result = re.sub(r'\\mspace\{[^}]+\}', '', result)
-
-        return result
-    except:
-        return None
-
-
-def extract_text_without_math(html_str: str) -> str:
-    """提取文本并转换内联公式 - 完整HTML清理"""
-    def replace_inline_formula(match):
-        math_section = match.group(0)
-        math_match = re.search(r'<math[^>]*>.*?</math>', math_section, re.DOTALL)
-        if math_match:
-            math_html = math_match.group(0)
-            latex = mathml_to_latex_pandoc(math_html)
-            if latex:
-                return latex
-        return match.group(0)
-
-    # 1. 处理 <span class="inline-formula"> 中的 MathML
-    result = re.sub(
-        r'<span class="inline-formula">[^<]*<math[^>]*>.*?</math>[^<]*</span>',
-        replace_inline_formula,
-        html_str,
-        flags=re.DOTALL
-    )
-
-    # 2. 处理直接嵌入的 <math> 标签（图片注解中常见）
-    def convert_math_tag(match):
-        math_html = match.group(0)
-        latex = mathml_to_latex_pandoc(math_html)
-        if latex:
-            return f" {latex} "
-        return match.group(0)
-
-    result = re.sub(
-        r'<math[^>]*>.*?</math>',
-        convert_math_tag,
-        result,
-        flags=re.DOTALL
-    )
-
-    # 3. 完整的HTML标签清理
-    result = re.sub(r'<button[^>]*>', '', result, flags=re.DOTALL)
-    result = re.sub(r'</button>', '', result, flags=re.DOTALL)
-    result = re.sub(r'<a[^>]*>', '', result, flags=re.DOTALL)  # 移除 <a ...>
-    result = re.sub(r'</a>', '', result, flags=re.DOTALL)       # 移除 </a>
-    result = re.sub(r'<!-- .*? -->', '', result, flags=re.DOTALL)  # 移除HTML注释
-    result = re.sub(r'<[hH][123456][^>]*>', '', result)  # 移除 <h1-h6>
-    result = re.sub(r'</[hH][123456]>', '', result)
-    result = re.sub(r'<span[^>]*>', '', result)
-    result = re.sub(r'</span>', '', result)
-    result = re.sub(r'<i[^>]*>', '', result)               # 移除 <i ...>
-    result = re.sub(r'</i>', '', result)                   # 移除 </i>
-    result = re.sub(r'</?[a-zA-Z][^>]*>', '', result)      # 移除所有其他HTML标签
-
-    result = unescape(result)
-
-    # 修复：在公式前后添加空格（避免 "are$" 这样的问题）
-    # 如果一个非空白字符后面直接跟 $，或 $ 后面直接跟非空白字符，加空格
-    result = re.sub(r'([^\s\$])\$', r'\1 $', result)  # "are$" → "are $"
-    result = re.sub(r'\$([^\s\$])', r'$ \1', result)  # "$\Delta" → "$ \Delta"
-
-    result = re.sub(r'\s+', ' ', result).strip()
-    return result
-
-
 
 
 # ============================================================================

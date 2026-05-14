@@ -8,14 +8,6 @@ import re
 import requests
 from pathlib import Path
 from datetime import datetime
-from html import unescape
-
-try:
-    import pypandoc
-except ImportError:
-    import subprocess
-    subprocess.check_call(['pip', 'install', 'pypandoc', '-q'])
-    import pypandoc
 
 # ============================================================================
 # Semantic Scholar API Configuration
@@ -114,92 +106,6 @@ def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
     except Exception as e:
         print(f"  ⚠️  Failed to save metadata: {e}")
         return None
-
-
-# ============================================================================
-# Formula Conversion Functions
-# ============================================================================
-
-def mathml_to_latex_pandoc(mathml_html: str) -> str:
-    """Convert MathML to LaTeX using pandoc"""
-    try:
-        html_wrapped = f"<p>{mathml_html}</p>"
-        latex_md = pypandoc.convert_text(
-            html_wrapped,
-            to='gfm',
-            format='html',
-            extra_args=['--mathjax']
-        )
-        result = latex_md.strip()
-        result = re.sub(r'^<p>(.*)</p>$', r'\1', result, flags=re.DOTALL).strip()
-
-        # Clean up unsupported LaTeX commands
-        # Remove \mspace{...} commands (not supported by KaTeX)
-        result = re.sub(r'\\mspace\{[^}]+\}', '', result)
-
-        return result
-    except:
-        return None
-
-
-def extract_text_without_math(html_str: str) -> str:
-    """Extract text and convert inline formulas - complete HTML cleanup"""
-    def replace_inline_formula(match):
-        math_section = match.group(0)
-        math_match = re.search(r'<math[^>]*>.*?</math>', math_section, re.DOTALL)
-        if math_match:
-            math_html = math_match.group(0)
-            latex = mathml_to_latex_pandoc(math_html)
-            if latex:
-                return latex
-        return match.group(0)
-
-    # 1. Handle MathML in <span class="inline-formula">
-    result = re.sub(
-        r'<span class="inline-formula">[^<]*<math[^>]*>.*?</math>[^<]*</span>',
-        replace_inline_formula,
-        html_str,
-        flags=re.DOTALL
-    )
-
-    # 2. Handle direct <math> tags (common in figure captions)
-    def convert_math_tag(match):
-        math_html = match.group(0)
-        latex = mathml_to_latex_pandoc(math_html)
-        if latex:
-            return f" {latex} "
-        return match.group(0)
-
-    result = re.sub(
-        r'<math[^>]*>.*?</math>',
-        convert_math_tag,
-        result,
-        flags=re.DOTALL
-    )
-
-    # 3. Complete HTML tag cleanup
-    result = re.sub(r'<button[^>]*>', '', result, flags=re.DOTALL)
-    result = re.sub(r'</button>', '', result, flags=re.DOTALL)
-    result = re.sub(r'<a[^>]*>', '', result, flags=re.DOTALL)
-    result = re.sub(r'</a>', '', result, flags=re.DOTALL)
-    result = re.sub(r'<!-- .*? -->', '', result, flags=re.DOTALL)
-    result = re.sub(r'<[hH][123456][^>]*>', '', result)
-    result = re.sub(r'</[hH][123456]>', '', result)
-    result = re.sub(r'<span[^>]*>', '', result)
-    result = re.sub(r'</span>', '', result)
-    result = re.sub(r'<i[^>]*>', '', result)
-    result = re.sub(r'</i>', '', result)
-    result = re.sub(r'</?[a-zA-Z][^>]*>', '', result)
-
-    result = unescape(result)
-
-    # Fix: add spaces around formulas (avoid "are$" issues)
-    # If non-whitespace followed by $, or $ followed by non-whitespace, add space
-    result = re.sub(r'([^\s\$])\$', r'\1 $', result)
-    result = re.sub(r'\$([^\s\$])', r'$ \1', result)
-
-    result = re.sub(r'\s+', ' ', result).strip()
-    return result
 
 
 # ============================================================================
