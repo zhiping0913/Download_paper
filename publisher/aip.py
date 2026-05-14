@@ -454,6 +454,17 @@ class AIPHandler(PublisherHandler):
                 article_md = self.extract_article_text_from_html(article_text)
             else:
                 article_md = article_text.strip()
+
+            # Insert downloaded figure images after each caption.
+            if kwargs.get('add_figure_refs') and kwargs.get('figure_filenames'):
+                figure_filenames = kwargs['figure_filenames']
+                for fig_num, filename in sorted(figure_filenames.items(), key=lambda x: int(x[0])):
+                    article_md = re.sub(
+                        rf'(\*\*FIG\.\s*{re.escape(fig_num)}\.\*\*[^\n]*)',
+                        rf'\1\n\n![FIG. {fig_num}.]({filename})',
+                        article_md,
+                    )
+
             md_parts.extend([article_md or "[AIP article text not found.]", ""])
         else:
             md_parts.extend(["[AIP article text not found.]", ""])
