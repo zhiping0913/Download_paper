@@ -489,8 +489,20 @@ class AIPHandler(PublisherHandler):
         ]
 
         authors = metadata.get('authors', [])
+        author_with_affiliations = metadata.get('author_with_affiliations', [])
         if authors:
-            md_parts.extend([f"**Authors:** {', '.join(authors)}", ""])
+            md_parts.append("**Authors:**")
+            md_parts.append("")
+            for entry in author_with_affiliations:
+                name = entry.get('author', '')
+                md_parts.append(name)
+                for aff in entry.get('affiliations', []):
+                    md_parts.append(aff)
+                md_parts.append("")
+            if not author_with_affiliations:
+                for author in authors:
+                    md_parts.append(author)
+                    md_parts.append("")
 
         if metadata.get('doi'):
             md_parts.extend([f"**DOI:** {metadata['doi']}", ""])
