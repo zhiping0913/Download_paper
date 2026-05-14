@@ -373,7 +373,8 @@ class NatureHandler(PublisherHandler):
         """Normalize text extracted from JSON-LD."""
         if text is None:
             return ""
-        return re.sub(r'\s+', ' ', unescape(str(text))).strip()
+        text = re.sub(r'\s+', ' ', unescape(str(text))).strip()
+        return re.sub(r'\s+([),.;:])', r'\1', text)
 
     async def get_fulltext_url(self, page) -> Optional[str]:
         """Nature doesn't have a separate fulltext API, content is on the page itself"""
@@ -637,6 +638,100 @@ class NatureHandler(PublisherHandler):
 
         return abstract_md
 
+    def extract_section_paragraphs_from_html_content(self, html_content: str, section_title: str) -> str:
+        """Extract a Nature section's paragraphs and convert them to Markdown."""
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        section = soup.find('section', {'data-title': section_title})
+        if not section:
+            print(f"  ⚠️  {section_title} section not found")
+            return ""
+
+        content_div = section.find('div', {'class': 'c-article-section__content'})
+        if not content_div:
+            print(f"  ⚠️  {section_title} content not found")
+            return ""
+
+        paragraphs = content_div.find_all('p')
+        if not paragraphs:
+            print(f"  ⚠️  {section_title} paragraphs not found")
+            return ""
+
+        converted_paragraphs = []
+        for paragraph in paragraphs:
+            md = self.convert_paragraph(str(paragraph))
+            if md:
+                converted_paragraphs.append(md)
+
+        result = "\n\n".join(converted_paragraphs).strip()
+        if result:
+            print(f"  ✅ {section_title} converted: {len(converted_paragraphs)} paragraphs, {len(result)} chars")
+
+        return result
+
+    def extract_acknowledgements_from_html_content(self, html_content: str) -> str:
+        """Extract Nature acknowledgements and convert them to Markdown."""
+        return self.extract_section_paragraphs_from_html_content(html_content, 'Acknowledgements')
+
+    def extract_supplementary_items_from_html_content(self, html_content: str, section_title: str) -> str:
+        """Extract Nature supplementary-style item lists from a named section."""
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        section = soup.find('section', {'data-title': section_title})
+        if not section:
+            print(f"  ⚠️  {section_title} section not found")
+            return ""
+
+        items = section.find_all('div', {'class': 'c-article-supplementary__item'})
+        if not items:
+            print(f"  ⚠️  {section_title} items not found")
+            return ""
+
+        md_parts = []
+        for idx, item in enumerate(items, 1):
+            title_link = item.find('a', {'class': 'print-link'})
+            if not title_link:
+                continue
+
+            title_text = self.clean_text(title_link.get_text(" ", strip=True))
+            href = title_link.get('href', '')
+            if not title_text:
+                continue
+
+            md_parts.append(f"{idx}. [{title_text}]({href})")
+
+            desc_div = item.find('div', {'class': 'c-article-supplementary__description'})
+            if desc_div:
+                desc_paragraphs = []
+                for paragraph in desc_div.find_all('p'):
+                    md = self.convert_paragraph(str(paragraph))
+                    if md:
+                        desc_paragraphs.append(md)
+                if desc_paragraphs:
+                    desc_md = "\n\n".join(desc_paragraphs)
+                    desc_md = desc_md.replace("\n\n", "\n\n   ")
+                    md_parts.append(f"   {desc_md}")
+
+        result = "\n\n".join(md_parts).strip()
+        if result:
+            print(f"  ✅ {section_title} converted: {len(md_parts)} blocks, {len(result)} chars")
+
+        return result
+
+    def extract_extended_data_from_html_content(self, html_content: str) -> str:
+        """Extract Nature extended data figures and tables."""
+        return self.extract_supplementary_items_from_html_content(
+            html_content,
+            'Extended data figures and tables',
+        )
+
+    def extract_supplementary_information_from_html_content(self, html_content: str) -> str:
+        """Extract Nature supplementary information item links."""
+        return self.extract_supplementary_items_from_html_content(
+            html_content,
+            'Supplementary information',
+        )
+
     def convert_main_content_by_paragraph(self, html_content: str) -> str:
         """Convert Nature main-content to Markdown one paragraph at a time."""
         paragraphs = self.extract_paragraphs_from_html_content(html_content)
@@ -809,6 +904,18 @@ class NatureHandler(PublisherHandler):
                     md_content += f"{article_md}\n\n"
                 else:
                     md_content += "## Main\n\n[Article main content not found]\n"
+
+                acknowledgements_md = self.extract_acknowledgements_from_html_content(fulltext_data)
+                if acknowledgements_md:
+                    md_content += f"## Acknowledgements\n\n{acknowledgements_md}\n\n"
+
+                extended_data_md = self.extract_extended_data_from_html_content(fulltext_data)
+                if extended_data_md:
+                    md_content += f"## Extended data figures and tables\n\n{extended_data_md}\n\n"
+
+                supplementary_info_md = self.extract_supplementary_information_from_html_content(fulltext_data)
+                if supplementary_info_md:
+                    md_content += f"## Supplementary information\n\n{supplementary_info_md}\n\n"
             else:
                 md_content += "## Main\n\n[Article content available but could not be converted]\n"
 
