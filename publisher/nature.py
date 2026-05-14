@@ -463,12 +463,14 @@ class NatureHandler(PublisherHandler):
 
         return figures
 
-    def replace_remote_figure_placeholders(self, markdown: str, metadata: dict) -> str:
+    def replace_remote_figure_placeholders(self, markdown: str, metadata: dict,
+                                           figure_filenames: dict = None) -> str:
         """Replace Nature remote image placeholders with local downloaded files."""
         json_ld_images = metadata.get('image') or []
         if not markdown or not json_ld_images:
             return markdown
 
+        figure_filenames = figure_filenames or {}
         known_fig_nums = {
             str(idx)
             for idx, image_url in enumerate(json_ld_images, 1)
@@ -486,7 +488,8 @@ class NatureHandler(PublisherHandler):
             if fig_num not in known_fig_nums:
                 return match.group(0)
 
-            return f"![{alt_text}](figure_{fig_num}.png)"
+            local_filename = figure_filenames.get(fig_num, f"figure_{fig_num}.png")
+            return f"![{alt_text}]({local_filename})"
 
         return re.sub(
             r'!\[([^\]]*)\]\(([^)]*media\.springernature\.com[^)]*MediaObjects[^)]*)\)',
@@ -495,13 +498,15 @@ class NatureHandler(PublisherHandler):
         )
 
     def convert_to_markdown(self, metadata: dict, fulltext_data = None,
-                          add_figure_refs: bool = False) -> str:
+                          add_figure_refs: bool = False,
+                          figure_filenames: dict = None) -> str:
         """Convert extracted data to Markdown
 
         Args:
             metadata: Paper metadata dict
             fulltext_data: HTML content of article (for Nature) or JSON (future)
             add_figure_refs: If True, add figure references in markdown
+            figure_filenames: Mapping of figure number to downloaded local filename
 
         Returns:
             Markdown formatted text
@@ -562,7 +567,11 @@ class NatureHandler(PublisherHandler):
                 article_md = self.convert_main_content_by_paragraph(fulltext_data)
                 if article_md:
                     if add_figure_refs:
-                        article_md = self.replace_remote_figure_placeholders(article_md, metadata)
+                        article_md = self.replace_remote_figure_placeholders(
+                            article_md,
+                            metadata,
+                            figure_filenames,
+                        )
                     md_content += f"{article_md}\n\n"
                 else:
                     md_content += "## Main\n\n[Article main content not found]\n"
