@@ -437,8 +437,15 @@ class NatureHandler(PublisherHandler):
     def convert_paragraph(self, paragraph_html: str) -> str:
         """Convert one HTML paragraph/equation block to cleaned Markdown."""
         try:
+            is_equation = 'c-article-equation' in paragraph_html
             md = convert_html_to_markdown(paragraph_html)
             md = cleanup_markdown(md)
+
+            if is_equation:
+                md = re.sub(r'^:::\s*\{#Equ\d+[^}]*\}\s*', '', md.strip())
+                md = re.sub(r'\s*:::\s*$', '', md)
+                md = re.sub(r'\$\\\\\((\d+)\\\\\)\$', r'(\1)', md)
+
             md = re.sub(r'\s+', ' ', md)
             return md.strip()
         except Exception as e:

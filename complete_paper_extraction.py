@@ -35,7 +35,6 @@ from core import (
     fetch_semanticscholar,
     organize_paper_output,
     save_metadata_json,
-    add_equation_numbers,
     mathml_to_latex_pandoc,
     extract_text_without_math
 )
@@ -130,72 +129,6 @@ def original_image_filename(image_url: str, fig_num: int, default_ext: str = '.p
             return basename
 
     return f"figure_{fig_num}{default_ext}"
-
-
-# ============================================================================
-# 第3部分：公式处理（保留）
-# ============================================================================
-
-def add_equation_numbers(markdown: str) -> str:
-    """为Markdown中的display equations添加编号 (1), (2), etc."""
-    # 首先清理display equations中的多余格式问题
-    # 处理 },{}$$ -> }$$ (pypandoc转换产生的问题)
-    markdown = re.sub(r',\{\}\$\$', '$$', markdown)  # 修复 ,{}$$ -> $$
-    markdown = re.sub(r'\}\{\}\$\$', '$$', markdown)  # 修复 }{}$$ -> }$$
-    # 处理末尾的 ,} 问题（在}$$之前多余的逗号）
-    markdown = re.sub(r',\}\$\$\s*\(', '}$$ (', markdown)  # 修复 ,}$$ ( -> }$$ (
-
-    lines = markdown.split('\n')
-    result_lines = []
-    eq_counter = 0
-    i = 0
-
-    while i < len(lines):
-        line = lines[i]
-
-        # 检查是否行包含display equation开始符 $$
-        if '$$' in line:
-            # 计算这一行中$$的个数
-            dollar_count = line.count('$$')
-
-            # 如果有偶数个$$，说明公式开始和结束都在这一行
-            if dollar_count >= 2:
-                # 公式完整在一行内
-                eq_counter += 1
-                # 在最后的$$后加编号
-                modified_line = line.rstrip()
-                if modified_line.endswith('$$'):
-                    modified_line = modified_line[:-2] + f'$$ ({eq_counter})'
-                result_lines.append(modified_line)
-                i += 1
-            else:
-                # 公式开始但未结束，需要找到结束的$$
-                result_lines.append(line)
-                j = i + 1
-                while j < len(lines):
-                    next_line = lines[j]
-                    result_lines.append(next_line)
-                    if '$$' in next_line:
-                        # 找到结束$$
-                        eq_counter += 1
-                        # 在结束$$后加编号
-                        if next_line.rstrip().endswith('$$'):
-                            result_lines[-1] = next_line.rstrip()[:-2] + f'$$ ({eq_counter})'
-                        elif '$$' in next_line:
-                            # 如果$$不在最后但在行中，也要加编号
-                            modified_line = next_line.replace('$$', f'$$ ({eq_counter})', 1)
-                            result_lines[-1] = modified_line
-                        break
-                    j += 1
-                i = j + 1
-        else:
-            result_lines.append(line)
-            i += 1
-
-    return '\n'.join(result_lines)
-
-
-
 
 
 def mathml_to_latex_pandoc(mathml_html: str) -> str:
