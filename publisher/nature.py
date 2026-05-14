@@ -55,7 +55,7 @@ class NatureHandler(PublisherHandler):
         metadata['doi'] = doi
 
         # 2. Extract figures
-        figure_urls = await self.get_figures(page)
+        figure_urls = await self.get_figures(page, metadata)
         # Convert figure format to match APS format: {fig_id: {'url': '...', 'caption': '...'}}
         figure_urls_formatted = {}
         for fig_id, fig_data in figure_urls.items():
@@ -175,6 +175,7 @@ class NatureHandler(PublisherHandler):
             'author_with_affiliations': [],
             'corresponding_author_emails': [],
             'references': [],
+            'image': [],
         }
 
         print("  🔍 Extracting metadata from Nature article...")
@@ -219,8 +220,9 @@ class NatureHandler(PublisherHandler):
             for (let script of scripts) {
                 try {
                     const data = JSON.parse(script.textContent);
-                    if (data.mainEntity) {
-                        return data.mainEntity;
+                    const entity = data.mainEntity || data;
+                    if (entity && (entity.description || entity.image)) {
+                        return entity;
                     }
                 } catch (e) {}
             }
@@ -230,6 +232,13 @@ class NatureHandler(PublisherHandler):
         if json_ld_data and 'description' in json_ld_data:
             metadata['abstract'] = json_ld_data['description']
             print(f"  ✅ Abstract: {metadata['abstract'][:60]}...")
+
+        if json_ld_data and json_ld_data.get('image'):
+            images = json_ld_data['image']
+            if isinstance(images, str):
+                images = [images]
+            metadata['image'] = [img for img in images if isinstance(img, str) and img]
+            print(f"  ✅ JSON-LD images: {len(metadata['image'])}")
 
         # Extract all authors from HTML DOM (more complete than meta tags)
         all_authors = await page.evaluate("""() => {
@@ -434,11 +443,20 @@ class NatureHandler(PublisherHandler):
             'paragraphs': max((len(final_markdown.split("\n\n")) - 1), 0),
         }
 
-    async def get_figures(self, page) -> Dict[str, dict]:
+    async def get_figures(self, page, metadata: dict = None) -> Dict[str, dict]:
         """Extract figure URLs and captions from HTML img tags"""
         print("  🔍 Extracting figures...")
 
         figures = {}
+        json_ld_images = (metadata or {}).get('image') or []
+        if json_ld_images:
+            for idx, image_url in enumerate(json_ld_images, 1):
+                figures[f'fig_{idx}'] = {
+                    'caption': '',
+                    'url': image_url,
+                }
+            print(f"  ✅ Figures found from JSON-LD images: {len(figures)}")
+            return figures
 
         # Find all figure elements
         figure_data = await page.evaluate("""() => {
