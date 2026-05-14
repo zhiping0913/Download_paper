@@ -36,6 +36,7 @@ research-env/
 
 # Project specific
 captured_data/
+.auth/
 /downloads/
 *.pdf
 *.json
