@@ -283,27 +283,97 @@ class NatureHandler(PublisherHandler):
             metadata['image'] = [img for img in images if isinstance(img, str) and img]
             print(f"  ✅ JSON-LD images: {len(metadata['image'])}")
 
-        # Extract all authors from HTML DOM (more complete than meta tags)
-        all_authors = await page.evaluate("""() => {
-            const authors = [];
-            const elements = document.querySelectorAll('[class*="author"]');
-            let uniqueAuthors = new Set();
-
-            elements.forEach(el => {
-                const text = el.textContent.trim();
-                if (text && text.length > 2 && text.length < 100) {
-                    uniqueAuthors.add(text);
-                }
-            });
-
-            return Array.from(uniqueAuthors).slice(0, 50);
-        }""")
-
-        if all_authors:
-            metadata['authors'] = all_authors
-            print(f"  ✅ Authors found: {len(metadata['authors'])}")
+        if json_ld_data:
+            self.extract_authors_from_json_ld(json_ld_data, metadata)
 
         return metadata
+
+    def extract_authors_from_json_ld(self, json_ld_data: dict, metadata: dict) -> None:
+        """Extract author names, affiliations, and emails from JSON-LD author entries."""
+        authors_data = json_ld_data.get('author') or []
+        if isinstance(authors_data, dict):
+            authors_data = [authors_data]
+        if not isinstance(authors_data, list):
+            return
+
+        authors = []
+        author_with_affiliations = []
+        emails = []
+
+        for author_data in authors_data:
+            if isinstance(author_data, str):
+                name = self.clean_text(author_data)
+                affiliations = []
+                email = None
+            elif isinstance(author_data, dict):
+                name = self.clean_text(author_data.get('name'))
+                affiliations = self.extract_affiliations_from_json_ld(author_data.get('affiliation'))
+                email = self.clean_text(author_data.get('email'))
+            else:
+                continue
+
+            if not name:
+                continue
+
+            authors.append(name)
+            author_entry = {
+                'author': name,
+                'affiliations': affiliations,
+            }
+            if email:
+                author_entry['email'] = email
+                emails.append(email)
+            author_with_affiliations.append(author_entry)
+
+        if authors:
+            metadata['authors'] = authors
+            metadata['author_with_affiliations'] = author_with_affiliations
+            metadata['author_emails'] = emails
+            metadata['corresponding_author_emails'] = emails
+            print(f"  ✅ Authors found from JSON-LD: {len(authors)}")
+            if emails:
+                print(f"  ✅ Author emails found from JSON-LD: {len(emails)}")
+
+    def extract_affiliations_from_json_ld(self, affiliation_data) -> List[str]:
+        """Extract readable affiliation strings from JSON-LD affiliation entries."""
+        if not affiliation_data:
+            return []
+        if isinstance(affiliation_data, (str, dict)):
+            affiliation_data = [affiliation_data]
+        if not isinstance(affiliation_data, list):
+            return []
+
+        affiliations = []
+        seen = set()
+        for affiliation in affiliation_data:
+            if isinstance(affiliation, str):
+                values = [affiliation]
+            elif isinstance(affiliation, dict):
+                values = []
+                name = affiliation.get('name')
+                address = affiliation.get('address')
+                address_name = address.get('name') if isinstance(address, dict) else address
+
+                if address_name:
+                    values.append(address_name)
+                elif name:
+                    values.append(name)
+            else:
+                continue
+
+            for value in values:
+                value = self.clean_text(value)
+                if value and value not in seen:
+                    seen.add(value)
+                    affiliations.append(value)
+
+        return affiliations
+
+    def clean_text(self, text) -> str:
+        """Normalize text extracted from JSON-LD."""
+        if text is None:
+            return ""
+        return re.sub(r'\s+', ' ', unescape(str(text))).strip()
 
     async def get_fulltext_url(self, page) -> Optional[str]:
         """Nature doesn't have a separate fulltext API, content is on the page itself"""
@@ -686,6 +756,8 @@ class NatureHandler(PublisherHandler):
                 author = item['author']
                 affiliations = item['affiliations']
                 md_content += f"- **{author}**\n"
+                if item.get('email'):
+                    md_content += f"  Email: {item['email']}\n"
                 for aff in affiliations:
                     md_content += f"  {aff}\n"
                 md_content += "\n"
