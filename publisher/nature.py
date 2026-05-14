@@ -444,77 +444,55 @@ class NatureHandler(PublisherHandler):
         }
 
     async def get_figures(self, page, metadata: dict = None) -> Dict[str, dict]:
-        """Extract figure URLs and captions from HTML img tags"""
+        """Extract figure URLs from JSON-LD mainEntity.image."""
         print("  🔍 Extracting figures...")
 
         figures = {}
         json_ld_images = (metadata or {}).get('image') or []
-        if json_ld_images:
-            for idx, image_url in enumerate(json_ld_images, 1):
-                figures[f'fig_{idx}'] = {
-                    'caption': '',
-                    'url': image_url,
-                }
-            print(f"  ✅ Figures found from JSON-LD images: {len(figures)}")
-            return figures
 
-        # Find all figure elements
-        figure_data = await page.evaluate("""() => {
-            const figs = [];
-            const elements = document.querySelectorAll('figure, [class*="figure"]');
-
-            elements.forEach((fig, idx) => {
-                // Get figure image
-                const img = fig.querySelector('img');
-                if (!img) return;
-
-                let src = img.getAttribute('src') || img.getAttribute('data-src');
-                if (!src) return;
-
-                // Upgrade to high-res version if possible
-                if (src.includes('media.springernature.com')) {
-                    src = src.replace(/w\\d+h\\d+/, 'lw685');
-                }
-
-                // Convert to full URL if relative
-                if (src.startsWith('//')) {
-                    src = 'https:' + src;
-                } else if (!src.startsWith('http')) {
-                    src = 'https://www.nature.com' + src;
-                }
-
-                // Get figure caption
-                let caption = '';
-                const captionEl = fig.querySelector('figcaption, [class*="caption"]');
-                if (captionEl) {
-                    caption = captionEl.textContent.trim();
-                }
-
-                if (src) {
-                    figs.push({
-                        idx: idx + 1,
-                        src: src,
-                        caption: caption
-                    });
-                }
-            });
-
-            return figs.slice(0, 100);  // Limit to first 100 figures
-        }""")
-
-        for fig in figure_data:
-            fig_key = f'fig_{fig["idx"]}'
-            figures[fig_key] = {
-                'caption': fig['caption'],
-                'url': fig['src']
+        for idx, image_url in enumerate(json_ld_images, 1):
+            figures[f'fig_{idx}'] = {
+                'caption': '',
+                'url': image_url,
             }
 
         if figures:
-            print(f"  ✅ Figures found: {len(figures)}")
+            print(f"  ✅ Figures found from JSON-LD images: {len(figures)}")
         else:
-            print("  ⚠️  No figures found")
+            print("  ⚠️  No JSON-LD mainEntity.image figures found")
 
         return figures
+
+    def replace_remote_figure_placeholders(self, markdown: str, metadata: dict) -> str:
+        """Replace Nature remote image placeholders with local downloaded files."""
+        json_ld_images = metadata.get('image') or []
+        if not markdown or not json_ld_images:
+            return markdown
+
+        known_fig_nums = {
+            str(idx)
+            for idx, image_url in enumerate(json_ld_images, 1)
+            if image_url
+        }
+
+        def replace_match(match):
+            alt_text = match.group(1)
+            image_url = match.group(2)
+            fig_match = re.search(r'Fig(\d+)[^/)]*', image_url)
+            if not fig_match:
+                return match.group(0)
+
+            fig_num = fig_match.group(1)
+            if fig_num not in known_fig_nums:
+                return match.group(0)
+
+            return f"![{alt_text}](figure_{fig_num}.png)"
+
+        return re.sub(
+            r'!\[([^\]]*)\]\(([^)]*media\.springernature\.com[^)]*MediaObjects[^)]*)\)',
+            replace_match,
+            markdown,
+        )
 
     def convert_to_markdown(self, metadata: dict, fulltext_data = None,
                           add_figure_refs: bool = False) -> str:
@@ -583,6 +561,8 @@ class NatureHandler(PublisherHandler):
             if isinstance(fulltext_data, str) and fulltext_data.strip().startswith('<'):
                 article_md = self.convert_main_content_by_paragraph(fulltext_data)
                 if article_md:
+                    if add_figure_refs:
+                        article_md = self.replace_remote_figure_placeholders(article_md, metadata)
                     md_content += f"{article_md}\n\n"
                 else:
                     md_content += "## Main\n\n[Article main content not found]\n"
