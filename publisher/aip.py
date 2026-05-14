@@ -118,32 +118,11 @@ class AIPHandler(PublisherHandler):
             '_pdf_url': meta.get('pdf_url'),
         }
 
-    @staticmethod
-    def extract_main_abstract_from_html(html_content: str) -> str:
-        """Extract AIP Main abstract and convert each paragraph to Markdown."""
-        if not html_content:
-            return ''
-
-        soup = BeautifulSoup(html_content, 'html.parser')
-        abstract_section = soup.find('section', class_='abstract', attrs={'aria-label': 'Main abstract'})
-        if not abstract_section:
-            return ''
-
-        paragraphs = abstract_section.find_all('p')
-        converted_paragraphs = []
-        for paragraph in paragraphs:
-            paragraph_html = str(paragraph)
-            try:
-                md = convert_html_to_markdown(paragraph_html)
-                md = cleanup_markdown(md)
-                md = remove_newlines_in_paragraph(md, "", "p")
-                md = re.sub(r'\s+', ' ', md).strip()
-                if md:
-                    converted_paragraphs.append(md)
-            except Exception as e:
-                print(f"  ⚠️  AIP abstract段落转换失败: {str(e)[:80]}")
-
-        return "\n\n".join(converted_paragraphs)
+    @classmethod
+    def extract_main_abstract_from_html(cls, html_content: str) -> str:
+        """Extract AIP Main abstract as Markdown (convenience wrapper)."""
+        abstract_md, _ = cls.extract_article_text_from_html(html_content)
+        return abstract_md
 
     @staticmethod
     def _strip_inline_math_delimiters(latex: str) -> str:
@@ -245,13 +224,19 @@ class AIPHandler(PublisherHandler):
         return " ".join(parts).strip()
 
     @classmethod
-    def extract_article_text_from_html(cls, html_content: str) -> str:
-        """Extract AIP article text, preserving topics, section headings, and paragraphs."""
+    def extract_article_text_from_html(cls, html_content: str):
+        """Extract AIP article text, returning (abstract_md, body_md).
+
+        The abstract section is processed through the same pipeline as body
+        paragraphs and returned separately so the caller can place it in the
+        appropriate markdown section.
+        """
         if not html_content:
-            return ''
+            return '', ''
 
         soup = BeautifulSoup(html_content, 'html.parser')
-        md_parts = []
+        abstract_parts = []
+        body_parts = []
 
         topics = [
             link.get_text(' ', strip=True)
@@ -259,7 +244,7 @@ class AIPHandler(PublisherHandler):
             if link.get_text(' ', strip=True)
         ]
         if topics:
-            md_parts.extend([
+            body_parts.extend([
                 "### Topics",
                 "",
                 ", ".join(topics),
@@ -284,7 +269,7 @@ class AIPHandler(PublisherHandler):
                 if not heading:
                     continue
                 level = "###" if node.name == 'h2' else "####"
-                md_parts.extend([f"{level} {heading}", ""])
+                body_parts.extend([f"{level} {heading}", ""])
                 continue
 
             content_id = node.get('id')
@@ -292,29 +277,36 @@ class AIPHandler(PublisherHandler):
                 continue
             seen_content_ids.add(content_id)
 
-            # Skip the abstract wrapper; abstract is extracted separately.
+            # Extract abstract through the same pipeline, but collect separately.
             if node.find('section', class_='abstract', attrs={'aria-label': 'Main abstract'}):
+                abstract_section = node.find('section', class_='abstract', attrs={'aria-label': 'Main abstract'})
+                for paragraph in abstract_section.find_all('p'):
+                    paragraph_md = cls._convert_aip_html_fragment_to_markdown(str(paragraph))
+                    if paragraph_md:
+                        abstract_parts.append(paragraph_md)
                 continue
 
             figure_md = cls._convert_aip_figure(node)
             if figure_md:
-                md_parts.extend([figure_md, ""])
+                body_parts.extend([figure_md, ""])
                 continue
 
             formula = node.select_one('div.formula-wrap')
             if formula:
                 formula_md = cls._convert_aip_display_formula(formula)
                 if formula_md:
-                    md_parts.extend([formula_md, ""])
+                    body_parts.extend([formula_md, ""])
                 continue
 
             paragraphs = node.find_all('p', recursive=False)
             for paragraph in paragraphs:
                 paragraph_md = cls._convert_aip_html_fragment_to_markdown(str(paragraph))
                 if paragraph_md:
-                    md_parts.extend([paragraph_md, ""])
+                    body_parts.extend([paragraph_md, ""])
 
-        return "\n".join(md_parts).strip()
+        abstract_md = "\n\n".join(abstract_parts).strip()
+        body_md = "\n".join(body_parts).strip()
+        return abstract_md, body_md
 
     @classmethod
     def extract_references_from_html(cls, html_content: str) -> list:
@@ -514,42 +506,44 @@ class AIPHandler(PublisherHandler):
             "",
         ])
 
-        if metadata.get('abstract'):
+        abstract_from_body = ''
+        body_md = ''
+
+        if isinstance(article_text, str) and article_text.strip():
+            if article_text.lstrip().startswith('<'):
+                abstract_from_body, body_md = self.extract_article_text_from_html(article_text)
+            else:
+                body_md = article_text.strip()
+
+        abstract = metadata.get('abstract') or abstract_from_body
+        if abstract:
             md_parts.extend([
                 "---",
                 "",
                 "## Abstract",
                 "",
-                metadata['abstract'],
+                abstract,
                 "",
             ])
+
+        # Insert downloaded figure images after each caption.
+        if kwargs.get('add_figure_refs') and kwargs.get('figure_filenames'):
+            figure_filenames = kwargs['figure_filenames']
+            for fig_num, filename in sorted(figure_filenames.items(), key=lambda x: int(x[0])):
+                body_md = re.sub(
+                    rf'(\*\*FIG\.\s*{re.escape(fig_num)}\.\*\*[^\n]*)',
+                    rf'\1\n\n![FIG. {fig_num}.]({filename})',
+                    body_md,
+                )
 
         md_parts.extend([
             "---",
             "",
             "## Article Text",
             "",
+            body_md or "[AIP article text not found.]",
+            "",
         ])
-
-        if isinstance(article_text, str) and article_text.strip():
-            if article_text.lstrip().startswith('<'):
-                article_md = self.extract_article_text_from_html(article_text)
-            else:
-                article_md = article_text.strip()
-
-            # Insert downloaded figure images after each caption.
-            if kwargs.get('add_figure_refs') and kwargs.get('figure_filenames'):
-                figure_filenames = kwargs['figure_filenames']
-                for fig_num, filename in sorted(figure_filenames.items(), key=lambda x: int(x[0])):
-                    article_md = re.sub(
-                        rf'(\*\*FIG\.\s*{re.escape(fig_num)}\.\*\*[^\n]*)',
-                        rf'\1\n\n![FIG. {fig_num}.]({filename})',
-                        article_md,
-                    )
-
-            md_parts.extend([article_md or "[AIP article text not found.]", ""])
-        else:
-            md_parts.extend(["[AIP article text not found.]", ""])
 
         if metadata.get('references'):
             md_parts.extend([
