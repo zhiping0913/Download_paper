@@ -707,6 +707,62 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
         print("  ✓ 标签页已清理")
         print()
 
+    def check_chrome_ready():
+        """Check whether the headed Chrome CDP endpoint is available."""
+        try:
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            result = sock.connect_ex(('127.0.0.1', 9222))
+            sock.close()
+            return result == 0
+        except:
+            return False
+
+    async def ensure_headed_chrome_ready() -> bool:
+        """Start the real headed Chrome profile if the CDP endpoint is not ready."""
+        if check_chrome_ready():
+            return True
+
+        print("⚠️  Chrome 未运行，正在启动...")
+        import subprocess
+        chrome_launcher = Path(__file__).parent / "chrome_launcher.py"
+        if not chrome_launcher.exists():
+            print("⚠️  chrome_launcher.py 未找到\n")
+            return False
+
+        subprocess.Popen([sys.executable, str(chrome_launcher)])
+        for _ in range(30):
+            await asyncio.sleep(1)
+            if check_chrome_ready():
+                print("✓ Chrome 已就绪\n")
+                return True
+
+        print("⚠️  Chrome 启动超时，无法读取真实浏览器登录态\n")
+        return False
+
+    async def load_headed_chrome_storage_state(playwright):
+        """Export cookies/localStorage from the headed Chrome profile for headless use."""
+        if not await ensure_headed_chrome_ready():
+            return None
+
+        try:
+            headed_browser = await playwright.chromium.connect_over_cdp("http://localhost:9222")
+            if not headed_browser.contexts:
+                print("  ⚠️  有头Chrome没有可用context，Phase 0将使用干净无头context")
+                return None
+
+            headed_context = headed_browser.contexts[0]
+            storage_state = await headed_context.storage_state()
+            cookie_count = len(storage_state.get('cookies', []))
+            origin_count = len(storage_state.get('origins', []))
+            print(f"  ✓ 已从真实Chrome导出登录态: {cookie_count} cookies, {origin_count} origins")
+            return storage_state
+        except Exception as e:
+            print(f"  ⚠️  读取真实Chrome登录态失败: {type(e).__name__}: {str(e)[:100]}")
+            print("  → Phase 0将使用干净无头context继续预检")
+            return None
+
     # ========== 阶段0（可选）：使用无头浏览器快速预检 ==========
     # 如果 force_headed=True，跳过此阶段直接使用有头浏览器
     # 典型使用场景：已知目标期刊必须使用有头浏览器访问
@@ -725,8 +781,13 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
 
         try:
             async with async_playwright() as p:
+                storage_state = await load_headed_chrome_storage_state(p)
+                context_kwargs = {'accept_downloads': True}
+                if storage_state:
+                    context_kwargs['storage_state'] = storage_state
+
                 headless_browser = await p.chromium.launch(headless=True)
-                headless_context = await headless_browser.new_context(accept_downloads=True)
+                headless_context = await headless_browser.new_context(**context_kwargs)
                 headless_page = await headless_context.new_page()
 
                 try:
@@ -862,31 +923,9 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
         print("  🔵 标准路径：使用有头浏览器完整提取")
 
         print()
-    # 检查Chrome是否就绪
-    def check_chrome_ready():
-        try:
-            import socket
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
-            result = sock.connect_ex(('127.0.0.1', 9222))
-            sock.close()
-            return result == 0
-        except:
-            return False
 
-    if not check_chrome_ready():
-        print("⚠️  Chrome 未运行，正在启动...")
-        import subprocess
-        chrome_launcher = Path(__file__).parent / "chrome_launcher.py"
-        if chrome_launcher.exists():
-            subprocess.Popen([sys.executable, str(chrome_launcher)])
-            for i in range(30):
-                await asyncio.sleep(1)
-                if check_chrome_ready():
-                    print("✓ Chrome 已就绪\n")
-                    break
-        else:
-            print("⚠️  chrome_launcher.py 未找到\n")
+    # 检查Chrome是否就绪
+    await ensure_headed_chrome_ready()
 
     async with async_playwright() as p:
         try:
