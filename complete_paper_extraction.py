@@ -604,6 +604,7 @@ async def complete_extraction_workflow(
     7. Save everything
     """
 
+    doi = doi.strip()
     output_path = Path(output_file or OUTPUT_DIR).expanduser().resolve()
     output_path.mkdir(parents=True, exist_ok=True)
     captured_data_dir = output_path / doi.replace('/', '_')
@@ -616,6 +617,20 @@ async def complete_extraction_workflow(
 
     # 构建URL
     url = f"https://doi.org/{doi}"
+
+    def build_headless_precheck_urls() -> list:
+        """Return candidate URLs for Phase 0, avoiding a hard dependency on doi.org."""
+        candidates = [url]
+        publisher_hint = detect_publisher_from_url(url)
+
+        if publisher_hint == 'nature' and '/' in doi:
+            nature_article_id = doi.split('/', 1)[1].strip()
+            if nature_article_id:
+                nature_url = f"https://www.nature.com/articles/{nature_article_id}"
+                if nature_url not in candidates:
+                    candidates.append(nature_url)
+
+        return candidates
 
     async def process_with_handler(page, context, handler, publisher, captured_data, s2_data, force_headed_downloads):
         """Run publisher extraction and shared output/download steps."""
@@ -848,11 +863,23 @@ async def complete_extraction_workflow(
                 headless_page = await headless_context.new_page()
 
                 try:
-                    await headless_page.goto(url, wait_until='domcontentloaded', timeout=60000)
-                    try:
-                        await headless_page.wait_for_load_state('networkidle', timeout=15000)
-                    except:
-                        print("  ℹ️  页面主文档已加载，后台资源未完全静默，继续预检")
+                    last_precheck_error = None
+                    for precheck_url in build_headless_precheck_urls():
+                        print(f"  ↪ 预检访问: {precheck_url}")
+                        try:
+                            await headless_page.goto(precheck_url, wait_until='domcontentloaded', timeout=60000)
+                            try:
+                                await headless_page.wait_for_load_state('networkidle', timeout=15000)
+                            except:
+                                print("  ℹ️  页面主文档已加载，后台资源未完全静默，继续预检")
+                            last_precheck_error = None
+                            break
+                        except Exception as e:
+                            last_precheck_error = e
+                            print(f"  ⚠️  预检访问失败: {type(e).__name__}: {str(e)[:100]}")
+
+                    if last_precheck_error is not None:
+                        raise last_precheck_error
 
                     # 保存无头浏览器访问结果
                     # 保存HTML
