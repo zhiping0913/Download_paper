@@ -548,7 +548,7 @@ async def download_supplemental_materials(
 
             # 从URL中提取文件名
             parsed_url = urllib.parse.urlparse(url)
-            filename = parsed_url.path.split('/')[-1]
+            filename = urllib.parse.unquote(parsed_url.path.split('/')[-1])
 
             if not filename:
                 filename = f"supplemental_{i}"
@@ -574,8 +574,9 @@ async def download_supplemental_materials(
             download_page.on("download", on_download)
 
             # 导航到链接（会自动触发下载）
+            response = None
             try:
-                await download_page.goto(url, timeout=30000, wait_until='commit')
+                response = await download_page.goto(url, timeout=30000, wait_until='commit')
             except:
                 # 下载开始时页面加载会中断，这是正常的
                 pass
@@ -599,6 +600,31 @@ async def download_supplemental_materials(
 
                 except Exception as e:
                     print(f"    ⚠️  复制文件失败: {str(e)[:100]}")
+            elif response:
+                try:
+                    content_type = response.headers.get('content-type', '').lower()
+                    suffix = output_path.suffix.lower()
+                    downloadable_suffixes = {
+                        '.pdf', '.zip', '.doc', '.docx', '.xls', '.xlsx',
+                        '.csv', '.txt', '.ppt', '.pptx'
+                    }
+
+                    if response.ok and (
+                        'application/' in content_type or suffix in downloadable_suffixes
+                    ):
+                        output_path.write_bytes(await response.body())
+                        file_size_mb = output_path.stat().st_size / (1024 * 1024)
+                        print(f"    ✓ 已保存: {output_filename} ({file_size_mb:.2f} MB)")
+                        downloaded_count += 1
+
+                        if filename in descriptions:
+                            downloaded_descriptions[filename] = descriptions[filename]
+                        elif output_filename in descriptions:
+                            downloaded_descriptions[output_filename] = descriptions[output_filename]
+                    else:
+                        print(f"    ⚠️  未捕获到下载事件: {filename}")
+                except Exception as e:
+                    print(f"    ⚠️  直接保存响应失败: {str(e)[:100]}")
             else:
                 print(f"    ⚠️  未捕获到下载事件: {filename}")
 

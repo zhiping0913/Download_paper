@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Optional, Dict, List
 import asyncio
+from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from json_to_md_converter import cleanup_markdown, convert_html_to_markdown
@@ -68,16 +69,12 @@ class NatureHandler(PublisherHandler):
         references = await self.extract_references(page)
         metadata['references'] = references
 
-        # 4. Get supplemental materials links (future implementation - return empty for now)
-        supplemental_urls = []
-        supplemental_descriptions = {}
-        # TODO: Implement supplemental materials extraction for Nature
+        # 4. Get supplemental materials links
         try:
-            supp_url = await self.get_supplemental_url(page)
-            if supp_url:
-                supplemental_urls = [supp_url]
+            supplemental_urls, supplemental_descriptions = await self.get_supplemental_links(page)
         except:
-            pass
+            supplemental_urls = []
+            supplemental_descriptions = {}
 
         # 5. Build links dict
         links = {
@@ -299,34 +296,71 @@ class NatureHandler(PublisherHandler):
         print("  ⚠️  PDF link not found (may require subscription)")
         return None
 
-    async def get_supplemental_url(self, page) -> Optional[str]:
-        """Find supplementary materials link"""
+    async def get_supplemental_links(self, page) -> tuple:
+        """Find Nature supplementary material file links."""
         print("  🔍 Looking for supplementary materials...")
 
-        selectors = [
-            'a[href*="supplement"]',
-            'a[href*="supp"]',
-            'a:has-text("Supplementary")',
-            'a:has-text("Supplemental")',
-            '[class*="supplementary"] a',
-            '[class*="supplemental"] a'
-        ]
+        candidates = await page.evaluate("""() => {
+            const links = [];
+            const selectors = [
+                'a[data-test="supp-info-link"]',
+                'section[data-title="Supplementary information"] a[href]',
+                'a[href*="static-content.springer.com/esm"]',
+                'a[href*="/esm/"]',
+                'a[href*="MOESM"]'
+            ];
 
-        for selector in selectors:
-            try:
-                supp_link = await page.query_selector(selector)
-                if supp_link:
-                    href = await supp_link.get_attribute('href')
-                    if href:
-                        if not href.startswith('http'):
-                            href = f"https://www.nature.com{href}"
-                        print(f"  ✅ Found supplementary: {href[:80]}...")
-                        return href
-            except:
+            document.querySelectorAll(selectors.join(',')).forEach(link => {
+                const href = link.getAttribute('href') || '';
+                const label = (link.textContent || '').replace(/\\s+/g, ' ').trim();
+                links.push({href, label});
+            });
+            return links;
+        }""")
+
+        supplemental_urls = []
+        supplemental_descriptions = {}
+        seen = set()
+
+        for item in candidates:
+            href = (item.get('href') or '').strip()
+            if not href:
                 continue
 
-        print("  ⚠️  Supplementary materials link not found")
-        return None
+            url = urljoin(self.base_url, href)
+            url_lower = url.lower()
+            if 'support.nature.com' in url_lower:
+                continue
+            if not (
+                'static-content.springer.com/esm' in url_lower
+                or '/esm/' in url_lower
+            ):
+                continue
+
+            if url in seen:
+                continue
+
+            seen.add(url)
+            supplemental_urls.append(url)
+
+            filename = Path(urlparse(url).path).name
+            label = item.get('label') or ''
+            if filename and label:
+                supplemental_descriptions[filename] = label
+
+        if supplemental_urls:
+            print(f"  ✅ Found supplementary materials: {len(supplemental_urls)}")
+            for url in supplemental_urls[:5]:
+                print(f"     - {url[:100]}...")
+        else:
+            print("  ⚠️  Supplementary materials link not found")
+
+        return supplemental_urls, supplemental_descriptions
+
+    async def get_supplemental_url(self, page) -> Optional[str]:
+        """Find the first supplementary materials link."""
+        supplemental_urls, _ = await self.get_supplemental_links(page)
+        return supplemental_urls[0] if supplemental_urls else None
 
     async def extract_references(self, page) -> List[str]:
         """Parse references from HTML reference list"""
