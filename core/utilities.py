@@ -119,7 +119,13 @@ def detect_publisher_from_url(url: str) -> str:
     """
     url_lower = url.lower()
 
-    if 'journals.aps.org' in url_lower:
+    if 'pubs.aip.org' in url_lower:
+        return 'aip'
+    elif 'aip.scitation.org' in url_lower:
+        return 'aip'
+    elif '10.1063' in url_lower:
+        return 'aip'
+    elif 'journals.aps.org' in url_lower:
         return 'aps'
     elif 'nature.com' in url_lower:
         return 'nature'

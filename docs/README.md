@@ -48,6 +48,7 @@ complete_extraction_workflow(doi, output_file=None, force_headed=False)
 
 - `10.1038`、`nature.com`、`springer.com`、`s41...` -> `nature`
 - `10.1103`、`journals.aps.org`、`prl/pre/pra` -> `aps`
+- `10.1063`、`pubs.aip.org`、`aip.scitation.org` -> `aip`
 - `arxiv.org` -> `arxiv`
 - 其他 -> `unknown`
 
@@ -55,6 +56,7 @@ handler 创建由 `get_publisher_handler()` 负责：
 
 - `nature` -> `NatureHandler`
 - `aps` -> `APSHandler`
+- `aip` -> `AIPHandler`
 - `arxiv` -> 带 `journal_prefix="arxiv"` 的 `APSHandler`
 - `unknown` -> 默认 `APSHandler`
 
@@ -275,6 +277,17 @@ Nature 由 `publisher/nature.py` 的 `NatureHandler` 处理。
 - 正文来自页面 HTML。
 - metadata、authors、images、references、supplementary 等由 Nature handler 从 HTML、JSON-LD、meta 标签中提取。
 - Markdown 转换由 Nature handler 按页面 HTML 结构处理。
+
+## AIP 当前实现
+
+AIP 由 `publisher/aip.py` 的 `AIPHandler` 处理。
+
+当前只接入 handler 接口，不做详细页面解析：
+
+- `10.1063`、`pubs.aip.org`、`aip.scitation.org` 会被识别为 `aip`。
+- AIP 在 `HEADLESS_ACCESSIBLE_PUBLISHERS` 中，可以直接使用 Phase 0 的无头页面。
+- `extract_all()` 返回统一结构，包含最小 metadata、空资源链接和页面 HTML。
+- `convert_to_markdown()` 目前只生成占位 Markdown，详细正文、作者、引用、图片和补充材料提取留到后续实现。
 
 ## 新增 Publisher 的接入方式
 
