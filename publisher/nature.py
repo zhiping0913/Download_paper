@@ -15,6 +15,7 @@ from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from json_to_md_converter import cleanup_markdown, convert_html_to_markdown
+from playwright.async_api import async_playwright
 
 
 class NatureHandler(PublisherHandler):
@@ -43,69 +44,107 @@ class NatureHandler(PublisherHandler):
             dict with keys: 'metadata', 'links', 'fulltext_data', 'journal_name'
             where 'links' contains: 'pdf_url', 'figure_urls', 'supplemental_urls'
         """
-        page = page or self.page
         doi = doi or self.doi
-        if page is None:
-            raise ValueError("NatureHandler.extract_all() requires a Playwright page")
         if doi is None:
             raise ValueError("NatureHandler.extract_all() requires a DOI")
 
-        self.configure(page=page, doi=doi)
+        page = page or self.page
+        managed_playwright = None
+        managed_browser = None
+        managed_context = None
 
-        # 1. Extract metadata
-        metadata = await self.extract_metadata(page)
-        metadata['doi'] = doi
+        if page is None:
+            print("  ✓ NatureHandler未收到page，使用无头浏览器访问")
+            managed_playwright = await async_playwright().start()
+            managed_browser = await managed_playwright.chromium.launch(headless=True)
+            managed_context = await managed_browser.new_context(accept_downloads=True)
+            page = await managed_context.new_page()
+            self.configure(page=page, doi=doi)
 
-        # 2. Extract figures
-        figure_urls = await self.get_figures(page, metadata)
-        # Convert figure format to match APS format: {fig_id: {'url': '...', 'caption': '...'}}
-        figure_urls_formatted = {}
-        for fig_id, fig_data in figure_urls.items():
-            figure_urls_formatted[fig_id] = {
-                'url': fig_data.get('url'),
-                'caption': fig_data.get('caption', '')
-            }
+            if captured is None:
+                captured = self.setup_network_capture(page, doi)
 
-        # 3. Extract references
-        references = await self.extract_references(page)
-        metadata['references'] = references
-
-        # 4. Get supplemental materials links
-        try:
-            supplemental_urls, supplemental_descriptions = await self.get_supplemental_links(page)
-        except:
-            supplemental_urls = []
-            supplemental_descriptions = {}
-
-        # 5. Build links dict
-        links = {
-            'pdf_url': await self.get_pdf_url(page),  # May be None if PDF not accessible
-            'figure_urls': figure_urls_formatted,
-            'supplemental_urls': supplemental_urls,
-            'supplemental_descriptions': supplemental_descriptions
-        }
-
-        # 6. Capture article HTML for fulltext (Nature doesn't have JSON API like APS)
-        try:
-            fulltext_html = await page.content()
-        except:
-            fulltext_html = None
-
-        # 7. Save HTML to captured_data if captured_data was set up
-        if fulltext_html and captured is not None:
+            await page.goto(f"https://doi.org/{doi}", wait_until='domcontentloaded', timeout=60000)
             try:
-                # captured dict should have been set up by setup_network_capture()
-                # Save HTML to the captured data directory
-                print("  ✓ HTML已在网络监听中保存")
+                await page.wait_for_load_state('networkidle', timeout=15000)
             except:
                 pass
+        else:
+            self.configure(page=page, doi=doi)
 
-        return {
-            'metadata': metadata,
-            'links': links,
-            'fulltext_data': fulltext_html,  # Store HTML instead of JSON for Nature
-            'journal_name': self.journal_name
-        }
+        try:
+            # 1. Extract metadata
+            metadata = await self.extract_metadata(page)
+            metadata['doi'] = doi
+
+            # 2. Extract figures
+            figure_urls = await self.get_figures(page, metadata)
+            # Convert figure format to match APS format: {fig_id: {'url': '...', 'caption': '...'}}
+            figure_urls_formatted = {}
+            for fig_id, fig_data in figure_urls.items():
+                figure_urls_formatted[fig_id] = {
+                    'url': fig_data.get('url'),
+                    'caption': fig_data.get('caption', '')
+                }
+
+            # 3. Extract references
+            references = await self.extract_references(page)
+            metadata['references'] = references
+
+            # 4. Get supplemental materials links
+            try:
+                supplemental_urls, supplemental_descriptions = await self.get_supplemental_links(page)
+            except:
+                supplemental_urls = []
+                supplemental_descriptions = {}
+
+            # 5. Build links dict
+            links = {
+                'pdf_url': await self.get_pdf_url(page),  # May be None if PDF not accessible
+                'figure_urls': figure_urls_formatted,
+                'supplemental_urls': supplemental_urls,
+                'supplemental_descriptions': supplemental_descriptions
+            }
+
+            # 6. Capture article HTML for fulltext (Nature doesn't have JSON API like APS)
+            try:
+                fulltext_html = await page.content()
+            except:
+                fulltext_html = None
+
+            # 7. Save HTML to captured_data if captured_data was set up
+            if fulltext_html and captured is not None:
+                try:
+                    # captured dict should have been set up by setup_network_capture()
+                    # Save HTML to the captured data directory
+                    print("  ✓ HTML已在网络监听中保存")
+                except:
+                    pass
+
+            return {
+                'metadata': metadata,
+                'links': links,
+                'fulltext_data': fulltext_html,  # Store HTML instead of JSON for Nature
+                'journal_name': self.journal_name
+            }
+        finally:
+            if managed_context is not None:
+                try:
+                    await managed_context.close()
+                except:
+                    pass
+            if managed_browser is not None:
+                try:
+                    await managed_browser.close()
+                except:
+                    pass
+            if managed_playwright is not None:
+                try:
+                    await managed_playwright.stop()
+                except:
+                    pass
+            if managed_context is not None:
+                self.page = None
 
     def setup_network_capture(self, page=None, doi: str = None):
         """Set up network event listener to capture responses

@@ -913,15 +913,46 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
 
             if headless_publisher in HEADLESS_ACCESSIBLE_PUBLISHERS:
                 print(f"  ℹ️  {headless_publisher.upper()} 支持无头直连")
-                print(f"  ⚠️  无头直连未完成，回退到有头浏览器完整提取")
+                print(f"  ⚠️  无头直连未完成，将尝试Handler自主管理无头访问")
             else:
                 print(f"  ℹ️  {headless_publisher.upper()} 未配置无头直连")
                 print(f"  💡 将使用有头浏览器进行完整提取")
         else:
             print(f"  ⚠️  无头浏览器预检失败")
-            print(f"  💡 将使用有头浏览器进行完整提取")
+            if detect_publisher_from_url(url) in HEADLESS_ACCESSIBLE_PUBLISHERS:
+                print(f"  💡 DOI可识别为无头可访问出版商，将尝试Handler自主管理无头访问")
+            else:
+                print(f"  💡 将使用有头浏览器进行完整提取")
 
         print()
+
+        fallback_publisher = headless_publisher or detect_publisher_from_url(url)
+        if fallback_publisher in HEADLESS_ACCESSIBLE_PUBLISHERS:
+            print("🟢 无头Handler自主管理路径：当前出版商支持无头完整提取")
+            print("=" * 80)
+            print(f"  出版商类型: {fallback_publisher.upper()}")
+            print("  → 不连接有头Chrome，交给PublisherHandler自行创建无头页面")
+
+            handler = get_publisher_handler(
+                fallback_publisher,
+                captured_data_dir=captured_data_dir,
+                doi=doi,
+            )
+
+            print("\nStep 1.5️⃣  获取Semantic Scholar元数据...")
+            print("=" * 80)
+            s2_data = fetch_semanticscholar(doi)
+            print()
+
+            return await process_with_handler(
+                None,
+                None,
+                handler,
+                fallback_publisher,
+                None,
+                s2_data,
+                False,
+            )
 
         print("  🔵 标准路径：使用有头浏览器完整提取")
 
