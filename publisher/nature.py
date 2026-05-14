@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Optional, Dict, List
 import asyncio
+from html import unescape
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -369,29 +370,72 @@ class NatureHandler(PublisherHandler):
         return supplemental_urls[0] if supplemental_urls else None
 
     async def extract_references(self, page) -> List[str]:
-        """Parse references from HTML reference list"""
+        """Parse references from citation_reference meta tags."""
         print("  🔍 Extracting references...")
 
         references = await page.evaluate("""() => {
-            const refs = [];
-            const refItems = document.querySelectorAll('[class*="reference"] li, [class*="ref-item"]');
-
-            refItems.forEach(item => {
-                const text = item.textContent.trim();
-                if (text && text.length > 10) {
-                    refs.push(text);
-                }
-            });
-
-            return refs.slice(0, 200);  // Limit to first 200
+            return Array.from(document.querySelectorAll('meta[name="citation_reference"]'))
+                .map(meta => meta.getAttribute('content') || '')
+                .filter(content => content.trim().length > 0);
         }""")
 
+        references = [
+            self.format_citation_reference(ref)
+            for ref in references
+            if ref and ref.strip()
+        ]
+
         if references:
-            print(f"  ✅ References found: {len(references)}")
+            print(f"  ✅ References found from citation_reference meta tags: {len(references)}")
         else:
             print("  ⚠️  No references found")
 
         return references
+
+    def format_citation_reference(self, citation_reference: str) -> str:
+        """Format Nature citation_reference content as a readable reference."""
+        parts = {}
+        for segment in citation_reference.split(';'):
+            if '=' not in segment:
+                continue
+            key, value = segment.split('=', 1)
+            key = key.strip()
+            value = re.sub(r'\s+', ' ', unescape(value or '')).strip()
+            if key and value:
+                parts[key] = value
+
+        if not parts:
+            return re.sub(r'\s+', ' ', unescape(citation_reference or '')).strip()
+
+        chunks = []
+        authors = parts.get('citation_author')
+        title = parts.get('citation_title')
+        journal = parts.get('citation_journal_title')
+        volume = parts.get('citation_volume')
+        pages = parts.get('citation_pages')
+        year = parts.get('citation_publication_date')
+        doi = parts.get('citation_doi')
+
+        if authors:
+            chunks.append(authors)
+        if title:
+            chunks.append(title)
+
+        publication_parts = []
+        if journal:
+            publication_parts.append(journal)
+        if volume:
+            publication_parts.append(volume)
+        if pages:
+            publication_parts.append(pages)
+        if year:
+            publication_parts.append(f"({year})")
+        if publication_parts:
+            chunks.append(", ".join(publication_parts))
+        if doi:
+            chunks.append(f"doi: {doi}")
+
+        return ". ".join(chunks).rstrip('.') + "."
 
     def extract_paragraphs_from_html_content(self, html_content: str) -> List[str]:
         """Extract paragraph and equation HTML blocks from Nature main-content."""
@@ -662,10 +706,8 @@ class NatureHandler(PublisherHandler):
         # ===== References =====
         if metadata.get('references'):
             md_content += "## References\n\n"
-            for i, ref in enumerate(metadata['references'][:100], 1):  # First 100
+            for i, ref in enumerate(metadata['references'], 1):
                 md_content += f"[{i}] {ref}\n\n"
-            if len(metadata['references']) > 100:
-                md_content += f"\n[... and {len(metadata['references']) - 100} more references]\n"
 
         return md_content
 
