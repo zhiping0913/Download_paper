@@ -211,7 +211,7 @@ class NatureHandler(PublisherHandler):
         print(f"  ✅ Journal: {metadata['journal']}")
         print(f"  ✅ DOI: {metadata['doi']}")
 
-        # Extract abstract from JSON-LD
+        # Extract JSON-LD for non-abstract metadata such as image URLs.
         json_ld_data = await page.evaluate("""() => {
             const scripts = document.querySelectorAll('script[type="application/ld+json"]');
             for (let script of scripts) {
@@ -226,9 +226,15 @@ class NatureHandler(PublisherHandler):
             return null;
         }""")
 
-        if json_ld_data and 'description' in json_ld_data:
+        try:
+            html_content = await page.content()
+            metadata['abstract'] = self.extract_abstract_from_html_content(html_content)
+        except Exception as e:
+            print(f"  ⚠️  Abstract HTML extraction failed: {str(e)[:80]}")
+
+        if not metadata['abstract'] and json_ld_data and 'description' in json_ld_data:
             metadata['abstract'] = json_ld_data['description']
-            print(f"  ✅ Abstract: {metadata['abstract'][:60]}...")
+            print(f"  ⚠️  Abstract fallback from JSON-LD: {metadata['abstract'][:60]}...")
 
         if json_ld_data and json_ld_data.get('image'):
             images = json_ld_data['image']
@@ -438,6 +444,38 @@ class NatureHandler(PublisherHandler):
         except Exception as e:
             print(f"  ⚠️  Paragraph conversion error: {str(e)[:50]}")
             return ""
+
+    def extract_abstract_from_html_content(self, html_content: str) -> str:
+        """Extract and convert Nature abstract paragraphs from article HTML."""
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        abstract_section = soup.find('section', {'data-title': 'Abstract'})
+        if not abstract_section:
+            print("  ⚠️  Abstract section not found")
+            return ""
+
+        abstract_content = abstract_section.find('div', {'class': 'c-article-section__content'})
+        if not abstract_content:
+            print("  ⚠️  Abstract content not found")
+            return ""
+
+        abstract_paragraphs = abstract_content.find_all('p')
+        if not abstract_paragraphs:
+            print("  ⚠️  Abstract paragraphs not found")
+            return ""
+
+        converted_paragraphs = []
+        for idx, abstract_p in enumerate(abstract_paragraphs, 1):
+            md = self.convert_paragraph(str(abstract_p))
+            if md:
+                converted_paragraphs.append(md)
+                print(f"  ✓ Abstract paragraph {idx}: {len(md)} chars")
+
+        abstract_md = "\n\n".join(converted_paragraphs).strip()
+        if abstract_md:
+            print(f"  ✅ Abstract converted from HTML: {len(abstract_md)} chars")
+
+        return abstract_md
 
     def convert_main_content_by_paragraph(self, html_content: str) -> str:
         """Convert Nature main-content to Markdown one paragraph at a time."""
@@ -651,7 +689,7 @@ def parse_nature_meta_tags(meta_dict: dict) -> dict:
         'author': meta_dict.get('citation_author'),
         'author_institution': meta_dict.get('citation_author_institution'),
         'date': meta_dict.get('citation_online_date'),
-        'abstract': meta_dict.get('dc.description'),
+        'abstract': None,
     }
 
 
