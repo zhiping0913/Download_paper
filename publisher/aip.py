@@ -8,12 +8,13 @@ pass.
 
 import re
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 from playwright.async_api import async_playwright
 
 from json_to_md_converter import (
     cleanup_markdown,
     convert_html_to_markdown,
+    mathml_to_latex_pandoc,
     remove_newlines_in_paragraph,
 )
 from publisher.base import PublisherHandler
@@ -82,6 +83,170 @@ class AIPHandler(PublisherHandler):
                 print(f"  ⚠️  AIP abstract段落转换失败: {str(e)[:80]}")
 
         return "\n\n".join(converted_paragraphs)
+
+    @staticmethod
+    def _strip_inline_math_delimiters(latex: str) -> str:
+        """Return the body of a single inline math expression."""
+        latex = (latex or '').strip()
+        if latex.startswith('$') and latex.endswith('$') and not latex.startswith('$$'):
+            return latex[1:-1].strip()
+        return latex
+
+    @classmethod
+    def _convert_aip_mathml(cls, math_tag, display: bool = False) -> str:
+        latex = mathml_to_latex_pandoc(str(math_tag))
+        if not latex:
+            return ''
+
+        if display:
+            latex_body = cls._strip_inline_math_delimiters(latex)
+            return f"$$\n{latex_body}\n$$"
+        return latex
+
+    @classmethod
+    def _prepare_aip_html_fragment(cls, html_fragment: str) -> tuple[str, list[str]]:
+        """Collapse AIP MathJax markup to placeholders before pandoc."""
+        soup = BeautifulSoup(html_fragment, 'html.parser')
+        formulas = []
+
+        def stash_formula(latex: str) -> str:
+            formulas.append(latex)
+            return f"AIPMATH{len(formulas) - 1:03d}MATHEND"
+
+        for tag in soup(['script', 'style', 'noscript']):
+            tag.decompose()
+
+        # Inline formulas are rendered as large MathJax CHTML trees with
+        # assistive MathML. Keep only the MathML-derived LaTeX.
+        for formula in soup.select('span.inline-formula'):
+            math_tag = formula.find('math')
+            latex = cls._convert_aip_mathml(math_tag) if math_tag else ''
+            if latex:
+                formula.replace_with(NavigableString(f" {stash_formula(latex)} "))
+
+        for container in soup.find_all('mjx-container'):
+            math_tag = container.find('math')
+            latex = cls._convert_aip_mathml(math_tag) if math_tag else ''
+            if latex:
+                container.replace_with(NavigableString(f" {stash_formula(latex)} "))
+
+        return str(soup), formulas
+
+    @classmethod
+    def _convert_aip_html_fragment_to_markdown(cls, html_fragment: str) -> str:
+        prepared_html, formulas = cls._prepare_aip_html_fragment(html_fragment)
+        md = convert_html_to_markdown(prepared_html)
+        for index, latex in enumerate(formulas):
+            md = md.replace(f"AIPMATH{index:03d}MATHEND", latex)
+        md = cleanup_markdown(md)
+        md = remove_newlines_in_paragraph(md, "", "p")
+        md = re.sub(r'\s+', ' ', md).strip()
+        return md
+
+    @classmethod
+    def _convert_aip_display_formula(cls, wrapper) -> str:
+        math_tag = wrapper.find('math')
+        if not math_tag:
+            return ''
+
+        md = cls._convert_aip_mathml(math_tag, display=True)
+        label = wrapper.find(class_='label')
+        if label:
+            label_text = label.get_text(' ', strip=True)
+            if label_text:
+                md = f"{md}\n\n{label_text}"
+        return md.strip()
+
+    @classmethod
+    def _convert_aip_figure(cls, wrapper) -> str:
+        fig = wrapper.select_one('div.fig-section')
+        if not fig:
+            return ''
+
+        label = fig.select_one('.fig-label')
+        caption = fig.select_one('.caption')
+        parts = []
+        if label:
+            label_text = label.get_text(' ', strip=True)
+            if label_text:
+                parts.append(f"**{label_text}**")
+        if caption:
+            caption_md = cls._convert_aip_html_fragment_to_markdown(str(caption))
+            if caption_md:
+                parts.append(caption_md)
+        return " ".join(parts).strip()
+
+    @classmethod
+    def extract_article_text_from_html(cls, html_content: str) -> str:
+        """Extract AIP article text, preserving topics, section headings, and paragraphs."""
+        if not html_content:
+            return ''
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        md_parts = []
+
+        topics = [
+            link.get_text(' ', strip=True)
+            for link in soup.select('div.content-metadata.article-metadata a')
+            if link.get_text(' ', strip=True)
+        ]
+        if topics:
+            md_parts.extend([
+                "### Topics",
+                "",
+                ", ".join(topics),
+                "",
+            ])
+
+        seen_content_ids = set()
+        article_nodes = soup.find_all(
+            lambda tag: (
+                tag.name in {'h2', 'h3'}
+                and 'section-title' in tag.get('class', [])
+            ) or (
+                tag.name == 'div'
+                and 'article-section-wrapper' in tag.get('class', [])
+            )
+        )
+
+        for node in article_nodes:
+            if node.name in {'h2', 'h3'}:
+                heading = node.get('data-section-title') or node.get_text(' ', strip=True)
+                heading = re.sub(r'\s+', ' ', heading or '').strip()
+                if not heading:
+                    continue
+                level = "###" if node.name == 'h2' else "####"
+                md_parts.extend([f"{level} {heading}", ""])
+                continue
+
+            content_id = node.get('id')
+            if not content_id or content_id in seen_content_ids:
+                continue
+            seen_content_ids.add(content_id)
+
+            # Skip the abstract wrapper; abstract is extracted separately.
+            if node.get('data-section-parent-id') == '0':
+                continue
+
+            figure_md = cls._convert_aip_figure(node)
+            if figure_md:
+                md_parts.extend([figure_md, ""])
+                continue
+
+            formula = node.select_one('div.formula-wrap')
+            if formula:
+                formula_md = cls._convert_aip_display_formula(formula)
+                if formula_md:
+                    md_parts.extend([formula_md, ""])
+                continue
+
+            paragraphs = node.find_all('p', recursive=False)
+            for paragraph in paragraphs:
+                paragraph_md = cls._convert_aip_html_fragment_to_markdown(str(paragraph))
+                if paragraph_md:
+                    md_parts.extend([paragraph_md, ""])
+
+        return "\n".join(md_parts).strip()
 
     async def get_fulltext_url(self, page) -> str:
         if page is not None:
@@ -200,8 +365,15 @@ class AIPHandler(PublisherHandler):
             "",
             "## Article Text",
             "",
-            "[AIP extraction interface is wired; detailed content parsing is not implemented yet.]",
-            "",
         ])
+
+        if isinstance(article_text, str) and article_text.strip():
+            if article_text.lstrip().startswith('<'):
+                article_md = self.extract_article_text_from_html(article_text)
+            else:
+                article_md = article_text.strip()
+            md_parts.extend([article_md or "[AIP article text not found.]", ""])
+        else:
+            md_parts.extend(["[AIP article text not found.]", ""])
 
         return "\n".join(md_parts)
