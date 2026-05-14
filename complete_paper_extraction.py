@@ -848,7 +848,11 @@ async def complete_extraction_workflow(
                 headless_page = await headless_context.new_page()
 
                 try:
-                    await headless_page.goto(url, wait_until='networkidle', timeout=30000)
+                    await headless_page.goto(url, wait_until='domcontentloaded', timeout=60000)
+                    try:
+                        await headless_page.wait_for_load_state('networkidle', timeout=15000)
+                    except:
+                        print("  ℹ️  页面主文档已加载，后台资源未完全静默，继续预检")
 
                     # 保存无头浏览器访问结果
                     # 保存HTML
