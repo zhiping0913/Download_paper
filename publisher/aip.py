@@ -27,34 +27,95 @@ class AIPHandler(PublisherHandler):
         super().__init__(page=page, captured_data_dir=captured_data_dir, doi=doi)
         self.base_url = "https://pubs.aip.org"
 
+    @staticmethod
+    def _extract_metadata_from_html_meta(html_content: str) -> dict:
+        """Extract AIP metadata from citation_* <meta> tags in the HTML head."""
+        if not html_content:
+            return {}
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        meta = {}
+        authors = []
+        author_institutions = []
+
+        for tag in soup.find_all('meta'):
+            name = tag.get('name', '')
+            content = tag.get('content', '')
+            if not name or not content:
+                continue
+
+            if name == 'citation_author':
+                authors.append(content.strip())
+            elif name == 'citation_author_institution':
+                author_institutions.append(content.strip())
+            elif name == 'citation_title':
+                meta['title'] = content.strip()
+            elif name == 'citation_doi':
+                meta['doi'] = content.strip()
+            elif name == 'citation_journal_title':
+                meta['journal'] = content.strip()
+            elif name == 'citation_volume':
+                meta['volume'] = content.strip()
+            elif name == 'citation_issue':
+                meta['issue'] = content.strip()
+            elif name == 'citation_publication_date':
+                date_str = content.strip()
+                meta['publication_date'] = date_str
+                if date_str and '/' in date_str:
+                    meta['year'] = date_str.split('/')[0]
+            elif name == 'citation_pdf_url':
+                meta['pdf_url'] = content.strip()
+
+        if authors:
+            meta['authors'] = authors
+
+        author_with_affiliations = []
+        for i, author in enumerate(authors):
+            aff_list = []
+            if i < len(author_institutions):
+                aff_list = [author_institutions[i]]
+            author_with_affiliations.append({
+                'author': author,
+                'affiliations': aff_list,
+            })
+        if author_with_affiliations:
+            meta['author_with_affiliations'] = author_with_affiliations
+
+        return meta
+
     async def extract_metadata(self, page) -> dict:
-        """Return a minimal metadata payload with AIP main abstract when available."""
-        title = None
-        abstract = ''
+        """Return metadata from HTML citation meta tags, with abstract from page body."""
+        html_content = ''
         if page is not None:
             try:
-                title = await page.title()
+                html_content = await page.content()
             except Exception:
-                title = None
+                html_content = ''
+
+        meta = self._extract_metadata_from_html_meta(html_content)
+
+        abstract = ''
+        if html_content:
             try:
-                abstract = self.extract_main_abstract_from_html(await page.content())
+                abstract = self.extract_main_abstract_from_html(html_content)
             except Exception:
                 abstract = ''
 
         return {
-            'title': title or 'AIP Article',
-            'authors': [],
-            'author_with_affiliations': [],
+            'title': meta.get('title') or 'AIP Article',
+            'authors': meta.get('authors', []),
+            'author_with_affiliations': meta.get('author_with_affiliations', []),
             'corresponding_author_emails': [],
             'abstract': abstract,
-            'journal': 'AIP Publishing',
-            'publication_date': None,
-            'doi': self.doi,
-            'volume': None,
-            'issue': None,
+            'journal': meta.get('journal') or 'AIP Publishing',
+            'publication_date': meta.get('publication_date'),
+            'doi': meta.get('doi') or self.doi,
+            'volume': meta.get('volume'),
+            'issue': meta.get('issue'),
             'pages': None,
-            'year': None,
+            'year': meta.get('year'),
             'references': [],
+            '_pdf_url': meta.get('pdf_url'),
         }
 
     @staticmethod
@@ -374,6 +435,8 @@ class AIPHandler(PublisherHandler):
             metadata = await self.extract_metadata(page)
             metadata['doi'] = doi
 
+            pdf_url = metadata.pop('_pdf_url', None)
+
             try:
                 fulltext_html = await page.content()
             except Exception:
@@ -390,7 +453,7 @@ class AIPHandler(PublisherHandler):
             return {
                 'metadata': metadata,
                 'links': {
-                    'pdf_url': None,
+                    'pdf_url': pdf_url,
                     'figure_urls': figure_urls,
                     'supplemental_urls': [],
                     'supplemental_descriptions': {},
@@ -423,14 +486,21 @@ class AIPHandler(PublisherHandler):
         md_parts = [
             f"# {title}",
             "",
+        ]
+
+        authors = metadata.get('authors', [])
+        if authors:
+            md_parts.extend([f"**Authors:** {', '.join(authors)}", ""])
+
+        if metadata.get('doi'):
+            md_parts.extend([f"**DOI:** {metadata['doi']}", ""])
+
+        md_parts.extend([
             "## Publication",
             "",
             f"**Journal:** {metadata.get('journal') or 'AIP Publishing'}",
             "",
-        ]
-
-        if metadata.get('doi'):
-            md_parts.extend([f"**DOI:** {metadata['doi']}", ""])
+        ])
 
         if metadata.get('abstract'):
             md_parts.extend([
