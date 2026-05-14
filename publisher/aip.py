@@ -293,7 +293,7 @@ class AIPHandler(PublisherHandler):
             seen_content_ids.add(content_id)
 
             # Skip the abstract wrapper; abstract is extracted separately.
-            if node.get('data-section-parent-id') == '0':
+            if node.find('section', class_='abstract', attrs={'aria-label': 'Main abstract'}):
                 continue
 
             figure_md = cls._convert_aip_figure(node)
