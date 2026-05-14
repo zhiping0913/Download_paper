@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 from datetime import datetime
 from html import unescape
+from urllib.parse import unquote, urljoin, urlparse
 from playwright.async_api import async_playwright
 
 # 导入转换工具
@@ -47,6 +48,7 @@ from publisher.orchestrator import (
 OUTPUT_DIR = str(Path(__file__).resolve().parent / "captured_data")
 # Publisher IDs that can be fully extracted from the Phase 0 headless page.
 HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature']
+IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.tif', '.tiff', '.svg'}
 
 
 # ============================================================================
@@ -97,6 +99,37 @@ async def capture_network_data(page, url: str) -> dict:
     """
     handler = get_publisher_handler('aps', page=page)
     return await handler._capture_network_data(page, url)
+
+
+def normalize_image_url(image_url: str, base_url: str = None) -> str:
+    """Normalize protocol-relative and relative image URLs."""
+    if not image_url:
+        return image_url
+
+    image_url = image_url.strip()
+    if image_url.startswith('//'):
+        return f"https:{image_url}"
+    if image_url.startswith('https://www.nature.com//'):
+        return image_url.replace('https://www.nature.com//', 'https://', 1)
+    if base_url and not image_url.startswith(('http://', 'https://', 'data:')):
+        return urljoin(base_url, image_url)
+    return image_url
+
+
+def original_image_filename(image_url: str, fig_num: int, default_ext: str = '.png') -> str:
+    """Return a safe local filename based on the source image URL basename."""
+    if image_url:
+        parsed = urlparse(image_url)
+        basename = Path(unquote(parsed.path or '')).name
+        basename = re.sub(r'[/\\:*?"<>|\x00-\x1f]', '-', basename).strip().strip('.')
+
+        if basename and Path(basename).suffix.lower() in IMAGE_EXTENSIONS:
+            if len(basename) > 180:
+                suffix = Path(basename).suffix
+                basename = f"{Path(basename).stem[:180 - len(suffix)]}{suffix}"
+            return basename
+
+    return f"figure_{fig_num}{default_ext}"
 
 
 # ============================================================================
@@ -588,8 +621,7 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
         if not fig_url:
             return None
 
-        if fig_url.startswith('https://www.nature.com//'):
-            fig_url = fig_url.replace('https://www.nature.com//', 'https://', 1)
+        fig_url = normalize_image_url(fig_url)
 
         print(f"  📥 下载 Figure {fig_num}: {fig_url}")
 
@@ -599,7 +631,7 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
         content_type = response.headers.get('content-type', '') if response else ''
         if response and content_type.startswith('image/'):
             image_data = await response.body()
-            img_filename = f"figure_{fig_num}.png"
+            img_filename = original_image_filename(fig_url, fig_num)
             img_path = output_dir / img_filename
             with open(img_path, 'wb') as f:
                 f.write(image_data)
@@ -611,9 +643,10 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
         if img_elements:
             img_src = await img_elements[0].get_attribute('src')
             if img_src:
+                img_src = normalize_image_url(img_src, download_page.url)
                 response = await download_page.goto(img_src, wait_until='networkidle', timeout=30000)
                 image_data = await response.body()
-                img_filename = f"figure_{fig_num}.png"
+                img_filename = original_image_filename(img_src, fig_num)
 
                 img_path = output_dir / img_filename
                 with open(img_path, 'wb') as f:
@@ -766,7 +799,12 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
         # Step 3.5: Generate markdown with figures
         print("\nStep 3.5️⃣  生成Markdown...")
         print("=" * 80)
-        md = handler.convert_to_markdown(metadata, fulltext_data, add_figure_refs=bool(downloads['figures']))
+        md = handler.convert_to_markdown(
+            metadata,
+            fulltext_data,
+            add_figure_refs=bool(downloads['figures']),
+            figure_filenames=downloads['figures'],
+        )
         with open(markdown_file, 'w', encoding='utf-8') as f:
             f.write(md)
         print(f"  ✓ Markdown已保存: {markdown_filename}")
@@ -780,10 +818,9 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
         print("📊 完成统计")
         print("=" * 80)
         lines = md.split('\n')
-        figures = re.findall(r'\[Figure \d+\]', md)
         display_eqs = len(re.findall(r'\$\$', md)) // 2
         print(f"  📄 Markdown 行数: {len(lines)}")
-        print(f"  🖼️  图片: {len(figures)} 个")
+        print(f"  🖼️  图片: {len(downloads['figures'])} 个")
         print(f"  📐 Display equations: {display_eqs} 个")
         if downloads['pdf']:
             print(f"  📕 PDF: {downloads['pdf']}")

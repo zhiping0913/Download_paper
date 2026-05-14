@@ -746,7 +746,9 @@ class APSHandler(PublisherHandler):
             'journal_prefix': self.journal_prefix
         }
 
-    def convert_to_markdown(self, metadata: dict, fulltext_json: dict, add_figure_refs: bool = False) -> str:
+    def convert_to_markdown(self, metadata: dict, fulltext_json: dict,
+                            add_figure_refs: bool = False,
+                            figure_filenames: dict = None) -> str:
         """Convert extracted data to Markdown using fulltext JSON
 
         Args:
@@ -754,9 +756,11 @@ class APSHandler(PublisherHandler):
             fulltext_json: Full text JSON data
             add_figure_refs: If True, add figure references in markdown. If False, skip them (default).
                             Use False when figures haven't been downloaded yet.
+            figure_filenames: Mapping of figure number to downloaded local filename.
         """
         from json_to_md_converter import convert_json_data_to_markdown, cleanup_markdown
 
+        figure_filenames = figure_filenames or {}
         md_content = ""
 
         # ===== 标题 =====
@@ -840,7 +844,8 @@ class APSHandler(PublisherHandler):
                 if fig_match:
                     fig_num = fig_match.group(1)
                     # 在该行后添加图片引用
-                    return f"{line}\n\n![Figure {fig_num}](figure_{fig_num}.png)"
+                    img_filename = figure_filenames.get(fig_num, f"figure_{fig_num}.png")
+                    return f"{line}\n\n![Figure {fig_num}]({img_filename})"
                 return line
 
             # 匹配行首的 "FIG. X" 或 "Fig. X" (可能带或不带句号，但后面不是括号)

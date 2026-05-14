@@ -69,6 +69,6 @@ class PublisherHandler(ABC):
         pass
 
     @abstractmethod
-    def convert_to_markdown(self, metadata: dict, article_text: str) -> str:
+    def convert_to_markdown(self, metadata: dict, article_text, **kwargs) -> str:
         """Format extracted data as Markdown"""
         pass
