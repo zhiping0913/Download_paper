@@ -117,69 +117,6 @@ def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
 
 
 # ============================================================================
-# Markdown Processing Functions
-# ============================================================================
-
-def add_equation_numbers(markdown: str) -> str:
-    """Add numbering (1), (2), etc. to display equations in Markdown"""
-    # First clean up display equations with formatting issues
-    # Fix },{}$$ -> }$$
-    markdown = re.sub(r',\{\}\$\$', '$$', markdown)
-    markdown = re.sub(r'\}\{\}\$\$', '$$', markdown)
-    # Fix trailing ,} issue (extra comma before }$$)
-    markdown = re.sub(r',\}\$\$\s*\(', '}$$ (', markdown)
-
-    lines = markdown.split('\n')
-    result_lines = []
-    eq_counter = 0
-    i = 0
-
-    while i < len(lines):
-        line = lines[i]
-
-        # Check if line contains display equation start $$
-        if '$$' in line:
-            # Count $$ in this line
-            dollar_count = line.count('$$')
-
-            # If even number of $$, formula starts and ends on same line
-            if dollar_count >= 2:
-                # Formula is complete on one line
-                eq_counter += 1
-                # Add numbering after the last $$
-                modified_line = line.rstrip()
-                if modified_line.endswith('$$'):
-                    modified_line = modified_line[:-2] + f'$$ ({eq_counter})'
-                result_lines.append(modified_line)
-                i += 1
-            else:
-                # Formula starts but doesn't end, find ending $$
-                result_lines.append(line)
-                j = i + 1
-                while j < len(lines):
-                    next_line = lines[j]
-                    result_lines.append(next_line)
-                    if '$$' in next_line:
-                        # Found ending $$
-                        eq_counter += 1
-                        # Add numbering after ending $$
-                        if next_line.rstrip().endswith('$$'):
-                            result_lines[-1] = next_line.rstrip()[:-2] + f'$$ ({eq_counter})'
-                        elif '$$' in next_line:
-                            # If $$ is not at end but in line, add numbering
-                            modified_line = next_line.replace('$$', f'$$ ({eq_counter})', 1)
-                            result_lines[-1] = modified_line
-                        break
-                    j += 1
-                i = j + 1
-        else:
-            result_lines.append(line)
-            i += 1
-
-    return '\n'.join(result_lines)
-
-
-# ============================================================================
 # Formula Conversion Functions
 # ============================================================================
 
