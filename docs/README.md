@@ -71,6 +71,12 @@ captured_data/{doi}/headless_initial.html
 captured_data/{doi}/page.html
 ```
 
+Phase 0 会先访问 DOI resolver URL。如果 DOI 可以直接识别为 Nature，且 DOI resolver 访问失败，会继续尝试 Nature 文章直连 URL：
+
+```text
+https://www.nature.com/articles/{doi_suffix}
+```
+
 如果最终 publisher 在：
 
 ```python
