@@ -79,6 +79,20 @@ HEADLESS_ACCESSIBLE_PUBLISHERS = ["nature"]
 
 中，主流程直接把这个无头 `page` 传给对应 handler，然后进入统一处理阶段。
 
+无头预检可以使用持久化登录态文件：
+
+```text
+.auth/headless_storage_state.json
+```
+
+正常远程运行时，Phase 0 只读取这个文件，不会自动连接 `127.0.0.1:9222`。如果需要从真实 Chrome 刷新该文件，可以在方便使用本机 Chrome/CDP 时显式运行：
+
+```bash
+python complete_paper_extraction.py --doi <doi> --refresh-headless-auth
+```
+
+`.auth/` 不应提交到 git。
+
 ### 2. 无头 Handler 自主管理路径
 
 如果无头预检没有完整跑完，但 DOI 或最终 URL 可以识别为无头可访问 publisher，主流程不会连接有头 Chrome，而是创建一个没有 `page` 的 handler：

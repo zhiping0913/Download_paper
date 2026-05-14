@@ -13,6 +13,7 @@
 
 import json
 import asyncio
+import os
 import re
 import requests
 import sys
@@ -37,6 +38,12 @@ OUTPUT_DIR = str(Path(__file__).resolve().parent / "captured_data")
 # Publisher IDs that can be fully extracted from the Phase 0 headless page.
 HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature']
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.tif', '.tiff', '.svg'}
+HEADLESS_AUTH_STATE_FILE = Path(
+    os.environ.get(
+        "DOWNLOAD_PAPER_HEADLESS_AUTH_STATE",
+        Path(__file__).resolve().parent / ".auth" / "headless_storage_state.json",
+    )
+).expanduser()
 
 
 # ============================================================================
@@ -571,7 +578,12 @@ def extract_pdf_link_from_html(html_content: str) -> str:
 # 第6部分：主工作流
 # ============================================================================
 
-async def complete_extraction_workflow(doi: str, output_file: str = None, force_headed: bool = False):
+async def complete_extraction_workflow(
+    doi: str,
+    output_file: str = None,
+    force_headed: bool = False,
+    refresh_headless_auth: bool = False,
+):
     """完整提取工作流 - Phase 4/5 重构版本
 
     Args:
@@ -580,6 +592,7 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
         force_headed: 是否强制使用有头浏览器，跳过无头预检 (默认: False)
                        - True: 跳过Phase 0，直接使用有头Chrome
                        - False: 先用无头浏览器预检，根据结果决定是否需要有头
+        refresh_headless_auth: 是否通过CDP从真实Chrome刷新无头浏览器登录态
 
     New architecture:
     1. Phase 0 (可选): 使用无头浏览器快速预检 (除非force_headed=True)
@@ -741,7 +754,37 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
         print("⚠️  Chrome 启动超时，无法读取真实浏览器登录态\n")
         return False
 
-    async def load_headed_chrome_storage_state(playwright):
+    def summarize_storage_state(storage_state: dict) -> str:
+        cookie_count = len(storage_state.get('cookies', []))
+        origin_count = len(storage_state.get('origins', []))
+        return f"{cookie_count} cookies, {origin_count} origins"
+
+    def load_saved_headless_storage_state():
+        """Load persisted Playwright storage_state for the headless precheck."""
+        if not HEADLESS_AUTH_STATE_FILE.exists():
+            print(f"  ℹ️  未找到无头登录态文件: {HEADLESS_AUTH_STATE_FILE}")
+            return None
+
+        try:
+            with open(HEADLESS_AUTH_STATE_FILE, 'r', encoding='utf-8') as f:
+                storage_state = json.load(f)
+            print(f"  ✓ 已加载无头登录态: {summarize_storage_state(storage_state)}")
+            return storage_state
+        except Exception as e:
+            print(f"  ⚠️  读取无头登录态失败: {type(e).__name__}: {str(e)[:100]}")
+            return None
+
+    def save_headless_storage_state(storage_state: dict):
+        """Persist Playwright storage_state for future remote headless runs."""
+        try:
+            HEADLESS_AUTH_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(HEADLESS_AUTH_STATE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(storage_state, f, ensure_ascii=False, indent=2)
+            print(f"  ✓ 无头登录态已保存: {HEADLESS_AUTH_STATE_FILE}")
+        except Exception as e:
+            print(f"  ⚠️  保存无头登录态失败: {type(e).__name__}: {str(e)[:100]}")
+
+    async def export_headed_chrome_storage_state(playwright):
         """Export cookies/localStorage from the headed Chrome profile for headless use."""
         if not await ensure_headed_chrome_ready():
             return None
@@ -754,14 +797,28 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
 
             headed_context = headed_browser.contexts[0]
             storage_state = await headed_context.storage_state()
-            cookie_count = len(storage_state.get('cookies', []))
-            origin_count = len(storage_state.get('origins', []))
-            print(f"  ✓ 已从真实Chrome导出登录态: {cookie_count} cookies, {origin_count} origins")
+            print(f"  ✓ 已从真实Chrome导出登录态: {summarize_storage_state(storage_state)}")
+            save_headless_storage_state(storage_state)
             return storage_state
         except Exception as e:
             print(f"  ⚠️  读取真实Chrome登录态失败: {type(e).__name__}: {str(e)[:100]}")
-            print("  → Phase 0将使用干净无头context继续预检")
             return None
+
+    async def load_headless_storage_state(playwright):
+        """Resolve the storage_state used by Phase 0 without requiring CDP by default."""
+        if refresh_headless_auth:
+            print("  🔄 正在从真实Chrome刷新无头登录态...")
+            storage_state = await export_headed_chrome_storage_state(playwright)
+            if storage_state:
+                return storage_state
+            print("  → 刷新失败，将尝试读取已有无头登录态文件")
+
+        storage_state = load_saved_headless_storage_state()
+        if storage_state:
+            return storage_state
+
+        print("  → Phase 0将使用干净无头context继续预检")
+        return None
 
     # ========== 阶段0（可选）：使用无头浏览器快速预检 ==========
     # 如果 force_headed=True，跳过此阶段直接使用有头浏览器
@@ -781,7 +838,7 @@ async def complete_extraction_workflow(doi: str, output_file: str = None, force_
 
         try:
             async with async_playwright() as p:
-                storage_state = await load_headed_chrome_storage_state(p)
+                storage_state = await load_headless_storage_state(p)
                 context_kwargs = {'accept_downloads': True}
                 if storage_state:
                     context_kwargs['storage_state'] = storage_state
@@ -1161,6 +1218,13 @@ async def main():
         help='强制使用有头浏览器，跳过无头预检阶段 (默认: False，使用智能检测)'
     )
 
+    parser.add_argument(
+        '--refresh-headless-auth',
+        action='store_true',
+        default=False,
+        help='通过本机Chrome CDP导出登录态到 .auth/headless_storage_state.json，供后续无头预检使用'
+    )
+
     args = parser.parse_args()
 
     # 构建DOI列表
@@ -1188,6 +1252,8 @@ async def main():
     force_headed_mode = args.force_headed
     if force_headed_mode:
         print(f"🔧 强制有头浏览器模式启用 - 将跳过无头浏览器预检\n")
+    if args.refresh_headless_auth:
+        print(f"🔄 将刷新无头浏览器登录态缓存: {HEADLESS_AUTH_STATE_FILE}\n")
 
     # 处理输出路径
     output_dir = str(Path(args.output).expanduser().resolve())
@@ -1208,7 +1274,8 @@ async def main():
             success = await complete_extraction_workflow(
                 doi,
                 output_file=output_dir,
-                force_headed=force_headed_mode
+                force_headed=force_headed_mode,
+                refresh_headless_auth=args.refresh_headless_auth,
             )
             if success:
                 success_count += 1
