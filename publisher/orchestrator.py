@@ -5,7 +5,7 @@ Routes to appropriate publisher handler based on DOI/URL
 """
 
 from publisher.base import PublisherHandler
-from publisher import APSHandler
+from publisher import APSHandler, AIPHandler
 from publisher.nature import NatureHandler
 
 
@@ -13,7 +13,7 @@ def detect_publisher_from_url(url: str) -> str:
     """
     Detect publisher from URL or DOI pattern
 
-    Returns: 'aps' | 'nature' | 'unknown'
+    Returns: 'aps' | 'nature' | 'aip' | 'unknown'
     """
     url_lower = url.lower()
 
@@ -35,6 +35,14 @@ def detect_publisher_from_url(url: str) -> str:
     elif 'prl' in url_lower or 'pre' in url_lower or 'pra' in url_lower:
         return 'aps'
 
+    # AIP Publishing detection
+    elif 'pubs.aip.org' in url_lower:
+        return 'aip'
+    elif 'aip.scitation.org' in url_lower:
+        return 'aip'
+    elif '10.1063' in url_lower:
+        return 'aip'
+
     # ArXiv (treat as generic, default to APS-like handling)
     elif 'arxiv.org' in url_lower:
         return 'arxiv'
@@ -55,6 +63,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
     """
     if publisher == 'nature':
         return NatureHandler(**kwargs)
+    elif publisher == 'aip':
+        return AIPHandler(**kwargs)
     elif publisher == 'aps':
         return APSHandler(**kwargs)
     elif publisher == 'arxiv':

@@ -35,8 +35,8 @@ from publisher.orchestrator import (
 )
 
 OUTPUT_DIR = str(Path(__file__).resolve().parent / "captured_data")
-# Publisher IDs that can be fully extracted from the Phase 0 headless page.
-HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature']
+# Publisher IDs that can be entered from the Phase 0 headless page.
+HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature', 'aip']
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.tif', '.tiff', '.svg'}
 HEADLESS_AUTH_STATE_FILE = Path(
     os.environ.get(
@@ -54,7 +54,7 @@ def detect_publisher(url: str) -> str:
     """
     Detect which publisher based on URL domain or DOI
 
-    Returns: 'aps' | 'nature' | 'unknown'
+    Returns: 'aps' | 'nature' | 'aip' | 'unknown'
 
     Note: This is a wrapper around orchestrator.detect_publisher_from_url
     for backward compatibility. New code should use the orchestrator module.
