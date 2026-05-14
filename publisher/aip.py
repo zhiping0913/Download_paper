@@ -202,7 +202,7 @@ class AIPHandler(PublisherHandler):
         article_nodes = soup.find_all(
             lambda tag: (
                 tag.name in {'h2', 'h3'}
-                and 'section-title' in tag.get('class', [])
+                and tag.get('data-section-title') is not None
             ) or (
                 tag.name == 'div'
                 and 'article-section-wrapper' in tag.get('class', [])
@@ -247,6 +247,39 @@ class AIPHandler(PublisherHandler):
                     md_parts.extend([paragraph_md, ""])
 
         return "\n".join(md_parts).strip()
+
+    @classmethod
+    def extract_references_from_html(cls, html_content: str) -> list:
+        """Extract AIP references from HTML, preserving DOI links as markdown."""
+        if not html_content:
+            return []
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        references = []
+
+        ref_divs = soup.find_all('div', attrs={'data-content-id': True})
+
+        for ref_div in ref_divs:
+            citation_div = ref_div.find('div', class_='mixed-citation')
+            if not citation_div:
+                continue
+
+            label = ref_div.find('span', class_='label')
+            ref_num = label.get_text(' ', strip=True) if label else ''
+
+            # Remove citation-links (Google Scholar, Crossref, ADS, PubMed, OpenURL)
+            citation_links = citation_div.find('div', class_='citation-links')
+            if citation_links:
+                citation_links.decompose()
+
+            ref_html = str(citation_div)
+            ref_md = cls._convert_aip_html_fragment_to_markdown(ref_html)
+            if ref_md:
+                ref_md = re.sub(r'\n+', ' ', ref_md).strip()
+                ref_md = re.sub(r'[ \t]+', ' ', ref_md).strip()
+                references.append(f"{ref_num} {ref_md}".strip())
+
+        return references
 
     async def get_fulltext_url(self, page) -> str:
         if page is not None:
@@ -304,6 +337,8 @@ class AIPHandler(PublisherHandler):
                 fulltext_html = ''
             if fulltext_html and not metadata.get('abstract'):
                 metadata['abstract'] = self.extract_main_abstract_from_html(fulltext_html)
+            if fulltext_html:
+                metadata['references'] = self.extract_references_from_html(fulltext_html)
 
             return {
                 'metadata': metadata,
@@ -375,5 +410,15 @@ class AIPHandler(PublisherHandler):
             md_parts.extend([article_md or "[AIP article text not found.]", ""])
         else:
             md_parts.extend(["[AIP article text not found.]", ""])
+
+        if metadata.get('references'):
+            md_parts.extend([
+                "---",
+                "",
+                "## References",
+                "",
+            ])
+            for ref in metadata['references']:
+                md_parts.extend([ref, ""])
 
         return "\n".join(md_parts)
