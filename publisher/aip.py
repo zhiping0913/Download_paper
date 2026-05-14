@@ -288,6 +288,42 @@ class AIPHandler(PublisherHandler):
 
         return references
 
+    @classmethod
+    def extract_figures_from_html(cls, html_content: str) -> dict:
+        """Extract AIP figure URLs and captions from HTML."""
+        if not html_content:
+            return {}
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        figures = {}
+        seen_ids = set()
+
+        for fig_div in soup.find_all('div', class_='fig-section'):
+            data_id = fig_div.get('data-id', '')
+            if not data_id or data_id in seen_ids:
+                continue
+            seen_ids.add(data_id)
+
+            fig_num = data_id.lstrip('f')
+            key = f"fig_{fig_num}"
+
+            img = fig_div.find('img', class_='content-image')
+            if not img:
+                continue
+            img_url = img.get('src') or img.get('data-src') or ''
+            if not img_url:
+                continue
+
+            label = fig_div.find('div', class_='fig-label')
+            caption = label.get_text(' ', strip=True) if label else ''
+
+            figures[key] = {
+                'url': img_url.strip(),
+                'caption': caption,
+            }
+
+        return figures
+
     async def get_fulltext_url(self, page) -> str:
         if page is not None:
             try:
@@ -347,11 +383,15 @@ class AIPHandler(PublisherHandler):
             if fulltext_html:
                 metadata['references'] = self.extract_references_from_html(fulltext_html)
 
+            figure_urls = {}
+            if fulltext_html:
+                figure_urls = self.extract_figures_from_html(fulltext_html)
+
             return {
                 'metadata': metadata,
                 'links': {
                     'pdf_url': None,
-                    'figure_urls': {},
+                    'figure_urls': figure_urls,
                     'supplemental_urls': [],
                     'supplemental_descriptions': {},
                 },
