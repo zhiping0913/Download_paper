@@ -13,6 +13,7 @@
 
 import json
 import asyncio
+import magic
 import os
 import re
 import requests
@@ -38,6 +39,34 @@ OUTPUT_DIR = str(Path(__file__).resolve().parent / "captured_data")
 # Publisher IDs that can be entered from the Phase 0 headless page.
 HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature', 'aip']
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.tif', '.tiff', '.svg'}
+
+MIME_TO_EXT = {
+    'application/pdf': '.pdf',
+    'application/zip': '.zip',
+    'application/gzip': '.gz',
+    'application/x-gzip': '.gz',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+    'application/msword': '.doc',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+    'application/vnd.ms-excel': '.xls',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+    'application/vnd.ms-powerpoint': '.ppt',
+    'text/csv': '.csv',
+    'text/plain': '.txt',
+}
+
+
+def _detect_and_rename(filepath: Path) -> Path:
+    """Detect file type from header bytes and rename with correct extension."""
+    mime = magic.from_file(str(filepath), mime=True)
+    ext = MIME_TO_EXT.get(mime, '')
+    if not ext or filepath.suffix == ext:
+        return filepath
+    new_path = filepath.with_suffix(filepath.suffix + ext)
+    filepath.rename(new_path)
+    return new_path
+
+
 HEADLESS_AUTH_STATE_FILE = Path(
     os.environ.get(
         "DOWNLOAD_PAPER_HEADLESS_AUTH_STATE",
@@ -433,15 +462,17 @@ async def download_supplemental_materials(
             if downloaded_file and Path(downloaded_file).exists():
                 try:
                     shutil.copy(str(downloaded_file), str(output_path))
+                    output_path = _detect_and_rename(output_path)
                     file_size_mb = output_path.stat().st_size / (1024 * 1024)
-                    print(f"    ✓ 已保存: {output_filename} ({file_size_mb:.2f} MB)")
+                    print(f"    ✓ 已保存: {output_path.name} ({file_size_mb:.2f} MB)")
                     downloaded_count += 1
 
                     # 记录该文件的描述（如果有）
+                    saved_name = output_path.name
                     if filename in descriptions:
                         downloaded_descriptions[filename] = descriptions[filename]
-                    elif output_filename in descriptions:
-                        downloaded_descriptions[output_filename] = descriptions[output_filename]
+                    elif saved_name in descriptions:
+                        downloaded_descriptions[saved_name] = descriptions[saved_name]
 
                 except Exception as e:
                     print(f"    ⚠️  复制文件失败: {str(e)[:100]}")
@@ -458,14 +489,16 @@ async def download_supplemental_materials(
                         'application/' in content_type or suffix in downloadable_suffixes
                     ):
                         output_path.write_bytes(await response.body())
+                        output_path = _detect_and_rename(output_path)
                         file_size_mb = output_path.stat().st_size / (1024 * 1024)
-                        print(f"    ✓ 已保存: {output_filename} ({file_size_mb:.2f} MB)")
+                        print(f"    ✓ 已保存: {output_path.name} ({file_size_mb:.2f} MB)")
                         downloaded_count += 1
 
+                        saved_name = output_path.name
                         if filename in descriptions:
                             downloaded_descriptions[filename] = descriptions[filename]
-                        elif output_filename in descriptions:
-                            downloaded_descriptions[output_filename] = descriptions[output_filename]
+                        elif saved_name in descriptions:
+                            downloaded_descriptions[saved_name] = descriptions[saved_name]
                     else:
                         print(f"    ⚠️  未捕获到下载事件: {filename}")
                 except Exception as e:
