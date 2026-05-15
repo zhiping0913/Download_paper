@@ -377,6 +377,24 @@ class AIPHandler(PublisherHandler):
 
         return figures
 
+    @staticmethod
+    def _extract_supplemental_links_from_html(html_content: str) -> list:
+        """Extract supplemental material download links from the figshare widget."""
+        if not html_content:
+            return []
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        links = []
+
+        figshare_wrapper = soup.find('div', id='articlefulltext_figshare')
+        if figshare_wrapper:
+            for a_tag in figshare_wrapper.find_all('a', href=True):
+                href = a_tag['href'].strip()
+                if 'figstatic.com' in href or 'ndownloader' in href:
+                    links.append(href)
+
+        return links
+
     async def get_fulltext_url(self, page) -> str:
         if page is not None:
             try:
@@ -439,15 +457,17 @@ class AIPHandler(PublisherHandler):
                 metadata['references'] = self.extract_references_from_html(fulltext_html)
 
             figure_urls = {}
+            supp_urls = []
             if fulltext_html:
                 figure_urls = self.extract_figures_from_html(fulltext_html)
+                supp_urls = self._extract_supplemental_links_from_html(fulltext_html)
 
             return {
                 'metadata': metadata,
                 'links': {
                     'pdf_url': pdf_url,
                     'figure_urls': figure_urls,
-                    'supplemental_urls': [],
+                    'supplemental_urls': supp_urls,
                     'supplemental_descriptions': {},
                 },
                 'fulltext_data': fulltext_html,
