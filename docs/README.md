@@ -82,7 +82,7 @@ https://www.nature.com/articles/{doi_suffix}
 如果最终 publisher 在：
 
 ```python
-HEADLESS_ACCESSIBLE_PUBLISHERS = ["nature"]
+HEADLESS_ACCESSIBLE_PUBLISHERS = ["nature", "aip"]
 ```
 
 中，主流程直接把这个无头 `page` 传给对应 handler，然后进入统一处理阶段。
@@ -253,6 +253,10 @@ PDF、图片和补充材料由主流程统一下载。publisher 只负责在 `li
 
 因此，publisher handler 不应该自己下载 PDF、图片或补充材料。它只负责发现链接和描述。
 
+### 文件类型检测
+
+部分下载链接（如 figshare 的 `ndownloader.figstatic.com/files/{id}`）不含文件扩展名。`download_supplemental_materials()` 在保存文件后，会调用 `_detect_and_rename()` 通过 `python-magic` 读取文件头字节检测 MIME 类型，自动补齐正确的扩展名（`.pdf`、`.zip`、`.docx` 等）。MIME 到扩展名的映射定义在 `MIME_TO_EXT` 字典中。
+
 ## APS 当前实现
 
 APS 由 `publisher/aps.py` 的 `APSHandler` 处理。
@@ -282,12 +286,53 @@ Nature 由 `publisher/nature.py` 的 `NatureHandler` 处理。
 
 AIP 由 `publisher/aip.py` 的 `AIPHandler` 处理。
 
-当前只接入 handler 接口，不做详细页面解析：
-
 - `10.1063`、`pubs.aip.org`、`aip.scitation.org` 会被识别为 `aip`。
 - AIP 在 `HEADLESS_ACCESSIBLE_PUBLISHERS` 中，可以直接使用 Phase 0 的无头页面。
-- `extract_all()` 返回统一结构，包含最小 metadata、空资源链接和页面 HTML。
-- `convert_to_markdown()` 目前只生成占位 Markdown，详细正文、作者、引用、图片和补充材料提取留到后续实现。
+
+### metadata 提取
+
+从 HTML `<head>` 中的 `citation_*` meta 标签提取：
+
+- `citation_author` + `citation_author_institution` → 作者及机构
+- `citation_title`、`citation_doi`、`citation_journal_title`
+- `citation_volume`、`citation_issue`、`citation_publication_date`
+- `citation_pdf_url` → PDF 下载链接，传给主流程下载
+
+### 正文提取
+
+`extract_article_text_from_html()` 一次遍历完成摘要和正文提取，摘要与正文走同一套公式转换管道（MathML → LaTeX）。方法返回 `(abstract_md, body_md)` 元组，不再用独立的 `extract_main_abstract_from_html()` 产生重复解析。
+
+注意：部分新版 AIP 文章所有 section 的 `data-section-parent-id` 都是 `"0"`（旧文章只有摘要 section 是 0）。当前代码通过检测 wrapper 内是否包含 `<section class="abstract" aria-label="Main abstract">` 来识别摘要，不依赖 `parent-id`。
+
+### 图片提取
+
+`extract_figures_from_html()` 从 `.fig-section` 容器中提取图片 URL 和标题，通过主流程统一下载并插入 Markdown。
+
+### 参考文献提取
+
+`extract_references_from_html()` 从 `.mixed-citation` 容器提取参考文献，移除 Google Scholar/Crossref/ADS 等外部链接，保留 DOI 链接，转为 Markdown 格式。
+
+### 补充材料提取
+
+`_extract_supplemental_links_from_html()` 从内联渲染的 figshare widget（`#articlefulltext_figshare`）中提取 `ndownloader.figstatic.com` 下载链接，传回主流程下载。
+
+### Markdown 生成
+
+`convert_to_markdown()` 生成完整 Markdown，结构为：
+
+```markdown
+# 标题
+**Authors:**
+作者名
+机构
+
+**DOI:** 10.1063/...
+
+## Publication
+## Abstract
+## Article Text
+## References
+```
 
 ## 新增 Publisher 的接入方式
 
