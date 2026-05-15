@@ -20,8 +20,6 @@ def clean_html_body(html, klass=None):
     # 保留 ref-target 和 multi-ref-content 的内容，移除标签
     html = re.sub(r'<span[^>]*(?:ref-target|multi-ref-content)[^>]*>(.*?)</span>', r'\1', html)
     html = re.sub(r'<button[^>]*>(.*?)</button>', r'\1', html)
-    html = re.sub(r'<i>(.*?)</i>', r'*\1*', html)
-
     # 移除多余HTML标签的属性
     html = re.sub(r'<[^>]*class="[^"]*"[^>]*>', lambda m: '<' + re.sub(r'\s+class="[^"]*"', '', m.group(0))[1:], html)
 
