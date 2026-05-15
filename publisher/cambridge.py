@@ -405,40 +405,92 @@ class CambridgeHandler(PublisherHandler):
 
     @staticmethod
     def _extract_supplemental_links_from_html(html_content: str) -> list:
-        """Extract supplemental material download links."""
+        """Extract supplemental material download links.
+
+        Primary source: #supplementary-materials-tab (Vue-rendered
+        materials table with direct file download URLs).  Falls back to
+        .notes.supplementary-material in the article body.
+        """
         if not html_content:
             return []
 
         soup = BeautifulSoup(html_content, 'html.parser')
+
         links = []
 
-        supp_div = soup.find('div', class_='supplementary-material')
-        if supp_div:
-            for a in supp_div.find_all('a', href=True):
-                href = a['href'].strip()
-                if href and not href.startswith('#'):
+        # Primary: the tabbed supplementary-materials pane with real download URLs
+        materials_tab = soup.find('div', id='supplementary-materials-tab')
+        if materials_tab:
+            for a_tag in materials_tab.find_all('a', href=True):
+                href = a_tag['href'].strip()
+                if href and 'static.cambridge.org' in href:
                     links.append(href)
+
+        # Fallback: inline .notes.supplementary-material (usually just DOI links,
+        # only used when the materials table is absent)
+        if not links:
+            supp_div = soup.find('div', class_='supplementary-material')
+            if supp_div:
+                for a_tag in supp_div.find_all('a', href=True):
+                    href = a_tag['href'].strip()
+                    if href and not href.startswith('#'):
+                        links.append(href)
 
         return links
 
     @staticmethod
     def _extract_supplemental_descriptions(html_content: str) -> dict:
-        """Extract supplemental material descriptions."""
+        """Extract supplemental material file names, descriptions and sizes."""
         if not html_content:
             return {}
 
         soup = BeautifulSoup(html_content, 'html.parser')
         descriptions = {}
 
-        supp_div = soup.find('div', class_='supplementary-material')
-        if supp_div:
-            for p in supp_div.find_all('p', class_='p'):
-                text = p.get_text(' ', strip=True)
-                text = re.sub(r'\s+', ' ', text).strip()
-                if text:
-                    # Use first 80 chars as key
-                    key = text[:80]
-                    descriptions[key] = text
+        materials_tab = soup.find('div', id='supplementary-materials-tab')
+        if materials_tab:
+            for item in materials_tab.find_all('div', class_='materials-table__item'):
+                # Get title, description and download link from the first row
+                row = item.find('div', class_='materials-table__row')
+                if not row:
+                    continue
+
+                main_elem = row.find('div', class_='materials-table__row__main-elem')
+                title_el = main_elem.find('h3', class_='materials-table__row__title') if main_elem else None
+                desc_el = main_elem.find('div', class_='materials-table__row__description') if main_elem else None
+
+                download_a = row.find('a', href=True, attrs={'download': True})
+                if not download_a:
+                    continue
+
+                url = download_a['href'].strip()
+                title = title_el.get_text(' ', strip=True) if title_el else ''
+                desc = desc_el.get_text(' ', strip=True) if desc_el else ''
+
+                # File size is in a separate row within the same item
+                size_info = ''
+                for size_row in item.find_all('div', class_='materials-table__row'):
+                    size_el = size_row.find('div', class_='materials-table__row__size-type')
+                    if size_el:
+                        size_info = size_el.get_text(' ', strip=True)
+                        size_info = re.sub(r'\s+', ' ', size_info).strip()
+                        break
+
+                descriptions[url] = {
+                    'title': title,
+                    'description': desc,
+                    'file_info': size_info,
+                }
+
+        if not descriptions:
+            supp_div = soup.find('div', class_='supplementary-material')
+            if supp_div:
+                for p in supp_div.find_all('p', class_='p'):
+                    text = p.get_text(' ', strip=True)
+                    text = re.sub(r'\s+', ' ', text).strip()
+                    if text:
+                        key = text[:80]
+                        descriptions[key] = {'title': '', 'description': text, 'file_info': ''}
 
         return descriptions
 
@@ -717,14 +769,27 @@ class CambridgeHandler(PublisherHandler):
                 for dl in supplemental_downloads:
                     md_parts.append(f"- {dl}")
             elif supplemental_urls:
-                for i, url in enumerate(supplemental_urls):
-                    desc = ''
-                    if isinstance(supplemental_descriptions, dict):
-                        for key, val in supplemental_descriptions.items():
-                            if str(i) in key or (i < len(supplemental_urls)):
-                                desc = f" — {val}"
-                                break
-                    md_parts.append(f"- [{url}]({url}){desc}")
+                for url in supplemental_urls:
+                    info = supplemental_descriptions.get(url, {})
+                    if isinstance(info, dict):
+                        title = info.get('title', '')
+                        desc = info.get('description', '')
+                        file_info = info.get('file_info', '')
+                        if title:
+                            md_parts.append(f"**{title}**")
+                            md_parts.append("")
+                        parts = []
+                        if desc:
+                            parts.append(desc)
+                        if file_info:
+                            parts.append(f"({file_info})")
+                        if parts:
+                            md_parts.append(" ".join(parts))
+                            md_parts.append("")
+                        md_parts.append(f"[{url}]({url})")
+                    else:
+                        md_parts.append(f"- [{url}]({url}){f' — {info}' if info else ''}")
+                    md_parts.append("")
             md_parts.append("")
 
         # References
