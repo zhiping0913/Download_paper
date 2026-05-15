@@ -826,7 +826,7 @@ class NatureHandler(PublisherHandler):
 
     def convert_to_markdown(self, metadata: dict, fulltext_data = None,
                           add_figure_refs: bool = False,
-                          figure_filenames: dict = None) -> str:
+                          figure_filenames: dict = None, **kwargs) -> str:
         """Convert extracted data to Markdown
 
         Args:
