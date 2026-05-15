@@ -1236,6 +1236,14 @@ async def main():
         # DOI列表 + 强制有头
         python complete_paper_extraction.py --file doi_list.txt --force-headed
     """
+    # ── pre-flight dependency check ──────────────────────────────────
+    from check_dependencies import run_checks
+    ok = run_checks()
+    if not ok:
+        print("\n❌ Dependency check failed. Fix above before running the extraction.")
+        print("   See docs/DEPENDENCIES.md for installation instructions.")
+        return 1
+    # ─────────────────────────────────────────────────────────────────
     import argparse
 
     parser = argparse.ArgumentParser(

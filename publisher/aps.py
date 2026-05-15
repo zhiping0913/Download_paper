@@ -10,14 +10,6 @@ import requests
 from pathlib import Path
 from html import unescape
 
-try:
-    import pypandoc
-except:
-    import subprocess
-    import sys
-    subprocess.check_call([sys.executable, 'install', 'pypandoc', '-q'])
-    import pypandoc
-
 from publisher.base import PublisherHandler
 from core.network_capture import setup_response_capture
 from json_to_md_converter import mathml_to_latex_pandoc, extract_text_without_math
