@@ -748,7 +748,7 @@ class APSHandler(PublisherHandler):
 
     def convert_to_markdown(self, metadata: dict, fulltext_json: dict,
                             add_figure_refs: bool = False,
-                            figure_filenames: dict = None) -> str:
+                            figure_filenames: dict = None, **kwargs) -> str:
         """Convert extracted data to Markdown using fulltext JSON
 
         Args:
@@ -820,6 +820,31 @@ class APSHandler(PublisherHandler):
             except Exception as e:
                 print(f"  ⚠️  JSON转换错误: {e}")
                 md_content += ""
+
+        # ===== 补充材料 =====
+        supp_urls = kwargs.get('supplemental_urls', [])
+        supp_descriptions = kwargs.get('supplemental_descriptions', {})
+        supp_downloads = kwargs.get('supplemental_downloads', [])
+        if supp_descriptions:
+            md_content += "---\n\n## Supplemental Material\n\n"
+            for filename, desc in supp_descriptions.items():
+                # Find matching downloaded file
+                downloaded_file = ''
+                for df in supp_downloads:
+                    if filename in df:
+                        downloaded_file = df
+                        break
+                md_content += f"{desc}\n\n"
+                if downloaded_file:
+                    md_content += f"**Downloaded:** [{downloaded_file}]({downloaded_file})\n\n"
+        elif supp_urls:
+            md_content += "---\n\n## Supplemental Material\n\n"
+            for url in supp_urls:
+                if isinstance(url, dict):
+                    md_content += f"- [{url.get('text', url.get('url', 'Supplement'))}]({url.get('url', '')})\n"
+                else:
+                    md_content += f"- [Supplemental Material]({url})\n"
+            md_content += "\n"
 
         md_content += "\n---\n\n"
 
