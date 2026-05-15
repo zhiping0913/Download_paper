@@ -9,5 +9,6 @@
 from .nature import NatureHandler
 from .aps import APSHandler
 from .aip import AIPHandler
+from .cambridge import CambridgeHandler
 
-__all__ = ['NatureHandler', 'APSHandler', 'AIPHandler']
+__all__ = ['NatureHandler', 'APSHandler', 'AIPHandler', 'CambridgeHandler']

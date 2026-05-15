@@ -82,7 +82,7 @@ https://www.nature.com/articles/{doi_suffix}
 如果最终 publisher 在：
 
 ```python
-HEADLESS_ACCESSIBLE_PUBLISHERS = ["nature", "aip"]
+HEADLESS_ACCESSIBLE_PUBLISHERS = ["nature", "aip", "cambridge"]
 ```
 
 中，主流程直接把这个无头 `page` 传给对应 handler，然后进入统一处理阶段。
@@ -331,6 +331,63 @@ AIP 由 `publisher/aip.py` 的 `AIPHandler` 处理。
 ## Publication
 ## Abstract
 ## Article Text
+## References
+```
+
+## Cambridge 当前实现
+
+Cambridge 由 `publisher/cambridge.py` 的 `CambridgeHandler` 处理。
+
+- `10.1017`、`cambridge.org` 会被识别为 `cambridge`。
+- Cambridge 在 `HEADLESS_ACCESSIBLE_PUBLISHERS` 中，可以直接使用 Phase 0 的无头页面。
+
+### metadata 提取
+
+从 HTML `<head>` 中的 `citation_*` meta 标签提取：
+
+- `citation_author` → 作者姓名（无作者机构 meta 标签，机构从 DOM 提取）
+- `citation_title`、`citation_doi`、`citation_journal_title`
+- `citation_volume`、`citation_firstpage`、`citation_publication_date`
+- `citation_pdf_url` → PDF 下载链接，传给主流程下载
+- `citation_abstract` → 摘要文本
+- `citation_keywords` → 关键词列表
+- `citation_author_orcid` → 作者 ORCID
+
+作者机构通过 `<div data-test-author="Name" class="row author">` DOM 元素提取，其中 `<dt class="title">` 为作者名（带 `*` 表示通讯作者），`<dd>` 内包含机构名称。通讯作者邮箱从 `<div class="corresp">` 和 `mailto:` 链接提取。
+
+### 正文提取
+
+`extract_article_text_from_html()` 一次遍历 `<div class="body">` 内的所有 section（`<div class="sec intro">`, `<div class="sec methods">` 等），返回 `(abstract_md, body_md)` 元组。正文通过统一的公式转换管道（MathML → LaTeX）处理 `<mjx-container>` 数学公式。摘要单独从 `<div class="article-abstract">` 提取。
+
+### 图片提取
+
+`extract_figures_from_html()` 从 `<section>` 内的 `<div class="fig-ada">` + `<div class="figure-thumb">` 组合中提取图片 URL 和标题。标题来自 `<div class="caption">` 内的 `<span class="label">` 和 `<p class="p">`，图片 URL 从 `<img data-src="...">` 获取。通过主流程统一下载并插入 Markdown。
+
+### 参考文献提取
+
+`extract_references_from_html()` 从 `<div id="references-list">` 容器中提取参考文献，保留 DOI 链接，通过统一公式管道转为 Markdown 格式。
+
+### 补充材料提取
+
+`_extract_supplemental_links_from_html()` 从 `<div class="notes supplementary-material">` 中提取补充材料链接。
+
+### Markdown 生成
+
+`convert_to_markdown()` 生成完整 Markdown，结构为：
+
+```markdown
+# 标题
+**Authors:**
+作者名
+机构
+
+**Email:** xxx@xxx
+**DOI:** 10.1017/...
+
+## Publication
+## Abstract
+## Article Text
+## Supplemental Material
 ## References
 ```
 

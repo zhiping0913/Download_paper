@@ -37,7 +37,7 @@ from publisher.orchestrator import (
 
 OUTPUT_DIR = str(Path(__file__).resolve().parent / "captured_data")
 # Publisher IDs that can be entered from the Phase 0 headless page.
-HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature', 'aip']
+HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature', 'aip', 'cambridge']
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.tif', '.tiff', '.svg'}
 
 MIME_TO_EXT = {
