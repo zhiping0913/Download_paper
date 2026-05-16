@@ -1035,21 +1035,26 @@ class NatureHandler(PublisherHandler):
             if isinstance(fulltext_data, str) and fulltext_data.strip().startswith('<'):
                 article_md = self.convert_main_content_by_paragraph(fulltext_data)
                 if article_md:
-                    # Replace table placeholders with actual table markdown
+                    # Replace table placeholders with actual table markdown.
+                    # Process in reverse order so string positions remain valid.
                     table_data = kwargs.get('table_data', {})
                     if table_data:
+                        # Sort by position in article (descending → replace from bottom up)
+                        indexed = []
                         for caption, tinfo in table_data.items():
-                            # Escape special regex chars in caption
-                            escaped_caption = re.escape(caption)
-                            # Match: **caption**\n[View full table](url)\n
-                            placeholder = re.compile(
-                                r'\n\*\*' + escaped_caption + r'\*\*\n'
-                                r'\[View full table\]\([^)]+\)\n'
-                            )
-                            article_md = placeholder.sub(
-                                f'\n**{caption}**\n\n{tinfo["markdown"]}\n',
-                                article_md,
-                            )
+                            placeholder = f'\n**{caption}**\n[View full table]'
+                            pos = article_md.find(placeholder)
+                            if pos >= 0:
+                                indexed.append((pos, caption, tinfo))
+                        indexed.sort(key=lambda x: x[0], reverse=True)
+
+                        for pos, caption, tinfo in indexed:
+                            placeholder = f'\n**{caption}**\n[View full table]'
+                            end = article_md.find('\n', pos + len(placeholder))
+                            if end < 0:
+                                end = len(article_md)
+                            replacement = f'\n**{caption}**\n\n{tinfo["markdown"]}\n'
+                            article_md = article_md[:pos] + replacement + article_md[end + 1:]
                     if add_figure_refs:
                         article_md = self.replace_remote_figure_placeholders(
                             article_md,
