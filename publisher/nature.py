@@ -22,6 +22,7 @@ from publisher.wildcard import (
     extract_abstract_with_fallbacks,
     find_generic_article_body,
     format_as_bibtex,
+    format_citation_as_text,
     generate_bibtex_key,
     parse_citation_reference_string,
     prepare_mathjax_html_fragment,
@@ -101,8 +102,9 @@ class NatureHandler(PublisherHandler):
                 }
 
             # 3. Extract references
-            references = await self.extract_references(page)
+            references, refs_raw = await self.extract_references(page)
             metadata['references'] = references
+            metadata['_refs_raw'] = refs_raw
 
             # 4. Get supplemental materials links
             try:
@@ -492,28 +494,32 @@ class NatureHandler(PublisherHandler):
         supplemental_urls, _ = await self.get_supplemental_links(page)
         return supplemental_urls[0] if supplemental_urls else None
 
-    async def extract_references(self, page) -> List[str]:
-        """Parse references from citation_reference meta tags."""
+    async def extract_references(self, page):
+        """Parse references from citation_reference meta tags.
+
+        Returns:
+            (bibtex_list, raw_strings_list)
+        """
         print("  🔍 Extracting references...")
 
-        references = await page.evaluate("""() => {
+        raw_refs = await page.evaluate("""() => {
             return Array.from(document.querySelectorAll('meta[name="citation_reference"]'))
                 .map(meta => meta.getAttribute('content') || '')
                 .filter(content => content.trim().length > 0);
         }""")
 
-        references = [
+        bibtex_refs = [
             self.format_citation_reference(ref)
-            for ref in references
+            for ref in raw_refs
             if ref and ref.strip()
         ]
 
-        if references:
-            print(f"  ✅ References found from citation_reference meta tags: {len(references)}")
+        if bibtex_refs:
+            print(f"  ✅ References found from citation_reference meta tags: {len(bibtex_refs)}")
         else:
             print("  ⚠️  No references found")
 
-        return references
+        return bibtex_refs, raw_refs
 
     def format_citation_reference(self, citation_reference: str) -> str:
         """Format Nature citation_reference content as a standard BibTeX entry.
@@ -915,8 +921,30 @@ class NatureHandler(PublisherHandler):
         # ===== References =====
         if metadata.get('references'):
             md_content += "## References\n\n"
+            refs_raw = metadata.get('_refs_raw', [])
+            references = metadata['references']
+            # Numbered list from raw citation_reference strings
+            if refs_raw and len(refs_raw) == len(references):
+                for idx, raw in enumerate(refs_raw, 1):
+                    try:
+                        parts = {}
+                        for segment in raw.split(';'):
+                            if '=' not in segment:
+                                continue
+                            k, v = segment.split('=', 1)
+                            k = k.strip()
+                            v = re.sub(r'\s+', ' ', v).strip()
+                            if k and v:
+                                parts[k] = v
+                        md_content += format_citation_as_text(parts, index=idx) + "\n\n"
+                    except Exception:
+                        md_content += f"[{idx}] {references[idx - 1]}\n\n"
+            else:
+                for idx, ref in enumerate(references, 1):
+                    md_content += f"[{idx}] {ref}\n\n"
+            # BibTeX block
             md_content += "```bibtex\n"
-            for ref in metadata['references']:
+            for ref in references:
                 md_content += f"{ref}\n\n"
             md_content += "```\n\n"
 
