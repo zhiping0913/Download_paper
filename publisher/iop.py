@@ -20,6 +20,7 @@ from publisher.wildcard import (
     extract_abstract_with_fallbacks,
     find_generic_article_body,
     format_as_bibtex,
+    format_citation_as_text,
     generate_bibtex_key,
     parse_citation_reference_string,
     prepare_mathjax_html_fragment,
@@ -214,6 +215,16 @@ class IOPHandler(PublisherHandler):
 
         return references
 
+    @classmethod
+    def _extract_raw_citation_references(cls, html_content: str) -> list:
+        """Return raw citation_reference meta tag content strings."""
+        if not html_content:
+            return []
+        soup = BeautifulSoup(html_content, 'html.parser')
+        return [tag.get('content', '') for tag in
+                soup.find_all('meta', {'name': 'citation_reference'})
+                if tag.get('content', '').strip()]
+
     # ------------------------------------------------------------------
     # Supplemental material extraction
     # ------------------------------------------------------------------
@@ -337,6 +348,7 @@ class IOPHandler(PublisherHandler):
 
             if fulltext_html:
                 metadata['references'] = self.extract_references_from_html(fulltext_html)
+                metadata['_refs_raw'] = self._extract_raw_citation_references(fulltext_html)
 
             figure_urls = {}
             supp_urls = []
@@ -491,20 +503,44 @@ class IOPHandler(PublisherHandler):
                     md_parts.append(f"- [{url}]({url})")
             md_parts.append("")
 
-        # References in BibTeX format
+        # References: numbered list + BibTeX block
         references = metadata.get('references', [])
+        refs_raw = metadata.get('_refs_raw', [])
         if references:
             md_parts.extend([
                 "---",
                 "",
                 "## References",
                 "",
-                "```bibtex",
             ])
+            # Numbered list from raw citation_reference strings
+            if refs_raw and len(refs_raw) == len(references):
+                for idx, raw in enumerate(refs_raw, 1):
+                    try:
+                        parts = {}
+                        for segment in raw.split(';'):
+                            if '=' not in segment:
+                                continue
+                            k, v = segment.split('=', 1)
+                            k = k.strip()
+                            v = re.sub(r'\s+', ' ', v).strip()
+                            if k and v:
+                                parts[k] = v
+                        text_ref = format_citation_as_text(parts, index=idx)
+                        md_parts.append(text_ref)
+                        md_parts.append("")
+                    except Exception:
+                        md_parts.append(f"[{idx}] {references[idx - 1]}")
+                        md_parts.append("")
+            else:
+                for idx, ref in enumerate(references, 1):
+                    md_parts.append(f"[{idx}] {ref}")
+                    md_parts.append("")
+            # BibTeX block
+            md_parts.extend(["```bibtex", ""])
             for ref in references:
                 md_parts.append(ref)
                 md_parts.append("")
-            md_parts.append("```")
-            md_parts.append("")
+            md_parts.extend(["```", ""])
 
         return "\n".join(md_parts)

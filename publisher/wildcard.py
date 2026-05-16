@@ -223,6 +223,15 @@ def generate_bibtex_key(authors: list, year: str, title: str) -> str:
     return f"{last_name}{year_str}{title_word}"
 
 
+def _pick(parts: dict, *keys: str) -> str:
+    """Return the first non-empty value from *keys* in *parts*."""
+    for k in keys:
+        v = parts.get(k, '')
+        if v:
+            return v
+    return ''
+
+
 def format_as_bibtex(parts: dict, *, key: str = None) -> str:
     """Convert parsed citation parts into a standard BibTeX entry.
 
@@ -230,22 +239,24 @@ def format_as_bibtex(parts: dict, *, key: str = None) -> str:
         parts: Dict with keys like ``citation_author``, ``citation_title``,
             ``citation_journal_title``, ``citation_volume``, ``citation_firstpage``,
             ``citation_lastpage``, ``citation_publication_date``, ``citation_doi``,
-            ``citation_conference_title``.
+            ``citation_conference_title``.  Short keys (without ``citation_``
+            prefix) are also accepted as fallbacks.
         key: Optional pre-computed BibTeX key. If omitted, one is generated
             from the authors / year / title.
 
     Returns:
         Formatted BibTeX string with 2-space indentation.
     """
-    authors_raw = parts.get('citation_author', '')
-    title = parts.get('citation_title', '')
-    journal = parts.get('citation_journal_title', '')
-    conference = parts.get('citation_conference_title', '')
-    volume = parts.get('citation_volume', '')
-    pages = parts.get('citation_firstpage', '') or parts.get('citation_pages', '')
-    lastpage = parts.get('citation_lastpage', '')
-    year = parts.get('citation_publication_date', '')
-    doi = parts.get('citation_doi', '')
+    authors_raw = _pick(parts, 'citation_author', 'author')
+    title = _pick(parts, 'citation_title', 'title')
+    journal = _pick(parts, 'citation_journal_title', 'journal', 'journal_title')
+    conference = _pick(parts, 'citation_conference_title', 'conference', 'conference_title')
+    volume = _pick(parts, 'citation_volume', 'volume')
+    pages = _pick(parts, 'citation_firstpage', 'firstpage',
+                  'citation_pages', 'pages') or ''
+    lastpage = _pick(parts, 'citation_lastpage', 'lastpage') or ''
+    year = _pick(parts, 'citation_publication_date', 'publication_date', 'date', 'year')
+    doi = _pick(parts, 'citation_doi', 'doi')
 
     # Determine entry type
     if conference:
@@ -305,6 +316,57 @@ def format_as_bibtex(parts: dict, *, key: str = None) -> str:
 
     return "\n".join(lines)
 
+
+def format_citation_as_text(parts: dict, *, index: int = None) -> str:
+    """Format parsed citation parts as a readable numbered reference string.
+
+    Example: ``[1] Author1, Author2. Title. Journal Volume, Pages (Year). doi:10.xxx``
+
+    Uses the same fallback key logic as ``format_as_bibtex``.
+    """
+    authors_raw = _pick(parts, 'citation_author', 'author')
+    title = _pick(parts, 'citation_title', 'title')
+    journal = _pick(parts, 'citation_journal_title', 'journal', 'journal_title')
+    volume = _pick(parts, 'citation_volume', 'volume')
+    pages = _pick(parts, 'citation_firstpage', 'firstpage',
+                  'citation_pages', 'pages') or ''
+    lastpage = _pick(parts, 'citation_lastpage', 'lastpage') or ''
+    year = _pick(parts, 'citation_publication_date', 'publication_date', 'date', 'year')
+    doi = _pick(parts, 'citation_doi', 'doi')
+
+    year_match = re.search(r'(\d{4})', str(year))
+    year_str = year_match.group(1) if year_match else year
+
+    # Format authors as "First Last, First2 Last2"
+    author_list = [a.strip() for a in authors_raw.split(';') if a.strip()]
+    if author_list and author_list[0].lower() == 'others':
+        author_list = author_list[1:] + ['others']
+    author_str = ', '.join(author_list)
+
+    # Build components
+    parts_list = []
+    if title:
+        parts_list.append(title.rstrip('.'))
+    if journal:
+        jpart = journal
+        if volume:
+            jpart += f" {volume}"
+        if pages:
+            if lastpage:
+                jpart += f", {pages}--{lastpage}"
+            else:
+                jpart += f", {pages}"
+        parts_list.append(jpart)
+    if year_str:
+        parts_list.append(f"({year_str})")
+    if doi:
+        parts_list.append(f"doi:{doi}")
+
+    ref_text = f"{author_str}. " if author_str else ""
+    ref_text += ". ".join(parts_list)
+
+    prefix = f"[{index}] " if index is not None else ""
+    return f"{prefix}{ref_text}"
 
 def parse_citation_reference_string(ref_str: str, *, bibtex_key: str = None) -> str:
     """Parse a ``citation_reference`` meta tag value into a BibTeX entry.
