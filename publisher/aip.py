@@ -289,6 +289,32 @@ class AIPHandler(PublisherHandler):
         return f"\n{header}\n\n{md}\n"
 
     @classmethod
+    def _convert_aip_block_child_p(cls, block_div) -> str:
+        """Convert AIP ``div.block-child-p`` to markdown.
+
+        This element acts like a paragraph but can contain embedded
+        ``div.formula-wrap`` display formulas and inline MathJax.
+        Extract both and combine them in order.
+        """
+        # Extract display formulas and replace with placeholders
+        display_formulas = []
+        for fw in block_div.find_all('div', class_='formula-wrap'):
+            formula_md = cls._convert_aip_display_formula(fw)
+            if formula_md:
+                placeholder = f"AIPDISPF{len(display_formulas):03d}MATHEND"
+                display_formulas.append((placeholder, formula_md))
+                fw.replace_with(placeholder)
+
+        # Convert remaining content (text + inline MathJax) to markdown
+        text_md = cls._convert_aip_html_fragment_to_markdown(str(block_div))
+
+        # Restore display formulas (each on its own line)
+        for placeholder, formula_md in display_formulas:
+            text_md = text_md.replace(placeholder, f"\n\n{formula_md}")
+
+        return text_md.strip()
+
+    @classmethod
     def extract_article_text_from_html(cls, html_content: str):
         """Extract AIP article text, returning (abstract_md, body_md).
 
@@ -354,6 +380,15 @@ class AIPHandler(PublisherHandler):
             figure_md = cls._convert_aip_figure(node)
             if figure_md:
                 body_parts.extend([figure_md, ""])
+                continue
+
+            # block-child-p contains paragraph text possibly mixed with
+            # embedded display formulas — convert as a single unit.
+            block_p = node.select_one('div.block-child-p')
+            if block_p:
+                block_md = cls._convert_aip_block_child_p(block_p)
+                if block_md:
+                    body_parts.extend([block_md, ""])
                 continue
 
             formula = node.select_one('div.formula-wrap')
