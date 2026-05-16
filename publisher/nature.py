@@ -14,7 +14,7 @@ from html import unescape
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
-from json_to_md_converter import cleanup_markdown, convert_html_to_markdown
+from json_to_md_converter import cleanup_markdown, convert_html_to_markdown, mathml_to_latex_pandoc
 from playwright.async_api import async_playwright
 
 from publisher.wildcard import (
@@ -126,6 +126,24 @@ class NatureHandler(PublisherHandler):
                 fulltext_html = await page.content()
             except:
                 fulltext_html = None
+
+            # 6.5 Fetch inline table pages and convert to markdown
+            table_data = {}
+            if fulltext_html:
+                table_infos = self._extract_table_infos(fulltext_html)
+                if table_infos:
+                    print(f"  📊 发现 {len(table_infos)} 个行内表格，正在获取...")
+                for table_id, caption, href in table_infos:
+                    table_page_html = await self._fetch_table_page(page, href)
+                    if table_page_html:
+                        table_md = self._convert_table_html_to_md(table_page_html)
+                        if table_md:
+                            # Use caption text as key for matching in convert_to_markdown
+                            table_key = caption
+                            table_data[table_key] = {'caption': caption, 'markdown': table_md}
+                            print(f"    ✓ {caption}")
+
+            links['table_data'] = table_data
 
             # 7. Save HTML to captured_data if captured_data was set up
             if fulltext_html and captured is not None:
@@ -587,6 +605,93 @@ class NatureHandler(PublisherHandler):
             html_content = f.read()
         return self.extract_paragraphs_from_html_content(html_content)
 
+    # ------------------------------------------------------------------
+    # Table page fetching and conversion
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_table_infos(html_content: str) -> list:
+        """Extract (table_id, caption, url) tuples from main article HTML."""
+        soup = BeautifulSoup(html_content, 'html.parser')
+        table_infos = []
+        for table_div in soup.find_all('div', class_='c-article-table'):
+            table_id = table_div.get('id', '')
+            figcaption = table_div.find('figcaption')
+            caption = figcaption.get_text(' ', strip=True) if figcaption else ''
+            caption = re.sub(r'\s+', ' ', caption).strip()
+            table_link = table_div.find('a', href=re.compile(r'/tables?/\d+'))
+            href = table_link.get('href', '') if table_link else ''
+            if href:
+                table_infos.append((table_id, caption, href))
+        return table_infos
+
+    @staticmethod
+    async def _fetch_table_page(page, table_url: str, base_url: str = 'https://www.nature.com') -> str:
+        """Navigate to a table page and return its HTML content."""
+        full_url = table_url if table_url.startswith('http') else base_url + table_url
+        try:
+            await page.goto(full_url, wait_until='domcontentloaded', timeout=30000)
+            try:
+                await page.wait_for_load_state('networkidle', timeout=10000)
+            except Exception:
+                pass
+            return await page.content()
+        except Exception as e:
+            print(f"  ⚠️  Failed to fetch table page {full_url}: {e}")
+            return ''
+
+    @classmethod
+    def _convert_table_html_to_md(cls, table_page_html: str) -> str:
+        """Convert a Nature table page to a markdown table.
+
+        Pre-processes MathJax in table cells (data-mathml → LaTeX) before
+        converting the <table> element to markdown via pandoc.
+        """
+        soup = BeautifulSoup(table_page_html, 'html.parser')
+        table = soup.find('table')
+        if not table:
+            return ''
+
+        # Replace MathJax spans with placeholder tokens to avoid pandoc
+        # mangling the LaTeX, then restore after conversion.
+        math_placeholders = {}
+
+        for math_span in table.find_all('span', class_='MathJax_SVG'):
+            mathml = math_span.get('data-mathml', '')
+            latex = mathml_to_latex_pandoc(mathml) if mathml else ''
+            if latex:
+                placeholder = f"MATHPLACEHOLDER{len(math_placeholders):03d}MATHEND"
+                math_placeholders[placeholder] = latex
+                # Replace the outer mathjax-tex wrapper too, keeping only the LaTeX
+                wrapper = math_span.find_parent('span', class_='mathjax-tex')
+                if wrapper:
+                    wrapper.replace_with(BeautifulSoup(placeholder, 'html.parser'))
+                else:
+                    math_span.replace_with(BeautifulSoup(placeholder, 'html.parser'))
+
+        # Remove any remaining MathJax_Preview or mathjax-tex spans
+        for tag in table.find_all('span', class_=['MathJax_Preview', 'mathjax-tex']):
+            tag.decompose()
+
+        # Convert <table> to markdown via pandoc
+        table_html = str(table)
+        import pypandoc
+        md = pypandoc.convert_text(table_html, 'md', format='html', extra_args=['--wrap=none'])
+        md = md.strip()
+
+        # Restore LaTeX placeholders
+        for placeholder, latex in math_placeholders.items():
+            md = md.replace(placeholder, latex)
+
+        # Collapse whitespace-only rows (pandoc often inserts empty table rows)
+        md = re.sub(r'\|\s+\|\s+(\|\s+)*\n', '', md)
+
+        return '\n' + md + '\n'
+
+    # ------------------------------------------------------------------
+    # Paragraph conversion
+    # ------------------------------------------------------------------
+
     def convert_paragraph(self, paragraph_html: str) -> str:
         """Convert one HTML paragraph/equation/heading block to cleaned Markdown."""
         try:
@@ -930,6 +1035,21 @@ class NatureHandler(PublisherHandler):
             if isinstance(fulltext_data, str) and fulltext_data.strip().startswith('<'):
                 article_md = self.convert_main_content_by_paragraph(fulltext_data)
                 if article_md:
+                    # Replace table placeholders with actual table markdown
+                    table_data = kwargs.get('table_data', {})
+                    if table_data:
+                        for caption, tinfo in table_data.items():
+                            # Escape special regex chars in caption
+                            escaped_caption = re.escape(caption)
+                            # Match: **caption**\n[View full table](url)\n
+                            placeholder = re.compile(
+                                r'\n\*\*' + escaped_caption + r'\*\*\n'
+                                r'\[View full table\]\([^)]+\)\n'
+                            )
+                            article_md = placeholder.sub(
+                                f'\n**{caption}**\n\n{tinfo["markdown"]}\n',
+                                article_md,
+                            )
                     if add_figure_refs:
                         article_md = self.replace_remote_figure_placeholders(
                             article_md,
