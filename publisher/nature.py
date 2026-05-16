@@ -530,7 +530,7 @@ class NatureHandler(PublisherHandler):
         return parse_citation_reference_string(citation_reference)
 
     def extract_paragraphs_from_html_content(self, html_content: str) -> List[str]:
-        """Extract paragraph and equation HTML blocks from Nature main-content.
+        """Extract paragraph, equation, and heading HTML blocks from Nature main-content.
 
         Falls back to generic article body extraction for non-Nature publishers
         (IOP, Springer, Elsevier) routed through the Nature handler.
@@ -558,17 +558,20 @@ class NatureHandler(PublisherHandler):
                 re.DOTALL,
             )
         )
+        heading_matches = list(re.finditer(r'<h[23][^>]*>(.*?)</h[23]>', main_content_html, re.DOTALL))
 
         ordered_items = []
         for match in paragraph_matches:
             ordered_items.append((match.start(), match.group(0)))
         for match in equation_matches:
             ordered_items.append((match.start(), match.group(0)))
+        for match in heading_matches:
+            ordered_items.append((match.start(), match.group(0)))
 
         ordered_items.sort(key=lambda item: item[0])
         items = [content for _, content in ordered_items]
 
-        print(f"  ✅ Main content blocks: {len(paragraph_matches)} paragraphs, {len(equation_matches)} equations")
+        print(f"  ✅ Main content blocks: {len(paragraph_matches)} paragraphs, {len(equation_matches)} equations, {len(heading_matches)} headings")
         return items
 
     def extract_paragraphs_from_html(self, html_file: str) -> List[str]:
@@ -578,8 +581,21 @@ class NatureHandler(PublisherHandler):
         return self.extract_paragraphs_from_html_content(html_content)
 
     def convert_paragraph(self, paragraph_html: str) -> str:
-        """Convert one HTML paragraph/equation block to cleaned Markdown."""
+        """Convert one HTML paragraph/equation/heading block to cleaned Markdown."""
         try:
+            stripped = paragraph_html.strip()
+
+            # Handle headings: extract text and format as markdown heading
+            h_match = re.match(r'<h([23])[^>]*>(.*?)</h\1>', stripped, re.DOTALL)
+            if h_match:
+                level = int(h_match.group(1))
+                heading_text = BeautifulSoup(h_match.group(2), 'html.parser').get_text(' ', strip=True)
+                heading_text = re.sub(r'\s+', ' ', heading_text).strip()
+                if heading_text:
+                    prefix = '#' * (level + 1)  # h2 → ###, h3 → ####
+                    return f"{prefix} {heading_text}"
+                return ""
+
             is_equation = 'c-article-equation' in paragraph_html
             md = convert_html_to_markdown(paragraph_html)
             md = cleanup_markdown(md)
