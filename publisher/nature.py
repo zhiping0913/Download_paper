@@ -559,6 +559,11 @@ class NatureHandler(PublisherHandler):
             )
         )
         heading_matches = list(re.finditer(r'<h[23][^>]*>(.*?)</h[23]>', main_content_html, re.DOTALL))
+        table_matches = list(re.finditer(
+            r'<div[^>]*class="c-article-table"[^>]*>(.*?)</figure>\s*</div>',
+            main_content_html,
+            re.DOTALL,
+        ))
 
         ordered_items = []
         for match in paragraph_matches:
@@ -567,11 +572,13 @@ class NatureHandler(PublisherHandler):
             ordered_items.append((match.start(), match.group(0)))
         for match in heading_matches:
             ordered_items.append((match.start(), match.group(0)))
+        for match in table_matches:
+            ordered_items.append((match.start(), match.group(0)))
 
         ordered_items.sort(key=lambda item: item[0])
         items = [content for _, content in ordered_items]
 
-        print(f"  ✅ Main content blocks: {len(paragraph_matches)} paragraphs, {len(equation_matches)} equations, {len(heading_matches)} headings")
+        print(f"  ✅ Main content blocks: {len(paragraph_matches)} paragraphs, {len(equation_matches)} equations, {len(heading_matches)} headings, {len(table_matches)} tables")
         return items
 
     def extract_paragraphs_from_html(self, html_file: str) -> List[str]:
@@ -595,6 +602,21 @@ class NatureHandler(PublisherHandler):
                     prefix = '#' * (level + 1)  # h2 → ###, h3 → ####
                     return f"{prefix} {heading_text}"
                 return ""
+
+            # Handle inline table placeholders — extract caption and link
+            if 'c-article-table' in paragraph_html:
+                table_soup = BeautifulSoup(paragraph_html, 'html.parser')
+                figcaption = table_soup.find('figcaption')
+                caption = figcaption.get_text(' ', strip=True) if figcaption else ''
+                caption = re.sub(r'\s+', ' ', caption).strip()
+                table_link = table_soup.find('a', href=re.compile(r'/tables?/\d+'))
+                link_href = table_link.get('href', '') if table_link else ''
+                if link_href and not link_href.startswith('http'):
+                    link_href = 'https://www.nature.com' + link_href
+                lines = [f"\n**{caption}**"]
+                if link_href:
+                    lines.append(f"[View full table]({link_href})")
+                return "\n".join(lines) + "\n"
 
             is_equation = 'c-article-equation' in paragraph_html
             md = convert_html_to_markdown(paragraph_html)
@@ -942,6 +964,7 @@ class NatureHandler(PublisherHandler):
             for idx, ref in enumerate(references):
                 idx1 = idx + 1
                 # Numbered text
+                raw_text = None
                 if refs_raw and idx < len(refs_raw):
                     try:
                         raw = refs_raw[idx]
@@ -954,13 +977,20 @@ class NatureHandler(PublisherHandler):
                             v = re.sub(r'\s+', ' ', v).strip()
                             if k and v:
                                 parts[k] = v
-                        md_content += format_citation_as_text(parts, index=idx1) + "\n\n"
+                        if parts:
+                            md_content += format_citation_as_text(parts, index=idx1) + "\n\n"
+                        else:
+                            raw_text = re.sub(r'\s+', ' ', unescape(raw or '')).strip()
+                            md_content += f"[{idx1}] {raw_text}\n\n"
                     except Exception:
-                        md_content += f"[{idx1}] {ref}\n\n"
+                        if not raw_text:
+                            raw_text = ref
+                        md_content += f"[{idx1}] {raw_text}\n\n"
                 else:
                     md_content += f"[{idx1}] {ref}\n\n"
-                # BibTeX block for this reference
-                md_content += f"```bibtex\n{ref}\n```\n\n"
+                # BibTeX block — only for properly formatted entries
+                if ref.strip().startswith('@'):
+                    md_content += f"```bibtex\n{ref}\n```\n\n"
 
         return md_content
 
