@@ -851,6 +851,10 @@ class NatureHandler(PublisherHandler):
         """Extract Nature acknowledgements and convert them to Markdown."""
         return self.extract_section_paragraphs_from_html_content(html_content, 'Acknowledgements')
 
+    def extract_code_availability_from_html_content(self, html_content: str) -> str:
+        """Extract Nature Code availability section and convert to Markdown."""
+        return self.extract_section_paragraphs_from_html_content(html_content, 'Code availability')
+
     def extract_supplementary_items_from_html_content(self, html_content: str, section_title: str) -> str:
         """Extract Nature supplementary-style item lists from a named section."""
         soup = BeautifulSoup(html_content, 'html.parser')
@@ -1106,6 +1110,10 @@ class NatureHandler(PublisherHandler):
                 acknowledgements_md = self.extract_acknowledgements_from_html_content(fulltext_data)
                 if acknowledgements_md:
                     md_content += f"## Acknowledgements\n\n{acknowledgements_md}\n\n"
+
+                code_availability_md = self.extract_code_availability_from_html_content(fulltext_data)
+                if code_availability_md:
+                    md_content += f"## Code availability\n\n{code_availability_md}\n\n"
 
                 extended_data_md = self.extract_extended_data_from_html_content(fulltext_data)
                 if extended_data_md:
