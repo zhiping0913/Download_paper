@@ -776,6 +776,7 @@ async def complete_extraction_workflow(
             supplemental_urls=links.get('supplemental_urls', []),
             supplemental_descriptions=links.get('supplemental_descriptions', {}),
             supplemental_downloads=downloads.get('supplemental', []),
+            table_data=links.get('table_data', {}),
         )
         with open(markdown_file, 'w', encoding='utf-8') as f:
             f.write(md)
