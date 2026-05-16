@@ -58,7 +58,7 @@ def organize_paper_output(output_dir: Path, metadata: dict, s2_data: dict) -> Pa
         title = s2_data.get('title') or metadata.get('title') or 'paper'
 
         # Clean title of special characters
-        title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:80].strip()
+        title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:150].strip()
 
         # Create directory: {year}--{title}
         dir_name = f"{year}--{title_clean}"
