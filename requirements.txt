@@ -1,0 +1,11 @@
+# Download_paper dependencies
+# Install: pip install -r requirements.txt
+# Then: playwright install chromium
+# Note: pypandoc also requires pandoc binary (https://pandoc.org/installing.html)
+
+playwright>=1.40.0
+beautifulsoup4>=4.12.0
+requests>=2.31.0
+pypandoc>=1.12
+python-magic-bin>=0.4.14; platform_system == "Windows"
+python-magic>=0.4.27; platform_system != "Windows"

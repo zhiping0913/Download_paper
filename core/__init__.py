@@ -4,6 +4,7 @@ Core module: Generic utilities and functions for paper extraction
 
 from .utilities import (
     fetch_semanticscholar,
+    format_references_as_bibtex,
     organize_paper_output,
     save_metadata_json,
     detect_publisher_from_url,
@@ -14,6 +15,7 @@ from .network_capture import setup_response_capture
 
 __all__ = [
     'fetch_semanticscholar',
+    'format_references_as_bibtex',
     'organize_paper_output',
     'save_metadata_json',
     'detect_publisher_from_url',
