@@ -642,10 +642,10 @@ class NatureHandler(PublisherHandler):
 
     @classmethod
     def _convert_table_html_to_md(cls, table_page_html: str) -> str:
-        """Convert a Nature table page to a markdown table.
+        """Convert a Nature table page to a markdown table with footnotes.
 
-        Pre-processes MathJax in table cells (data-mathml → LaTeX) before
-        converting the <table> element to markdown via pandoc.
+        Pre-processes MathJax in table cells and footer (data-mathml → LaTeX)
+        before converting to markdown via pandoc.
         """
         soup = BeautifulSoup(table_page_html, 'html.parser')
         table = soup.find('table')
@@ -686,7 +686,39 @@ class NatureHandler(PublisherHandler):
         # Collapse whitespace-only rows (pandoc often inserts empty table rows)
         md = re.sub(r'\|\s+\|\s+(\|\s+)*\n', '', md)
 
-        return '\n' + md + '\n'
+        # ---- Extract table footer / annotations ----
+        footer_md = ''
+        footer_div = soup.find('div', class_='c-article-table-footer')
+        if footer_div:
+            # Pre-process MathJax in footer the same way
+            footer_placeholders = {}
+            for math_span in footer_div.find_all('span', class_='MathJax_SVG'):
+                mathml = math_span.get('data-mathml', '')
+                latex = mathml_to_latex_pandoc(mathml) if mathml else ''
+                if latex:
+                    placeholder = f"MATHPLACEHOLDER{len(footer_placeholders):03d}MATHEND"
+                    footer_placeholders[placeholder] = latex
+                    wrapper = math_span.find_parent('span', class_='mathjax-tex')
+                    if wrapper:
+                        wrapper.replace_with(BeautifulSoup(placeholder, 'html.parser'))
+                    else:
+                        math_span.replace_with(BeautifulSoup(placeholder, 'html.parser'))
+
+            for tag in footer_div.find_all('span', class_=['MathJax_Preview', 'mathjax-tex']):
+                tag.decompose()
+
+            footer_html = str(footer_div)
+            footer_md = pypandoc.convert_text(footer_html, 'md', format='html', extra_args=['--wrap=none'])
+            footer_md = footer_md.strip()
+
+            for placeholder, latex in footer_placeholders.items():
+                footer_md = footer_md.replace(placeholder, latex)
+
+            footer_md = re.sub(r'\s+', ' ', footer_md).strip()
+            if footer_md:
+                footer_md = '\n' + footer_md + '\n'
+
+        return '\n' + md + '\n' + footer_md
 
     # ------------------------------------------------------------------
     # Paragraph conversion
