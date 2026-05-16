@@ -503,7 +503,7 @@ class IOPHandler(PublisherHandler):
                     md_parts.append(f"- [{url}]({url})")
             md_parts.append("")
 
-        # References: numbered list + BibTeX block
+        # References: each ref = numbered text + its own BibTeX block
         references = metadata.get('references', [])
         refs_raw = metadata.get('_refs_raw', [])
         if references:
@@ -513,10 +513,12 @@ class IOPHandler(PublisherHandler):
                 "## References",
                 "",
             ])
-            # Numbered list from raw citation_reference strings
-            if refs_raw and len(refs_raw) == len(references):
-                for idx, raw in enumerate(refs_raw, 1):
+            for idx, ref in enumerate(references):
+                idx1 = idx + 1
+                # Numbered text
+                if refs_raw and idx < len(refs_raw):
                     try:
+                        raw = refs_raw[idx]
                         parts = {}
                         for segment in raw.split(';'):
                             if '=' not in segment:
@@ -526,21 +528,14 @@ class IOPHandler(PublisherHandler):
                             v = re.sub(r'\s+', ' ', v).strip()
                             if k and v:
                                 parts[k] = v
-                        text_ref = format_citation_as_text(parts, index=idx)
-                        md_parts.append(text_ref)
-                        md_parts.append("")
+                        md_parts.append(format_citation_as_text(parts, index=idx1))
                     except Exception:
-                        md_parts.append(f"[{idx}] {references[idx - 1]}")
-                        md_parts.append("")
-            else:
-                for idx, ref in enumerate(references, 1):
-                    md_parts.append(f"[{idx}] {ref}")
-                    md_parts.append("")
-            # BibTeX block
-            md_parts.extend(["```bibtex", ""])
-            for ref in references:
-                md_parts.append(ref)
+                        md_parts.append(f"[{idx1}] {ref}")
+                else:
+                    md_parts.append(f"[{idx1}] {ref}")
                 md_parts.append("")
-            md_parts.extend(["```", ""])
+                # BibTeX block for this reference
+                md_parts.extend(["```bibtex", ref, "```", ""])
+            md_parts.append("")
 
         return "\n".join(md_parts)

@@ -923,10 +923,12 @@ class NatureHandler(PublisherHandler):
             md_content += "## References\n\n"
             refs_raw = metadata.get('_refs_raw', [])
             references = metadata['references']
-            # Numbered list from raw citation_reference strings
-            if refs_raw and len(refs_raw) == len(references):
-                for idx, raw in enumerate(refs_raw, 1):
+            for idx, ref in enumerate(references):
+                idx1 = idx + 1
+                # Numbered text
+                if refs_raw and idx < len(refs_raw):
                     try:
+                        raw = refs_raw[idx]
                         parts = {}
                         for segment in raw.split(';'):
                             if '=' not in segment:
@@ -936,17 +938,13 @@ class NatureHandler(PublisherHandler):
                             v = re.sub(r'\s+', ' ', v).strip()
                             if k and v:
                                 parts[k] = v
-                        md_content += format_citation_as_text(parts, index=idx) + "\n\n"
+                        md_content += format_citation_as_text(parts, index=idx1) + "\n\n"
                     except Exception:
-                        md_content += f"[{idx}] {references[idx - 1]}\n\n"
-            else:
-                for idx, ref in enumerate(references, 1):
-                    md_content += f"[{idx}] {ref}\n\n"
-            # BibTeX block
-            md_content += "```bibtex\n"
-            for ref in references:
-                md_content += f"{ref}\n\n"
-            md_content += "```\n\n"
+                        md_content += f"[{idx1}] {ref}\n\n"
+                else:
+                    md_content += f"[{idx1}] {ref}\n\n"
+                # BibTeX block for this reference
+                md_content += f"```bibtex\n{ref}\n```\n\n"
 
         return md_content
 
