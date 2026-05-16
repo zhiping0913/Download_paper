@@ -12,6 +12,7 @@ from html import unescape
 
 from publisher.base import PublisherHandler
 from core.network_capture import setup_response_capture
+from core.utilities import fetch_semanticscholar, _build_bibtex_from_s2
 from json_to_md_converter import mathml_to_latex_pandoc, extract_text_without_math
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
@@ -704,6 +705,23 @@ class APSHandler(PublisherHandler):
                 if references:
                     metadata['references'] = references
                     print(f"  ✓ 参考文献: {len(references)} 条")
+                    # Generate BibTeX entries via Semantic Scholar
+                    bibtex_refs = []
+                    for ref_text in references:
+                        doi_match = re.search(r'(10\.\d{4,}/[^\s"\'\]]+)', ref_text)
+                        if doi_match:
+                            doi_ref = doi_match.group(1).rstrip('.')
+                            try:
+                                s2_data = fetch_semanticscholar(doi_ref)
+                                if s2_data and s2_data.get('title'):
+                                    bibtex_refs.append(_build_bibtex_from_s2(s2_data, doi_ref))
+                                else:
+                                    bibtex_refs.append(None)
+                            except Exception:
+                                bibtex_refs.append(None)
+                        else:
+                            bibtex_refs.append(None)
+                    metadata['_refs_bibtex'] = bibtex_refs
                     break
 
         # 4. Get fulltext data
@@ -843,8 +861,12 @@ class APSHandler(PublisherHandler):
         # ===== 参考文献 =====
         if metadata.get('references'):
             md_content += "## References\n\n"
-            for i, ref in enumerate(metadata['references'], 1):
-                md_content += f"[{i}] {ref}\n\n"
+            bibtex_refs = metadata.get('_refs_bibtex', [])
+            for i, ref in enumerate(metadata['references']):
+                idx = i + 1
+                md_content += f"[{idx}] {ref}\n\n"
+                if i < len(bibtex_refs) and bibtex_refs[i]:
+                    md_content += f"```bibtex\n{bibtex_refs[i]}\n```\n\n"
 
         # 跨发布商通用的清理 (移到 json_to_md_converter.cleanup_markdown)
         md_content = cleanup_markdown(md_content)
