@@ -225,6 +225,70 @@ class AIPHandler(PublisherHandler):
         return " ".join(parts).strip()
 
     @classmethod
+    def _convert_aip_table_to_md(cls, table_wrap) -> str:
+        """Convert an AIP ``div.table-wrap`` element to markdown table.
+
+        Pre-processes MathJax ``mjx-container`` markup in table cells before
+        converting the ``<table>`` element to markdown via pandoc.
+        """
+        # Label and caption
+        label_span = table_wrap.find('span', class_='label')
+        label = label_span.get_text(' ', strip=True) if label_span else ''
+
+        caption_div = table_wrap.find('div', class_='caption')
+        caption = caption_div.get_text(' ', strip=True) if caption_div else ''
+
+        table_overflow = table_wrap.find('div', class_='table-overflow')
+        if not table_overflow:
+            return ''
+        table = table_overflow.find('table')
+        if not table:
+            return ''
+
+        # Stash mjx-container formulas as LaTeX placeholders
+        formulas = []
+        for mjx in table.find_all('mjx-container'):
+            math_tag = mjx.find('math')
+            latex = cls._convert_aip_mathml(math_tag) if math_tag else ''
+            if latex:
+                placeholder = f"AIPMATH{len(formulas):03d}MATHEND"
+                formulas.append(latex)
+                mjx.replace_with(placeholder)
+
+        # Remove scripts, styles, noscripts
+        for tag in table(['script', 'style', 'noscript']):
+            tag.decompose()
+
+        # Convert xref-bibr links to plain [N] markers
+        for a_tag in table.find_all('a', class_='xref-bibr'):
+            sup = a_tag.find('sup')
+            ref_text = sup.get_text(' ', strip=True) if sup else a_tag.get_text(' ', strip=True)
+            if ref_text:
+                a_tag.replace_with(f"[{ref_text}]")
+
+        # Unwrap inline-formula spans (keep inner content)
+        for span in table.find_all('span', class_='inline-formula'):
+            span.unwrap()
+
+        # Remove empty spans (e.g. <span class="mathFormula"></span>)
+        for tag in table.find_all(lambda t: t.name == 'span' and not t.get_text(strip=True)):
+            tag.decompose()
+
+        # Convert <table> to markdown via pandoc
+        import pypandoc
+        table_html = str(table)
+        md = pypandoc.convert_text(table_html, 'md', format='html', extra_args=['--wrap=none'])
+        md = md.strip()
+
+        # Restore LaTeX placeholders
+        for idx, latex in enumerate(formulas):
+            md = md.replace(f"AIPMATH{idx:03d}MATHEND", latex)
+
+        # Combine header + table
+        header = f"**{label}** {caption}" if label else f"**{caption}**"
+        return f"\n{header}\n\n{md}\n"
+
+    @classmethod
     def extract_article_text_from_html(cls, html_content: str):
         """Extract AIP article text, returning (abstract_md, body_md).
 
@@ -297,6 +361,13 @@ class AIPHandler(PublisherHandler):
                 formula_md = cls._convert_aip_display_formula(formula)
                 if formula_md:
                     body_parts.extend([formula_md, ""])
+                continue
+
+            table = node.select_one('div.table-wrap')
+            if table:
+                table_md = cls._convert_aip_table_to_md(table)
+                if table_md:
+                    body_parts.extend([table_md, ""])
                 continue
 
             paragraphs = node.find_all('p', recursive=False)
