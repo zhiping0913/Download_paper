@@ -264,11 +264,7 @@ async def _download_all_resources(
             print("Step 4️⃣  下载论文PDF...")
             print("=" * 80)
             try:
-                # Build PDF filename from metadata
-                year = metadata.get('year', '0000')
-                title = metadata.get('title', 'paper')
-                title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:80].strip()
-                pdf_filename = f"{year}--{title_clean}.pdf"
+                pdf_filename = "paper.pdf"
 
                 pdf_result = await download_pdf(
                     download_page,
@@ -313,16 +309,11 @@ async def _download_all_resources(
         if supp_urls:
             print("\nStep 5️⃣  下载补充材料...")
             print("=" * 80)
-            year = metadata.get('year', '0000')
-            title = metadata.get('title', 'paper')
-
             supp_descriptions = links.get('supplemental_descriptions', {})
 
             count, descriptions = await download_supplemental_materials(
                 supp_urls,
                 output_dir,
-                year,
-                title,
                 download_context,
                 supp_descriptions,
                 download_page,
@@ -435,8 +426,6 @@ async def download_pdf(
 async def download_supplemental_materials(
     supplemental_links: list,
     output_dir: Path,
-    year: str,
-    title: str,
     context,
     descriptions: dict = None,
     page=None,
@@ -447,8 +436,6 @@ async def download_supplemental_materials(
     Args:
         supplemental_links: 补充材料链接列表
         output_dir: 输出目录
-        year: 论文年份
-        title: 论文标题
         context: Playwright browser context（已enable downloads）
         descriptions: 补充材料的描述字典 {filename: description}
 
@@ -463,10 +450,6 @@ async def download_supplemental_materials(
 
     if descriptions is None:
         descriptions = {}
-
-    # 清理标题中的特殊字符
-    title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:80].strip()
-    prefix = f"{year}--{title_clean}"
 
     downloaded_count = 0
     downloaded_descriptions = {}
@@ -485,7 +468,7 @@ async def download_supplemental_materials(
                 filename = f"supplemental_{i}"
 
             # 生成输出文件名
-            output_filename = f"{prefix}--Supplemental--{filename}"
+            output_filename = f"supplemental--{filename}"
             output_path = output_dir / output_filename
 
             print(f"  📥 下载补充材料 ({i}/{len(supplemental_links)}): {filename}")
@@ -760,10 +743,6 @@ async def complete_extraction_workflow(
         base_output_dir.mkdir(parents=True, exist_ok=True)
         paper_output_dir = organize_paper_output(base_output_dir, metadata, s2_metadata)
 
-        # Generate markdown filename
-        year = s2_metadata.get('year') or metadata.get('year') or '0000'
-        title = s2_metadata.get('title') or metadata.get('title') or 'paper'
-        title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:80].strip()
         markdown_filename = "paper.md"
         markdown_file = paper_output_dir / markdown_filename
 
