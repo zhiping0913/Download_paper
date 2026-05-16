@@ -17,6 +17,16 @@ from bs4 import BeautifulSoup
 from json_to_md_converter import cleanup_markdown, convert_html_to_markdown
 from playwright.async_api import async_playwright
 
+from publisher.wildcard import (
+    convert_html_fragment_to_markdown,
+    extract_abstract_with_fallbacks,
+    find_generic_article_body,
+    format_as_bibtex,
+    generate_bibtex_key,
+    parse_citation_reference_string,
+    prepare_mathjax_html_fragment,
+)
+
 
 class NatureHandler(PublisherHandler):
     """Handler for Nature and Springer Nature journals"""
@@ -26,11 +36,14 @@ class NatureHandler(PublisherHandler):
         Initialize Nature handler
 
         Args:
-            journal_name: Journal name (nature, nature_physics, nature_materials, etc.)
+            journal_name: Journal name (nature, nature_physics, nature_materials, iop, etc.)
         """
         super().__init__(page=page, captured_data_dir=captured_data_dir, doi=doi)
         self.journal_name = journal_name
-        self.base_url = "https://www.nature.com"
+        if journal_name == 'iop':
+            self.base_url = "https://iopscience.iop.org"
+        else:
+            self.base_url = "https://www.nature.com"
 
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
         """Execute complete extraction flow for Nature articles
@@ -404,7 +417,7 @@ class NatureHandler(PublisherHandler):
                     href = await pdf_link.get_attribute('href')
                     if href:
                         if not href.startswith('http'):
-                            href = f"https://www.nature.com{href}"
+                            href = urljoin(self.base_url, href)
                         print(f"  ✅ Found PDF: {href[:80]}...")
                         return href
             except:
@@ -503,57 +516,27 @@ class NatureHandler(PublisherHandler):
         return references
 
     def format_citation_reference(self, citation_reference: str) -> str:
-        """Format Nature citation_reference content as a readable reference."""
-        parts = {}
-        for segment in citation_reference.split(';'):
-            if '=' not in segment:
-                continue
-            key, value = segment.split('=', 1)
-            key = key.strip()
-            value = re.sub(r'\s+', ' ', unescape(value or '')).strip()
-            if key and value:
-                parts[key] = value
+        """Format Nature citation_reference content as a standard BibTeX entry.
 
-        if not parts:
-            return re.sub(r'\s+', ' ', unescape(citation_reference or '')).strip()
-
-        chunks = []
-        authors = parts.get('citation_author')
-        title = parts.get('citation_title')
-        journal = parts.get('citation_journal_title')
-        volume = parts.get('citation_volume')
-        pages = parts.get('citation_pages')
-        year = parts.get('citation_publication_date')
-        doi = parts.get('citation_doi')
-
-        if authors:
-            chunks.append(authors)
-        if title:
-            chunks.append(title)
-
-        publication_parts = []
-        if journal:
-            publication_parts.append(journal)
-        if volume:
-            publication_parts.append(volume)
-        if pages:
-            publication_parts.append(pages)
-        if year:
-            publication_parts.append(f"({year})")
-        if publication_parts:
-            chunks.append(", ".join(publication_parts))
-        if doi:
-            chunks.append(f"doi: {doi}")
-
-        return ". ".join(chunks).rstrip('.') + "."
+        Delegates to wildcard.parse_citation_reference_string for the shared
+        citation_reference → BibTeX pipeline.
+        """
+        return parse_citation_reference_string(citation_reference)
 
     def extract_paragraphs_from_html_content(self, html_content: str) -> List[str]:
-        """Extract paragraph and equation HTML blocks from Nature main-content."""
+        """Extract paragraph and equation HTML blocks from Nature main-content.
+
+        Falls back to generic article body extraction for non-Nature publishers
+        (IOP, Springer, Elsevier) routed through the Nature handler.
+        """
         soup = BeautifulSoup(html_content, 'html.parser')
         main_content_div = soup.find('div', {'class': 'main-content'})
 
         if not main_content_div:
             main_content_div = soup.find('div', {'class': 'main-content', 'data-nosnippet': ''})
+
+        if not main_content_div:
+            main_content_div = find_generic_article_body(soup)
 
         if not main_content_div:
             print("  ⚠️  main-content div not found")
@@ -607,13 +590,21 @@ class NatureHandler(PublisherHandler):
             return ""
 
     def extract_abstract_from_html_content(self, html_content: str) -> str:
-        """Extract and convert Nature abstract paragraphs from article HTML."""
+        """Extract and convert Nature abstract paragraphs from article HTML.
+
+        Falls back to generic selectors for non-Nature publishers (IOP, Springer, etc.).
+        """
         soup = BeautifulSoup(html_content, 'html.parser')
 
         abstract_section = soup.find('section', {'data-title': 'Abstract'})
         if not abstract_section:
-            print("  ⚠️  Abstract section not found")
-            return ""
+            abstract_section = soup.find('div', {'class': 'c-article-section__content'})
+        if not abstract_section:
+            # Try shared fallback
+            return extract_abstract_with_fallbacks(
+                soup,
+                paragraph_converter=lambda html: convert_html_fragment_to_markdown(html, "NATUREMATH"),
+            ) or ""
 
         abstract_content = abstract_section.find('div', {'class': 'c-article-section__content'})
         if not abstract_content:
@@ -924,8 +915,10 @@ class NatureHandler(PublisherHandler):
         # ===== References =====
         if metadata.get('references'):
             md_content += "## References\n\n"
-            for i, ref in enumerate(metadata['references'], 1):
-                md_content += f"[{i}] {ref}\n\n"
+            md_content += "```bibtex\n"
+            for ref in metadata['references']:
+                md_content += f"{ref}\n\n"
+            md_content += "```\n\n"
 
         return md_content
 

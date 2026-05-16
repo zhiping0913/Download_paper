@@ -15,6 +15,7 @@ import json
 import asyncio
 import magic
 import os
+import random
 import re
 import requests
 import sys
@@ -35,9 +36,11 @@ from publisher.orchestrator import (
     extract_metadata_multi_publisher
 )
 
-OUTPUT_DIR = str(Path(__file__).resolve().parent / "captured_data")
+from config import OUTPUT_DIR_DEFAULT, BATCH_SLEEP_ENABLED, BATCH_SLEEP_MIN, BATCH_SLEEP_MAX, SAVE_WITHOUT_REFERENCES
+
+OUTPUT_DIR = OUTPUT_DIR_DEFAULT
 # Publisher IDs that can be entered from the Phase 0 headless page.
-HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature', 'aip', 'cambridge']
+HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature', 'aip', 'cambridge', 'iop']
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.tif', '.tiff', '.svg'}
 
 MIME_TO_EXT = {
@@ -65,6 +68,60 @@ def _detect_and_rename(filepath: Path) -> Path:
     new_path = filepath.with_suffix(filepath.suffix + ext)
     filepath.rename(new_path)
     return new_path
+
+
+def is_bot_challenge_page(url: str, html: str = None) -> bool:
+    """Detect whether the current page is an anti-bot challenge rather than a real article.
+
+    Checks URL patterns and page content for common bot-detection / CAPTCHA indicators.
+    """
+    if url:
+        url_lower = url.lower()
+        challenge_domains = [
+            'validate.perfdrive.com',
+            'distilnetworks.com',
+            'distilidentify.com',
+            'captcha',
+            'challenge',
+            'accessdenied',
+            'blocked',
+        ]
+        for pattern in challenge_domains:
+            if pattern in url_lower:
+                return True
+
+    if html:
+        html_lower = html.lower()
+        challenge_markers = [
+            'bot manager',
+            'request unsuccessful',
+            'are you a bot',
+            'verify you are human',
+            'please verify',
+            'security check',
+            'ddos protection',
+            'incident id',
+            'radware',
+            'perfdrive',
+            # Cloudflare
+            'cloudflare',
+            'turnstile',
+            'ray id',
+            'cdn-cgi/challenge-platform',
+            '正在进行安全验证',
+            'security verification',
+            'enable javascript and cookies to continue',
+        ]
+        marker_count = sum(1 for m in challenge_markers if m in html_lower)
+        if marker_count >= 2:
+            return True
+        html_size = len(html)
+        if html_size < 5000 and any(
+            m in html_lower for m in ['verify', 'challenge', 'captcha', 'robot', 'bot']
+        ):
+            return True
+
+    return False
 
 
 HEADLESS_AUTH_STATE_FILE = Path(
@@ -210,7 +267,7 @@ async def _download_all_resources(
                 # Build PDF filename from metadata
                 year = metadata.get('year', '0000')
                 title = metadata.get('title', 'paper')
-                title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:120]
+                title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:80].strip()
                 pdf_filename = f"{year}--{title_clean}.pdf"
 
                 pdf_result = await download_pdf(
@@ -408,7 +465,7 @@ async def download_supplemental_materials(
         descriptions = {}
 
     # 清理标题中的特殊字符
-    title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:120]
+    title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:80].strip()
     prefix = f"{year}--{title_clean}"
 
     downloaded_count = 0
@@ -706,8 +763,8 @@ async def complete_extraction_workflow(
         # Generate markdown filename
         year = s2_metadata.get('year') or metadata.get('year') or '0000'
         title = s2_metadata.get('title') or metadata.get('title') or 'paper'
-        title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:120]
-        markdown_filename = f"{year}--{title_clean}.md"
+        title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:80].strip()
+        markdown_filename = "paper.md"
         markdown_file = paper_output_dir / markdown_filename
 
         # Step 3: Download all resources
@@ -720,6 +777,14 @@ async def complete_extraction_workflow(
             doi,
             force_headed_downloads,
         )
+
+        # Step 3.5: Check references before saving
+        refs = metadata.get('references', [])
+        if not refs and not SAVE_WITHOUT_REFERENCES:
+            print(f"\n⚠️  参考文献提取失败，且 SAVE_WITHOUT_REFERENCES=False，跳过保存")
+            print(f"  DOI: {doi}")
+            print(f"  提示: 在 config.py 中设置 SAVE_WITHOUT_REFERENCES=True 可强制保存")
+            return None
 
         # Step 3.5: Generate markdown with figures
         print("\nStep 3.5️⃣  生成Markdown...")
@@ -755,9 +820,10 @@ async def complete_extraction_workflow(
         if downloads['supplemental']:
             print(f"  📎 补充材料: {len(downloads['supplemental'])} 个")
         print(f"  💾 输出目录: {paper_output_dir}")
+        print(f"  📝 Markdown 文件: {markdown_file}")
         print()
 
-        return True
+        return str(markdown_file)
 
     async def cleanup_context_pages(context):
         """Close all pages in a browser context."""
@@ -876,6 +942,7 @@ async def complete_extraction_workflow(
     # 典型使用场景：已知目标期刊必须使用有头浏览器访问
 
     headless_success = False
+    headless_blocked = False
     headless_publisher = None
     headless_html = None
 
@@ -936,6 +1003,14 @@ async def complete_extraction_workflow(
                     # 检测出版商
                     headless_publisher = detect_publisher_from_url(final_headless_url)
                     print(f"  ✓ 检测出版商: {headless_publisher.upper()}")
+
+                    # 检测是否被反爬虫拦截
+                    if is_bot_challenge_page(final_headless_url, headless_html):
+                        print(f"  ⚠️  检测到反爬虫拦截页面 (validate.perfdrive.com 等)")
+                        print(f"  → 无头浏览器被拦截，将回退到有头Chrome")
+                        headless_success = False  # Force fallback to headed browser
+                        headless_blocked = True
+                        headless_publisher = None  # Prevent headless-only handler path
 
                     headless_success = True
 
@@ -1017,7 +1092,7 @@ async def complete_extraction_workflow(
         print()
 
         fallback_publisher = headless_publisher or detect_publisher_from_url(url)
-        if fallback_publisher in HEADLESS_ACCESSIBLE_PUBLISHERS:
+        if fallback_publisher in HEADLESS_ACCESSIBLE_PUBLISHERS and not headless_blocked:
             print("🟢 无头Handler自主管理路径：当前出版商支持无头完整提取")
             print("=" * 80)
             print(f"  出版商类型: {fallback_publisher.upper()}")
@@ -1058,7 +1133,7 @@ async def complete_extraction_workflow(
         except Exception as e:
             print(f"❌ 无法连接到Chrome port 9222: {e}")
             print("   请运行: python chrome_launcher.py\n")
-            return False
+            return None
 
         try:
             contexts = browser.contexts
@@ -1158,7 +1233,7 @@ async def complete_extraction_workflow(
             #     'journal_prefix' / 'journal_name': str, # 可选的出版商扩展字段
             # }
             if callable(getattr(handler, 'extract_all', None)):
-                await process_with_handler(page, context, handler, publisher, captured_data, s2_data, force_headed)
+                result = await process_with_handler(page, context, handler, publisher, captured_data, s2_data, force_headed)
             else:
                 # Other publishers - use Semantic Scholar metadata only
                 print("Step 2️⃣  使用Semantic Scholar元数据...")
@@ -1176,6 +1251,7 @@ async def complete_extraction_workflow(
                 print(f"  ✓ 期刊: {metadata.get('journal', 'N/A')}")
                 print(f"  ✓ DOI: {doi}")
                 print()
+                result = None
 
             # Clean up pages
             print("\n🧹 清理标签页...")
@@ -1194,7 +1270,7 @@ async def complete_extraction_workflow(
                 pass
 
             print()
-            return True
+            return result
 
         except Exception as e:
             print(f"❌ 错误: {e}")
@@ -1210,7 +1286,7 @@ async def complete_extraction_workflow(
             except:
                 pass
 
-            return False
+            return None
 
 
 # ============================================================================
@@ -1236,14 +1312,6 @@ async def main():
         # DOI列表 + 强制有头
         python complete_paper_extraction.py --file doi_list.txt --force-headed
     """
-    # ── pre-flight dependency check ──────────────────────────────────
-    from check_dependencies import run_checks
-    ok = run_checks()
-    if not ok:
-        print("\n❌ Dependency check failed. Fix above before running the extraction.")
-        print("   See docs/DEPENDENCIES.md for installation instructions.")
-        return 1
-    # ─────────────────────────────────────────────────────────────────
     import argparse
 
     parser = argparse.ArgumentParser(
@@ -1346,19 +1414,28 @@ async def main():
         print(f"{'='*80}\n")
 
         try:
-            success = await complete_extraction_workflow(
+            md_path = await complete_extraction_workflow(
                 doi,
                 output_file=output_dir,
                 force_headed=force_headed_mode,
                 refresh_headless_auth=args.refresh_headless_auth,
             )
-            if success:
+            if md_path:
                 success_count += 1
+                print(f"✅ 成功: {md_path}")
             else:
                 fail_count += 1
         except Exception as e:
             print(f"❌ 处理失败: {e}")
             fail_count += 1
+
+        # 批量处理防拉黑：随机睡眠 (最后一条不需要)
+        if BATCH_SLEEP_ENABLED and i < len(dois):
+            sleep_seconds = random.randint(BATCH_SLEEP_MIN, BATCH_SLEEP_MAX)
+            sleep_minutes = sleep_seconds / 60
+            print(f"\n😴 防拉黑休眠 {sleep_seconds}s ({sleep_minutes:.1f} min)...")
+            await asyncio.sleep(sleep_seconds)
+            print("🚀 继续下一篇文章...\n")
 
     # 显示统计信息
     if len(dois) > 1:

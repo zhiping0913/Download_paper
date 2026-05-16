@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Chrome启动器 - 自动配置关键设置
+跨平台支持 (Windows / Linux)
 自动检查和应用用户期望的Chrome配置
 """
 
@@ -10,6 +11,18 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+# 从 config 导入跨平台配置
+try:
+    from config import CHROME_PATH, CHROME_USER_DATA_DIR, IS_WINDOWS
+except ImportError:
+    IS_WINDOWS = sys.platform == "win32"
+    CHROME_PATH = "chrome.exe" if IS_WINDOWS else "google-chrome"
+    CHROME_USER_DATA_DIR = (
+        str(Path.home() / "AppData" / "Local" / "Google" / "Chrome" / "User Data")
+        if IS_WINDOWS
+        else str(Path.home() / ".config" / "google-chrome")
+    )
 
 
 def ensure_chrome_preferences(user_data_dir: str):
@@ -83,6 +96,17 @@ def ensure_chrome_preferences(user_data_dir: str):
     print(f"  - 窗口保持: 关闭所有标签页后保留窗口")
 
 
+def kill_chrome():
+    """Kill all Chrome processes (cross-platform)."""
+    if IS_WINDOWS:
+        subprocess.run(["taskkill", "/f", "/im", "chrome.exe"],
+                       capture_output=True)
+        print("✓ Chrome processes killed")
+    else:
+        os.system("pkill -9 chrome")
+        print("✓ Chrome processes killed")
+
+
 def launch_chrome(use_user_config: bool = False, headless: bool = False):
     """
     启动Chrome，配合最优设置
@@ -94,7 +118,7 @@ def launch_chrome(use_user_config: bool = False, headless: bool = False):
 
     if use_user_config:
         # 使用用户的真实Chrome配置
-        user_data_dir = str(Path.home() / ".config" / "google-chrome")
+        user_data_dir = CHROME_USER_DATA_DIR
         print(f"使用用户配置: {user_data_dir}")
     else:
         # 创建临时目录
@@ -107,7 +131,7 @@ def launch_chrome(use_user_config: bool = False, headless: bool = False):
 
     # 构建启动命令
     chrome_args = [
-        "/opt/google/chrome/chrome",
+        CHROME_PATH,
         "--remote-debugging-port=9222",
         f"--user-data-dir={user_data_dir}",
         "--no-first-run",
@@ -122,12 +146,18 @@ def launch_chrome(use_user_config: bool = False, headless: bool = False):
         chrome_args.append("--headless=new")
 
     # 启动Chrome
-    print(f"正在启动 Chrome...")
+    print(f"正在启动 Chrome ({CHROME_PATH})...")
+    extra_kwargs = {}
+    if not IS_WINDOWS:
+        extra_kwargs["preexec_fn"] = os.setsid
+    else:
+        extra_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+
     proc = subprocess.Popen(
         chrome_args,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        preexec_fn=os.setsid  # 创建新的进程组
+        **extra_kwargs
     )
 
     print(f"✓ Chrome 已启动 (PID: {proc.pid})")
@@ -166,8 +196,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.kill:
-        os.system("pkill -9 chrome")
-        print("✓ 所有Chrome进程已关闭")
+        kill_chrome()
         sys.exit(0)
 
     proc = launch_chrome(use_user_config=args.user_config, headless=args.headless)

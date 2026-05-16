@@ -7,6 +7,7 @@ Routes to appropriate publisher handler based on DOI/URL
 from publisher.base import PublisherHandler
 from publisher import APSHandler, AIPHandler, CambridgeHandler
 from publisher.nature import NatureHandler
+from publisher.iop import IOPHandler
 
 
 def detect_publisher_from_url(url: str) -> str:
@@ -34,6 +35,24 @@ def detect_publisher_from_url(url: str) -> str:
         return 'aps'
     elif 'prl' in url_lower or 'pre' in url_lower or 'pra' in url_lower:
         return 'aps'
+
+    # IOP Publishing detection
+    elif 'iopscience.iop.org' in url_lower:
+        return 'iop'
+    elif '10.1088' in url_lower:
+        return 'iop'
+
+    # Elsevier / ScienceDirect (routes through NatureHandler fallbacks)
+    elif 'sciencedirect.com' in url_lower:
+        return 'nature'
+    elif '10.1016' in url_lower:
+        return 'nature'
+
+    # EDP Sciences (routes through NatureHandler fallbacks)
+    elif 'epj-conferences.org' in url_lower:
+        return 'nature'
+    elif '10.1051' in url_lower:
+        return 'nature'
 
     # Cambridge University Press detection
     elif 'cambridge.org' in url_lower:
@@ -69,6 +88,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
     """
     if publisher == 'nature':
         return NatureHandler(**kwargs)
+    elif publisher == 'iop':
+        return IOPHandler(**kwargs)
     elif publisher == 'aip':
         return AIPHandler(**kwargs)
     elif publisher == 'cambridge':

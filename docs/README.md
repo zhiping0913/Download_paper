@@ -49,6 +49,10 @@ complete_extraction_workflow(doi, output_file=None, force_headed=False)
 - `10.1038`、`nature.com`、`springer.com`、`s41...` -> `nature`
 - `10.1103`、`journals.aps.org`、`prl/pre/pra` -> `aps`
 - `10.1063`、`pubs.aip.org`、`aip.scitation.org` -> `aip`
+- `10.1088`、`iopscience.iop.org` -> `iop`
+- `10.1017`、`cambridge.org` -> `cambridge`
+- `sciencedirect.com`、`10.1016` -> `nature` (Elsevier 回退)
+- `epj-conferences.org`、`10.1051` -> `nature` (EDP Sciences 回退)
 - `arxiv.org` -> `arxiv`
 - 其他 -> `unknown`
 
@@ -57,6 +61,8 @@ handler 创建由 `get_publisher_handler()` 负责：
 - `nature` -> `NatureHandler`
 - `aps` -> `APSHandler`
 - `aip` -> `AIPHandler`
+- `iop` -> `IOPHandler`
+- `cambridge` -> `CambridgeHandler`
 - `arxiv` -> 带 `journal_prefix="arxiv"` 的 `APSHandler`
 - `unknown` -> 默认 `APSHandler`
 
@@ -82,7 +88,7 @@ https://www.nature.com/articles/{doi_suffix}
 如果最终 publisher 在：
 
 ```python
-HEADLESS_ACCESSIBLE_PUBLISHERS = ["nature", "aip", "cambridge"]
+HEADLESS_ACCESSIBLE_PUBLISHERS = ["nature", "aip", "cambridge", "iop"]
 ```
 
 中，主流程直接把这个无头 `page` 传给对应 handler，然后进入统一处理阶段。
@@ -334,6 +340,57 @@ AIP 由 `publisher/aip.py` 的 `AIPHandler` 处理。
 ## References
 ```
 
+## IOP 当前实现
+
+IOP 由 `publisher/iop.py` 的 `IOPHandler` 处理。
+
+- `10.1088`、`iopscience.iop.org` 会被识别为 `iop`。
+- IOP 在 `HEADLESS_ACCESSIBLE_PUBLISHERS` 中，可以直接使用 Phase 0 的无头页面。
+
+### metadata 提取
+
+从 HTML `<head>` 中的 `citation_*` meta 标签提取：
+
+- `citation_author` → 作者姓名，机构从 DOM 元素提取
+- `citation_title`、`citation_doi`、`citation_journal_title`
+- `citation_volume`、`citation_issue`
+- `citation_publication_date`、`citation_online_date` → 年份（优先 publication_date）
+- `citation_pdf_url` → PDF 下载链接，传给主流程下载
+- `citation_abstract` → 摘要文本
+- `citation_keywords` → 关键词列表
+
+### 正文提取
+
+`extract_article_text_from_html()` 复用 `wildcard.find_generic_article_body()` 查找 `div.wd-jnl-art-full-text` 主内容容器，遍历其中的 heading/paragraph section，通过统一的公式转换管道（MathML → LaTeX）处理数学公式。摘要通过 `wildcard.extract_abstract_with_fallbacks()` 从 `<section data-title="Abstract">` 提取。
+
+### 图片提取
+
+`extract_figures_from_html()` 从 `div.wd-jnl-fig` 容器提取图片 URL 和标题，fallback 到 body 内的 `<img>` 标签。
+
+### 参考文献提取
+
+`extract_references_from_html()` 从 `meta[name="citation_reference"]` 提取参考文献，通过 `wildcard.parse_citation_reference_string()` + `wildcard.format_as_bibtex()` 转为 BibTeX 格式。
+
+### Markdown 生成
+
+`convert_to_markdown()` 生成完整 Markdown，结构为：
+
+```markdown
+# 标题
+**Authors:**
+作者列表
+
+**DOI:** 10.1088/...
+
+## Publication
+## Abstract
+## Article Text
+## Figures
+## References
+```
+
+参考文献以 ` ```bibtex ` 代码块输出。
+
 ## Cambridge 当前实现
 
 Cambridge 由 `publisher/cambridge.py` 的 `CambridgeHandler` 处理。
@@ -391,16 +448,75 @@ Cambridge 由 `publisher/cambridge.py` 的 `CambridgeHandler` 处理。
 ## References
 ```
 
+## wildcard.py — 共享提取模块
+
+`publisher/wildcard.py` 提供跨 publisher 共享的提取函数，被 NatureHandler、IOPHandler、AIPHandler、CambridgeHandler 共同引用：
+
+| 函数 | 用途 |
+|------|------|
+| `find_generic_article_body(soup)` | CSS 选择器级联查找文章正文容器 |
+| `extract_abstract_with_fallbacks(soup)` | 多策略摘要提取 |
+| `generate_bibtex_key(authors, year, title)` | 生成 BibTeX 引用 key |
+| `format_as_bibtex(parts)` | 解析后的引用 dict → `@article{key, ...}` 字符串 |
+| `parse_citation_reference_string(ref_str)` | 解析分号分隔的 `citation_reference` meta 标签 |
+| `prepare_mathjax_html_fragment(html)` | MathJax CHTML → placeholder 折叠 |
+| `convert_html_fragment_to_markdown(html)` | HTML → Markdown + 公式还原 |
+| `convert_mathml(mathml_str)` | MathML → LaTeX（通过 pandoc） |
+
+新增 publisher 时应优先复用 wildcard 中的函数，减少重复代码。
+
+## 顶层 API 文件
+
+### download_paper.py
+
+同步接口，可被其他 Python 程序 import 调用：
+
+```python
+from download_paper import download_paper
+md_path = download_paper("10.1103/PhysRevLett.125.015001")
+```
+
+也支持 CLI：`python download_paper.py "10.1103/PhysRevLett.125.015001" --output ~/papers`
+
+### batch_process.py
+
+批量 DOI 处理器，支持从文件或命令行读取多个 DOI：
+
+```bash
+python batch_process.py --file dois.txt
+python batch_process.py --dois "10.1103/..." "10.1063/..."
+```
+
+内置随机睡眠防拉黑机制（通过 `config.py` 的 `BATCH_SLEEP_*` 配置），可用 `--no-sleep` 临时禁用。
+
+## 反爬虫检测
+
+`is_bot_challenge_page(url, html)` 在 Phase 0 无头预检阶段检测页面是否为反爬虫拦截页面（Radware Bot Manager、Cloudflare Turnstile、Distil Networks 等）。检测到拦截后自动回退到有头 Chrome 路径，并设置 `headless_blocked` 标志防止无头 handler 路径被错误触发。
+
+## 参考文献格式化
+
+`core/utilities.py` 中的 `format_references_as_bibtex(references)` 将参考文献列表转为 BibTeX 代码块：
+
+1. 对每条参考文献尝试提取 DOI
+2. 通过 `fetch_semanticscholar()` 查询 Semantic Scholar 获取结构化元数据
+3. 构建 `@article{key, author={...}, title={...}, ...}` 条目
+4. Fallback 到 `wildcard.parse_citation_reference_string()` 解析
+5. 所有条目包裹在 ` ```bibtex ` 代码块中
+
+`SAVE_WITHOUT_REFERENCES` 配置项（`config.py`）控制参考文献为空时是否仍然保存 Markdown。
+
 ## 新增 Publisher 的接入方式
 
 新增 publisher 时按这个顺序做：
 
 1. 新建 `publisher/{name}.py`，继承 `PublisherHandler`。
 2. 实现 `extract_all()` 和 `convert_to_markdown()`。
-3. 如果需要缓存网页或 API 响应，实现 `setup_network_capture()`。
-4. 在 `publisher/orchestrator.py` 的 `detect_publisher_from_url()` 中增加 DOI/URL 识别规则。
-5. 在 `get_publisher_handler()` 中返回新的 handler。
-6. 如果该 publisher 可以无头完整访问，把名字加入 `HEADLESS_ACCESSIBLE_PUBLISHERS`。
-7. 保持 `extract_all()` 返回统一结构，避免修改主流程。
+3. 复用 `publisher/wildcard.py` 中的共享函数（正文查找、公式转换、BibTeX 格式化等）。
+4. 如果需要缓存网页或 API 响应，实现 `setup_network_capture()`。
+5. 在 `publisher/orchestrator.py` 的 `detect_publisher_from_url()` 中增加 DOI/URL 识别规则。
+6. 在 `get_publisher_handler()` 中返回新的 handler。
+7. 在 `publisher/__init__.py` 中导出新的 handler。
+8. 如果该 publisher 可以无头完整访问，把名字加入 `HEADLESS_ACCESSIBLE_PUBLISHERS`。
+9. 保持 `extract_all()` 返回统一结构，避免修改主流程。
 
 核心原则：`complete_paper_extraction.py` 保持 publisher 不敏感；具体网页结构、API 响应、HTML 转 Markdown 的逻辑都放在各自的 `PublisherHandler` 中。
