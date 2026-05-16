@@ -690,9 +690,15 @@ class NatureHandler(PublisherHandler):
         footer_md = ''
         footer_div = soup.find('div', class_='c-article-table-footer')
         if footer_div:
+            # Remove the class attribute so pandoc doesn't emit fenced div markers
+            del footer_div['class']
+            # Remove the wrapper <div> tags entirely — we only want the content
+            footer_contents = ''.join(str(c) for c in footer_div.children)
+
             # Pre-process MathJax in footer the same way
             footer_placeholders = {}
-            for math_span in footer_div.find_all('span', class_='MathJax_SVG'):
+            footer_soup = BeautifulSoup(footer_contents, 'html.parser')
+            for math_span in footer_soup.find_all('span', class_='MathJax_SVG'):
                 mathml = math_span.get('data-mathml', '')
                 latex = mathml_to_latex_pandoc(mathml) if mathml else ''
                 if latex:
@@ -704,10 +710,10 @@ class NatureHandler(PublisherHandler):
                     else:
                         math_span.replace_with(BeautifulSoup(placeholder, 'html.parser'))
 
-            for tag in footer_div.find_all('span', class_=['MathJax_Preview', 'mathjax-tex']):
+            for tag in footer_soup.find_all('span', class_=['MathJax_Preview', 'mathjax-tex']):
                 tag.decompose()
 
-            footer_html = str(footer_div)
+            footer_html = str(footer_soup)
             footer_md = pypandoc.convert_text(footer_html, 'md', format='html', extra_args=['--wrap=none'])
             footer_md = footer_md.strip()
 
@@ -716,7 +722,7 @@ class NatureHandler(PublisherHandler):
 
             footer_md = re.sub(r'\s+', ' ', footer_md).strip()
             if footer_md:
-                footer_md = '\n' + footer_md + '\n'
+                footer_md = '\n\n' + footer_md + '\n'
 
         return '\n' + md + '\n' + footer_md
 
