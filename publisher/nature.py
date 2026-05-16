@@ -576,7 +576,7 @@ class NatureHandler(PublisherHandler):
                 re.DOTALL,
             )
         )
-        heading_matches = list(re.finditer(r'<h[23][^>]*>(.*?)</h[23]>', main_content_html, re.DOTALL))
+        heading_matches = list(re.finditer(r'<h([2-6])[^>]*>(.*?)</h\1>', main_content_html, re.DOTALL))
         table_matches = list(re.finditer(
             r'<div[^>]*class="c-article-table"[^>]*>(.*?)</figure>\s*</div>',
             main_content_html,
@@ -698,7 +698,7 @@ class NatureHandler(PublisherHandler):
             stripped = paragraph_html.strip()
 
             # Handle headings: extract text and format as markdown heading
-            h_match = re.match(r'<h([23])[^>]*>(.*?)</h\1>', stripped, re.DOTALL)
+            h_match = re.match(r'<h([2-6])[^>]*>(.*?)</h\1>', stripped, re.DOTALL)
             if h_match:
                 level = int(h_match.group(1))
                 heading_text = BeautifulSoup(h_match.group(2), 'html.parser').get_text(' ', strip=True)
