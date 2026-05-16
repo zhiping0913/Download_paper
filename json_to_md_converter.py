@@ -299,6 +299,9 @@ def cleanup_markdown(md_content: str) -> str:
     # Unescape citation brackets that pandoc escaped: \[1--8\] → [1--8]
     md_content = re.sub(r'\\\[(\d+(?:[,\-\s]+\d+)*)\\\]', r'[\1]', md_content)
 
+    # Replace \mbox{...} with \text{...} for KaTeX compatibility
+    md_content = re.sub(r'\\mbox\{', r'\\text{', md_content)
+
     # 转换HTML实体为纯文本字符
     md_content = md_content.replace('&lt;', '<')
     md_content = md_content.replace('&gt;', '>')
