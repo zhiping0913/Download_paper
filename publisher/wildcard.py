@@ -84,6 +84,19 @@ def prepare_mathjax_html_fragment(html_fragment: str, placeholder_prefix: str = 
         if latex:
             container.replace_with(NavigableString(f" {stash_formula(latex)} "))
 
+    # MathJax 2.x rendered images: <img role="math" alt="$a$" src="data:image/png;base64,..." />
+    for img in soup.find_all('img', {'role': 'math'}):
+        alt = img.get('alt', '').strip()
+        if alt:
+            # Alt text already contains LaTeX with delimiters (e.g. "$a$"); pass as-is.
+            img.replace_with(NavigableString(f" {stash_formula(alt)} "))
+        else:
+            img.decompose()
+
+    # MathJax 2.x rendered images wrapped in links: <a xmlns:xlink ...><img role="math" .../></a>
+    for a_tag in soup.find_all('a', {'xmlns:xlink': True}):
+        a_tag.unwrap()
+
     return str(soup), formulas
 
 
