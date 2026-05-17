@@ -1223,7 +1223,7 @@ async def complete_extraction_workflow(
             #     'journal_prefix' / 'journal_name': str, # 可选的出版商扩展字段
             # }
             if callable(getattr(handler, 'extract_all', None)):
-                result = await process_with_handler(page, context, handler, publisher, captured_data, s2_data, force_headed)
+                result = await process_with_handler(page, context, handler, publisher, captured_data, s2_data, True)
             else:
                 # Other publishers - use Semantic Scholar metadata only
                 print("Step 2️⃣  使用Semantic Scholar元数据...")
