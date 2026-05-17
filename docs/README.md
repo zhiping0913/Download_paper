@@ -88,7 +88,7 @@ https://www.nature.com/articles/{doi_suffix}
 如果最终 publisher 在：
 
 ```python
-HEADLESS_ACCESSIBLE_PUBLISHERS = ["nature", "aip", "cambridge", "iop"]
+HEADLESS_ACCESSIBLE_PUBLISHERS = ["nature", "aip", "cambridge"]
 ```
 
 中，主流程直接把这个无头 `page` 传给对应 handler，然后进入统一处理阶段。
@@ -142,7 +142,17 @@ handler = get_publisher_handler(
 8. 根据最终 URL 再判断一次 publisher，必要时重建 handler。
 9. 进入统一处理阶段。
 
-APS 当前只能通过这条有头路径访问。
+APS 当前只能通过这条有头路径访问；IOP 也通过此路径。
+
+### 路径决策总结
+
+| 路径 | 提取阶段 | 下载阶段 | 说明 |
+|------|---------|---------|------|
+| `force_headed=True` | headed CDP | headed（复用 context） | 用户显式要求或有头 publisher |
+| publisher 在 `HEADLESS_ACCESSIBLE_PUBLISHERS` 内 | headless（共用 precheck page） | headless（新建） | 如 Nature、AIP、Cambridge |
+| publisher **不在** `HEADLESS_ACCESSIBLE_PUBLISHERS` 内 | headed CDP | headed（复用 context，同一 `force_headed`） | 如 APS、IOP |
+
+核心原则：提取和下载阶段使用同一个浏览器模式，`force_headed` 标识贯穿全流程。
 
 ## PublisherHandler 接口
 
@@ -345,7 +355,7 @@ AIP 由 `publisher/aip.py` 的 `AIPHandler` 处理。
 IOP 由 `publisher/iop.py` 的 `IOPHandler` 处理。
 
 - `10.1088`、`iopscience.iop.org` 会被识别为 `iop`。
-- IOP 在 `HEADLESS_ACCESSIBLE_PUBLISHERS` 中，可以直接使用 Phase 0 的无头页面。
+- IOP **不在** `HEADLESS_ACCESSIBLE_PUBLISHERS` 中，默认需要有头 Chrome，经过标准有头路径访问。
 
 ### metadata 提取
 
