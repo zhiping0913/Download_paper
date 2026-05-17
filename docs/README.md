@@ -146,11 +146,12 @@ APS 当前只能通过这条有头路径访问；IOP 也通过此路径。
 
 ### 路径决策总结
 
-| 路径 | 提取阶段 | 下载阶段 | 说明 |
+| 条件 | 提取阶段 | 下载阶段 | 说明 |
 |------|---------|---------|------|
-| `force_headed=True` | headed CDP | headed（复用 context） | 用户显式要求或有头 publisher |
-| publisher 在 `HEADLESS_ACCESSIBLE_PUBLISHERS` 内 | headless（共用 precheck page） | headless（新建） | 如 Nature、AIP、Cambridge |
-| publisher **不在** `HEADLESS_ACCESSIBLE_PUBLISHERS` 内 | headed CDP | headed（复用 context，同一 `force_headed`） | 如 APS、IOP |
+| `force_headed=False`, publisher 在 `HEADLESS` 列表内 | headless（共用 precheck page） | headless（新建） | Nature、AIP、Cambridge |
+| `force_headed=False`, publisher **不在** `HEADLESS` 列表内 | headed CDP | headed（复用 context） | APS、IOP |
+| `force_headed=True`, publisher **不在** `HEADLESS` 列表内 | headed CDP | headed（复用 context） | 用户显式要求有头，与上一条行为一致 |
+| `force_headed=True`, publisher 在 `HEADLESS` 列表内 | headless（Handler 自主管理） | headless（新建） | `force_headed` 被忽略 —— 无头可访问 publisher 仍走无头 |
 
 核心原则：提取和下载阶段使用同一个浏览器模式，`force_headed` 标识贯穿全流程。
 
