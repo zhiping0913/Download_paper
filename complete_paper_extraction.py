@@ -56,6 +56,16 @@ MIME_TO_EXT = {
     'application/vnd.ms-powerpoint': '.ppt',
     'text/csv': '.csv',
     'text/plain': '.txt',
+    'video/mp4': '.mp4',
+    'video/mpeg': '.mpeg',
+    'video/quicktime': '.mov',
+    'video/x-msvideo': '.avi',
+    'video/x-matroska': '.mkv',
+    'video/webm': '.webm',
+    'audio/mpeg': '.mp3',
+    'audio/mp4': '.m4a',
+    'audio/wav': '.wav',
+    'audio/ogg': '.ogg',
 }
 
 
