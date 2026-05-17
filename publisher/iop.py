@@ -1,14 +1,16 @@
 """
 IOP Publishing handler.
 
-Extracts metadata, body, figures, references, and supplemental materials
+Extracts metadata, body, figures, tables, references, and supplemental materials
 from IOP Science article pages (iopscience.iop.org).
 
-IOP shares structural patterns with Nature and other publishers, so
-heavy lifting is delegated to the shared functions in ``wildcard.py``.
+IOP stores LaTeX equations directly in <script type="math/tex"> tags (no MathML),
+so a dedicated preprocessing pass extracts them before the HTML→Markdown pipeline.
 """
 
 import re
+import urllib.request
+import json
 
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
@@ -93,21 +95,97 @@ class IOPHandler(PublisherHandler):
         return meta
 
     # ------------------------------------------------------------------
+    # HTML preprocessing (math extraction, GIF replacement)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _preprocess_iop_html(html_fragment: str) -> tuple:
+        """Preprocess IOP HTML to extract math and replace GIF entities.
+
+        IOP stores LaTeX directly in <script type=\"math/tex\"> tags rather
+        than using MathML.  Display equations are extracted into placeholders
+        so the surrounding HTML→Markdown pipeline doesn't corrupt them.
+
+        Returns (processed_html, display_eqns) where display_eqns is a
+        dict mapping placeholder strings to LaTeX source.
+        """
+        import re as _re
+
+        display_eqns = {}
+
+        # 1. Extract display math → placeholders
+        def _replace_display(m):
+            latex = m.group(1).strip()
+            # Remove \tag{...} noise (equation numbers are inline)
+            latex = _re.sub(r'\s*\\tag\{[^}]*\}', '', latex)
+            key = f"<<<IOP_DISPLAY_MATH_{len(display_eqns)}>>>"
+            display_eqns[key] = latex
+            return f"\n{key}\n"
+
+        html = _re.sub(
+            r'<script\s+type="math/tex;\s*mode=display">(.*?)</script>',
+            _replace_display, html_fragment, flags=_re.DOTALL,
+        )
+
+        # 2. Inline math → $...$
+        html = _re.sub(
+            r'<script\s+type="math/tex">(.*?)</script>',
+            lambda m: f"${m.group(1).strip()}$",
+            html, flags=_re.DOTALL,
+        )
+
+        # 2b. Remove MathJax-rendered image wrappers (hidden <span class="texImage">
+        #     containing base64 <img role="math">).  The LaTeX source is already
+        #     extracted from <script type="math/tex"> above; these renderings
+        #     would otherwise leak as cruft through the HTML→Markdown pipeline.
+        html = _re.sub(
+            r'<span\s+class="texImage"\s+style="display:\s*none;">.*?</span>',
+            '', html, flags=_re.DOTALL,
+        )
+        #     Unwrap the now-empty outer inline-eqn / tex wrappers
+        #     (attribute order varies: class may precede xmlns:xlink).
+        html = _re.sub(
+            r'<span\s+[^>]*class="inline-eqn"[^>]*>\s*<span\s+class="tex">\s*(\$[^<]*?\$)\s*</span>\s*</span>',
+            r'\1', html,
+        )
+
+        # 3. GIF epsilon → \epsilon
+        #    Common pattern: <em><img src="...epsi.gif" .../><sub>r</sub></em>
+        html = _re.sub(
+            r'<em>\s*<img\s+[^>]*src="https?://cdn\.images\.iop\.org/Entities/epsi\.gif"[^>]*/?>\s*<sub>r</sub>\s*</em>',
+            r'<em>\\epsilon_{\\text{r}}</em>',
+            html,
+        )
+        #    Standalone epsilon GIF
+        html = _re.sub(
+            r'<img\s+[^>]*src="https?://cdn\.images\.iop\.org/Entities/epsi\.gif"[^>]*/?>',
+            r'\\epsilon',
+            html,
+        )
+
+        return html, display_eqns
+
+    # ------------------------------------------------------------------
     # Body text extraction
     # ------------------------------------------------------------------
 
     @classmethod
     def extract_article_text_from_html(cls, html_content: str):
-        """Extract article body, returning (abstract_md, body_md)."""
+        """Extract article body, returning (abstract_md, body_md).
+
+        IOP stores LaTeX equations in <script type=\"math/tex\"> tags.
+        A preprocessing pass extracts display equations into placeholders
+        and converts inline math to $...$ before the HTML→MD pipeline runs.
+        """
         if not html_content:
             return '', ''
 
         soup = BeautifulSoup(html_content, 'html.parser')
 
-        # Abstract via shared fallback
+        # Abstract via shared fallback (with IOP inline-math preprocessing)
         abstract_md = extract_abstract_with_fallbacks(
             soup,
-            paragraph_converter=lambda html: convert_html_fragment_to_markdown(html, "IOPMATH"),
+            paragraph_converter=lambda h: cls._convert_iop_paragraph_to_md(h),
         )
 
         # Body via shared generic body finder
@@ -117,8 +195,7 @@ class IOPHandler(PublisherHandler):
 
         body_parts = []
 
-        # Process headings and paragraphs
-        for element in body_div.find_all(['h2', 'h3', 'h4', 'p', 'div']):
+        for element in body_div.find_all(['h2', 'h3', 'h4', 'p', 'div', 'figure'], recursive=False):
             if element.name in ('h2', 'h3', 'h4'):
                 heading_text = element.get_text(' ', strip=True)
                 heading_text = re.sub(r'\s+', ' ', heading_text or '').strip()
@@ -126,20 +203,117 @@ class IOPHandler(PublisherHandler):
                     level = '#' * (int(element.name[1]) + 1)
                     body_parts.extend([f"{level} {heading_text}", ""])
 
+            elif element.name == 'figure' and 'boxout' in element.get('class', []):
+                # Inline figures within the body — already handled by figure extraction,
+                # but add a placeholder caption so body flow isn't broken.
+                fig_div = element.find('figcaption')
+                if fig_div:
+                    strong = fig_div.find('strong')
+                    if strong:
+                        label = strong.get_text(' ', strip=True)
+                        caption_p = fig_div.find('p')
+                        caption = caption_p.get_text(' ', strip=True) if caption_p else ''
+                        caption = re.sub(r'\s+', ' ', caption).strip()
+                        body_parts.append(f"**{label}** {caption}")
+                        body_parts.append("")
+
             elif element.name == 'p':
-                p_md = convert_html_fragment_to_markdown(str(element), "IOPMATH")
+                p_md = cls._convert_iop_paragraph_to_md(str(element))
                 if p_md:
                     body_parts.extend([p_md, ""])
 
-            elif element.name == 'div' and 'c-article-equation' in element.get('class', []):
-                math_tag = element.find('math')
-                if math_tag:
-                    latex = convert_mathml(math_tag, display=True)
-                    if latex:
-                        body_parts.extend([latex, ""])
+            elif element.name == 'div':
+                classes = element.get('class', [])
+                # Display equations
+                if 'display-eqn' in classes:
+                    script_tag = element.find('script', type='math/tex; mode=display')
+                    if script_tag:
+                        latex = script_tag.string.strip()
+                        latex = re.sub(r'\s*\\tag\{[^}]*\}', '', latex)
+                        body_parts.extend([f"\n$$\n{latex}\n$$\n", ""])
+                    else:
+                        # Fallback: equation rendered as GIF image
+                        img = element.find('img')
+                        if img:
+                            alt = img.get('alt', '')
+                            body_parts.extend([f"\n$$\n\\text{{{alt}}}\n$$\n", ""])
+                # Other divs (e.g., article-text wrapper, display-eqn) — recurse as needed
+                elif 'article-text' in classes:
+                    cls._walk_iop_body(element, body_parts)
 
-        body_md = "\n".join(body_parts).strip()
+        body_md = ""
+        if body_parts:
+            # Restore any display equation placeholders (from preprocessed paragraphs)
+            body_md = "\n".join(body_parts).strip()
+
         return abstract_md, body_md
+
+    @classmethod
+    def _walk_iop_body(cls, container, body_parts: list):
+        """Recursively walk IOP article-text containers, extracting headings,
+        paragraphs, and display equations.
+
+        IOP nests article content inside multiple ``div.article-text`` layers;
+        this method handles arbitrary nesting depth.
+        """
+        for child in container.find_all(['p', 'h3', 'h4', 'div', 'figure'], recursive=False):
+            if child.name in ('h3', 'h4'):
+                heading_text = child.get_text(' ', strip=True)
+                heading_text = re.sub(r'\s+', ' ', heading_text or '').strip()
+                if heading_text:
+                    level = '#' * (int(child.name[1]) + 1)
+                    body_parts.extend([f"{level} {heading_text}", ""])
+
+            elif child.name == 'p':
+                p_md = cls._convert_iop_paragraph_to_md(str(child))
+                if p_md:
+                    body_parts.extend([p_md, ""])
+
+            elif child.name == 'figure' and 'boxout' in child.get('class', []):
+                fig_div = child.find('figcaption')
+                if fig_div:
+                    strong = fig_div.find('strong')
+                    if strong:
+                        label = strong.get_text(' ', strip=True)
+                        caption_p = fig_div.find('p')
+                        caption = caption_p.get_text(' ', strip=True) if caption_p else ''
+                        caption = re.sub(r'\s+', ' ', caption).strip()
+                        body_parts.append(f"**{label}** {caption}")
+                        body_parts.append("")
+
+            elif child.name == 'div':
+                classes = child.get('class', [])
+
+                if 'display-eqn' in classes:
+                    script_tag = child.find('script', type='math/tex; mode=display')
+                    if script_tag:
+                        latex = script_tag.string.strip()
+                        latex = re.sub(r'\s*\\tag\{[^}]*\}', '', latex)
+                        body_parts.extend([f"\n$$\n{latex}\n$$\n", ""])
+                    else:
+                        img = child.find('img')
+                        if img:
+                            alt = img.get('alt', '')
+                            body_parts.extend([f"\n$$\n\\text{{{alt}}}\n$$\n", ""])
+
+                elif 'article-text' in classes:
+                    cls._walk_iop_body(child, body_parts)
+
+                # Ignore other divs (boxout figures are handled by figure extraction)
+
+    @staticmethod
+    def _convert_iop_paragraph_to_md(html_fragment: str) -> str:
+        """Preprocess IOP math markup then convert the fragment to Markdown."""
+        processed, display_eqns = IOPHandler._preprocess_iop_html(html_fragment)
+        # convert_html_fragment_to_markdown calls prepare_mathjax_html_fragment internally.
+        md = convert_html_fragment_to_markdown(processed) if processed else ""
+        # Restore display equations from placeholders
+        for placeholder, latex in display_eqns.items():
+            md = md.replace(placeholder.strip(), f"\n$$\n{latex}\n$$\n")
+        md = md.strip()
+        # Collapse excess blank lines
+        md = re.sub(r'\n{3,}', '\n\n', md)
+        return md
 
     # ------------------------------------------------------------------
     # Figure extraction
@@ -149,49 +323,130 @@ class IOPHandler(PublisherHandler):
     def extract_figures_from_html(cls, html_content: str) -> dict:
         """Extract figure URLs and captions from HTML.
 
-        IOP figures are typically in <div class="wd-jnl-fig"> containers
-        with <img> tags and captions in nearby <div class="wd-jnl-fig-caption">.
+        IOP figures use <figure id=\"dae...\" class=\"boxout\"
+        data-toolbar-type=\"figure\"> with hi-res and standard download links
+        inside figcaption.  High-resolution images are preferred.
         """
         if not html_content:
             return {}
 
         soup = BeautifulSoup(html_content, 'html.parser')
         figures = {}
-        seen_srcs = set()
+        seen_ids = set()
 
-        for fig_div in soup.find_all('div', class_='wd-jnl-fig'):
-            img = fig_div.find('img')
-            if not img:
+        for fig_elem in soup.find_all('figure', {'data-toolbar-type': 'figure'}):
+            fig_id = fig_elem.get('id', '')
+            if fig_id in seen_ids:
                 continue
-            img_url = img.get('src') or img.get('data-src') or ''
-            if not img_url or img_url in seen_srcs:
-                continue
-            seen_srcs.add(img_url)
+            seen_ids.add(fig_id)
 
             fig_num = len(figures) + 1
             key = f"fig_{fig_num}"
 
-            caption_div = fig_div.find('div', class_='wd-jnl-fig-caption')
-            caption = caption_div.get_text(' ', strip=True) if caption_div else ''
+            # Prefer high-resolution download link
+            hr_link = fig_elem.find('a', class_='fig-dwnld-hi-img')
+            lr_link = fig_elem.find('a', class_='fig-dwnld-std-img')
+            img_url = ''
+            if hr_link:
+                img_url = hr_link.get('href', '')
+            if not img_url and lr_link:
+                img_url = lr_link.get('href', '')
+
+            # Fallback: find any img with data-src
+            if not img_url:
+                img = fig_elem.find('img')
+                if img:
+                    img_url = img.get('data-src') or img.get('src') or ''
+
+            if not img_url or 'data:image' in img_url:
+                continue
+
+            # Extract caption
+            caption = ''
+            fig_div = fig_elem.find('div', class_='figure-caption')
+            if fig_div:
+                caption_p = fig_div.find('p')
+                caption = caption_p.get_text(' ', strip=True) if caption_p else ''
+                caption = re.sub(r'\s+', ' ', caption).strip()
 
             figures[key] = {
                 'url': img_url.strip(),
                 'caption': caption,
             }
 
-        # Fallback: generic figure search
+        # Fallback: generic img search for figure-like URLs
         if not figures:
             for img in soup.find_all('img'):
-                src = img.get('src') or img.get('data-src') or ''
-                if not src or 'figure' not in src.lower():
+                src = img.get('data-src') or img.get('src') or ''
+                if not src or 'data:image' in src:
                     continue
-                if src in seen_srcs:
-                    continue
-                seen_srcs.add(src)
-                fig_num = len(figures) + 1
-                figures[f"fig_{fig_num}"] = {'url': src.strip(), 'caption': ''}
+                if 'dae' in src.lower() and '_hr.' in src:
+                    fig_num = len(figures) + 1
+                    figures[f"fig_{fig_num}"] = {'url': src.strip(), 'caption': ''}
 
         return figures
+
+    # ------------------------------------------------------------------
+    # Table extraction
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def extract_tables_from_html(cls, html_content: str) -> list:
+        """Extract tables from IOP article body.
+
+        IOP tables use <table cellpadding=\"0\" data-toolbar-type=\"table\">
+        with title in the data-toolbar-title attribute.
+
+        Returns a list of (title, markdown_string) tuples.
+        """
+        if not html_content:
+            return []
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        tables = []
+
+        for tbl in soup.find_all('table', {'data-toolbar-type': 'table'}):
+            title = tbl.get('data-toolbar-title', '').strip()
+            if not title:
+                strong = tbl.find_previous('strong')
+                if strong:
+                    title = strong.get_text(' ', strip=True)
+
+            md_rows = []
+            # Header
+            thead = tbl.find('thead')
+            if thead:
+                header_cells = []
+                for th in thead.find_all('th'):
+                    header_cells.append(th.get_text(' ', strip=True))
+                if header_cells:
+                    md_rows.append('| ' + ' | '.join(header_cells) + ' |')
+                    md_rows.append('|' + '|'.join(['---'] * len(header_cells)) + '|')
+
+            # Body
+            tbody = tbl.find('tbody') or tbl
+            for tr in tbody.find_all('tr'):
+                # Skip header rows already captured from thead
+                if thead and tr.find_parent('thead'):
+                    continue
+                cells = []
+                for cell in tr.find_all(['td', 'th']):
+                    text = cell.get_text(' ', strip=True)
+                    text = re.sub(r'\s+', ' ', text)
+                    cells.append(text)
+                if cells and not all(c == '' for c in cells):
+                    # Pad short rows to match header width
+                    if md_rows and len(cells) < md_rows[0].count('|') - 1:
+                        cells.extend([''] * (md_rows[0].count('|') - 1 - len(cells)))
+                    md_rows.append('| ' + ' | '.join(cells) + ' |')
+
+            if len(md_rows) <= 1:  # No actual data rows
+                continue
+
+            md_table = '\n'.join(md_rows)
+            tables.append((title, md_table))
+
+        return tables
 
     # ------------------------------------------------------------------
     # Reference extraction
@@ -231,21 +486,101 @@ class IOPHandler(PublisherHandler):
 
     @staticmethod
     def _extract_supplemental_links_from_html(html_content: str) -> list:
-        """Extract supplemental material download links."""
+        """Extract supplemental material download links from the article page."""
         if not html_content:
             return []
 
         soup = BeautifulSoup(html_content, 'html.parser')
         links = []
 
-        for supp_class in ('supplementary-material', 'wd-jnl-supp-info', 'supplementary'):
-            for div in soup.find_all('div', class_=re.compile(supp_class, re.I)):
-                for a in div.find_all('a', href=True):
-                    href = a['href'].strip()
-                    if href and not href.startswith('#'):
-                        links.append(href)
+        # IOP main article page may link to supplementary via an <a> tag
+        for a in soup.find_all('a', href=True):
+            href = a['href'].strip()
+            if '/data' in href and 'article' in href:
+                links.append(href)
 
         return links
+
+    @staticmethod
+    async def _extract_supplementary_from_data_page(page, doi: str) -> tuple:
+        """Navigate to the IOP supplementary /data page and extract download links.
+
+        Every IOP article has a standard supplementary endpoint:
+            https://iopscience.iop.org/article/{doi}/data
+
+        Returns (urls, descriptions) tuple.
+        """
+        data_url = f"https://iopscience.iop.org/article/{doi}/data"
+        print(f"  🔗 访问补充材料页面: {data_url}")
+
+        current_url = page.url
+        try:
+            await page.goto(data_url, wait_until='networkidle', timeout=30000)
+        except Exception:
+            try:
+                await page.goto(data_url, wait_until='domcontentloaded', timeout=30000)
+            except Exception as e:
+                print(f"  ⚠ 补充材料页面访问失败: {e}")
+                return [], {}
+
+        try:
+            # Use JS to find supplementary download links, filtering out nav/footer junk.
+            # Real supplementary files come from the IOP S3 content bucket and have
+            # recognizable file extensions.
+            links_js = """() => {
+                const suppExts = [
+                    '.py', '.csv', '.docx', '.pdf', '.zip', '.xlsx', '.txt',
+                    '.ipynb', '.pptx', '.doc', '.xls', '.gz', '.tar', '.7z',
+                    '.rar', '.png', '.jpg', '.jpeg', '.gif', '.mp4', '.avi',
+                    '.mov', '.html', '.xml', '.json', '.tex', '.bib', '.svg'
+                ];
+                const results = [];
+                const seen = new Set();
+                document.querySelectorAll('a').forEach(a => {
+                    const href = a.getAttribute('href');
+                    const text = (a.innerText || a.textContent || '').trim();
+                    if (!href || href.startsWith('#') || href.startsWith('javascript:'))
+                        return;
+                    const url = new URL(href, window.location.href).href;
+                    if (seen.has(url)) return;
+                    seen.add(url);
+                    // Only keep links from the IOP S3 content bucket (actual supp files)
+                    const path = url.split('?')[0].toLowerCase();
+                    const isSuppFile = suppExts.some(ext => path.endsWith(ext)) ||
+                                       path.includes('/supp') || path.includes('supplement');
+                    const isIOPContent = url.includes('cfn-live-content-bucket-iop-org') ||
+                                         url.includes('content.cld.iop.org');
+                    if (isSuppFile && isIOPContent) {
+                        seen.add(url);
+                        results.push({text: text.substring(0, 200), url: url});
+                    }
+                });
+                return results;
+            }"""
+            supp_data = await page.evaluate(links_js)
+        except Exception as e:
+            print(f"  ⚠ 提取补充材料链接失败: {e}")
+            supp_data = []
+
+        urls = []
+        descriptions = {}
+        for item in supp_data:
+            url = item.get('url', '')
+            text = item.get('text', '')
+            if not url or url == data_url or '/article/' in url:
+                continue
+            urls.append(url)
+            if text:
+                descriptions[url] = text
+
+        # Navigate back to the article page
+        try:
+            await page.goto(current_url, wait_until='domcontentloaded', timeout=15000)
+        except Exception:
+            pass
+
+        print(f"  ✓ 补充材料: {len(urls)} 个文件")
+        return urls, descriptions
 
     # ------------------------------------------------------------------
     # Publisher contract methods
@@ -352,9 +687,22 @@ class IOPHandler(PublisherHandler):
 
             figure_urls = {}
             supp_urls = []
+            supp_descriptions = {}
+            iop_tables = []
             if fulltext_html:
                 figure_urls = self.extract_figures_from_html(fulltext_html)
-                supp_urls = self._extract_supplemental_links_from_html(fulltext_html)
+                iop_tables = self.extract_tables_from_html(fulltext_html)
+
+            # Supplementary: navigate to IOP /data endpoint (requires headed session)
+            if page is not None:
+                try:
+                    supp_urls, supp_descriptions = (
+                        await self._extract_supplementary_from_data_page(page, doi)
+                    )
+                except Exception as e:
+                    print(f"  ⚠ 补充材料提取异常: {e}")
+
+            metadata['_tables'] = iop_tables
 
             return {
                 'metadata': metadata,
@@ -362,7 +710,7 @@ class IOPHandler(PublisherHandler):
                     'pdf_url': pdf_url,
                     'figure_urls': figure_urls,
                     'supplemental_urls': supp_urls,
-                    'supplemental_descriptions': {},
+                    'supplemental_descriptions': supp_descriptions,
                 },
                 'fulltext_data': fulltext_html,
                 'journal_name': 'iop',
@@ -482,6 +830,22 @@ class IOPHandler(PublisherHandler):
             body_md or "[Article text not found.]",
             "",
         ])
+
+        # Tables
+        tables = metadata.get('_tables', [])
+        if tables:
+            md_parts.extend([
+                "---",
+                "",
+                "## Tables",
+                "",
+            ])
+            for title, tbl_md in tables:
+                if title:
+                    md_parts.append(f"**{title}**")
+                    md_parts.append("")
+                md_parts.append(tbl_md)
+                md_parts.append("")
 
         # Supplemental materials
         supplemental_urls = kwargs.get('supplemental_urls', [])
