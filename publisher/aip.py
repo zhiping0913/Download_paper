@@ -509,13 +509,20 @@ class AIPHandler(PublisherHandler):
         return figures
 
     @staticmethod
-    def _extract_supplemental_links_from_html(html_content: str) -> list:
-        """Extract supplemental material download links from the figshare widget."""
+    def _extract_supplemental_links_from_html(html_content: str) -> tuple:
+        """Extract supplemental material download links from the figshare widget.
+
+        The figshare widget renders dynamically and only shows 1/N in the HTML.
+        This method uses the figshare API to discover all files in a collection.
+
+        Returns (urls, descriptions) where descriptions maps URL -> filename.
+        """
         if not html_content:
-            return []
+            return [], {}
 
         soup = BeautifulSoup(html_content, 'html.parser')
         links = []
+        descriptions = {}
 
         figshare_wrapper = soup.find('div', id='articlefulltext_figshare')
         if figshare_wrapper:
@@ -524,7 +531,67 @@ class AIPHandler(PublisherHandler):
                 if 'figstatic.com' in href or 'ndownloader' in href:
                     links.append(href)
 
-        return links
+            # If no direct download links, discover via figshare API
+            if not links:
+                article_id = None
+                for a_tag in figshare_wrapper.find_all('a', href=True):
+                    href = a_tag['href'].strip()
+                    match = re.search(r'/articles/(?:media/)?[^/]+/(\d+)', href)
+                    if match:
+                        article_id = match.group(1)
+                        break
+
+                if article_id:
+                    links, descriptions = (
+                        AIPHandler._fetch_figshare_collection(article_id, html_content)
+                    )
+
+        return links, descriptions
+
+    @staticmethod
+    def _fetch_figshare_collection(article_id: str, full_html: str) -> tuple:
+        """Discover all files in a figshare collection via the figshare API."""
+        import json
+        import urllib.request
+
+        collection_id = None
+        match = re.search(r'10\.60893/figshare\.[^.]*\.c\.(\d+)', full_html)
+        if match:
+            collection_id = match.group(1)
+
+        if not collection_id:
+            return [], {}
+
+        article_ids = []
+        try:
+            url = f"https://api.figshare.com/v2/collections/{collection_id}/articles"
+            req = urllib.request.Request(url, headers={'User-Agent': 'DownloadPaper/1.0'})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                articles = json.loads(resp.read().decode())
+            article_ids = [(a.get('id'), a.get('title', '')) for a in articles if a.get('id')]
+        except Exception as e:
+            print(f"  ⚠ Figshare collection API error: {e}")
+            return [], {}
+
+        links = []
+        descriptions = {}
+        for aid, title in article_ids:
+            try:
+                url = f"https://api.figshare.com/v2/articles/{aid}"
+                req = urllib.request.Request(url, headers={'User-Agent': 'DownloadPaper/1.0'})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    data = json.loads(resp.read().decode())
+
+                files = data.get('files', [])
+                for f in files:
+                    download_url = f.get('download_url')
+                    if download_url:
+                        links.append(download_url)
+                        descriptions[download_url] = f.get('name', title)
+            except Exception as e:
+                print(f"  ⚠ Figshare article API error for {aid}: {e}")
+
+        return links, descriptions
 
     async def get_fulltext_url(self, page) -> str:
         if page is not None:
@@ -602,9 +669,10 @@ class AIPHandler(PublisherHandler):
 
             figure_urls = {}
             supp_urls = []
+            supp_descriptions = {}
             if fulltext_html:
                 figure_urls = self.extract_figures_from_html(fulltext_html)
-                supp_urls = self._extract_supplemental_links_from_html(fulltext_html)
+                supp_urls, supp_descriptions = self._extract_supplemental_links_from_html(fulltext_html)
 
             return {
                 'metadata': metadata,
@@ -612,7 +680,7 @@ class AIPHandler(PublisherHandler):
                     'pdf_url': pdf_url,
                     'figure_urls': figure_urls,
                     'supplemental_urls': supp_urls,
-                    'supplemental_descriptions': {},
+                    'supplemental_descriptions': supp_descriptions,
                 },
                 'fulltext_data': fulltext_html,
                 'journal_name': 'aip',
