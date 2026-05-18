@@ -116,8 +116,6 @@ class IOPHandler(PublisherHandler):
         # 1. Extract display math → placeholders
         def _replace_display(m):
             latex = m.group(1).strip()
-            # Remove \tag{...} noise (equation numbers are inline)
-            latex = _re.sub(r'\s*\\tag\{[^}]*\}', '', latex)
             key = f"<<<IOP_DISPLAY_MATH_{len(display_eqns)}>>>"
             display_eqns[key] = latex
             return f"\n{key}\n"
@@ -229,7 +227,6 @@ class IOPHandler(PublisherHandler):
                     script_tag = element.find('script', type='math/tex; mode=display')
                     if script_tag:
                         latex = script_tag.string.strip()
-                        latex = re.sub(r'\s*\\tag\{[^}]*\}', '', latex)
                         body_parts.extend([f"\n$$\n{latex}\n$$\n", ""])
                     else:
                         # Fallback: equation rendered as GIF image
@@ -293,7 +290,6 @@ class IOPHandler(PublisherHandler):
                     script_tag = child.find('script', type='math/tex; mode=display')
                     if script_tag:
                         latex = script_tag.string.strip()
-                        latex = re.sub(r'\s*\\tag\{[^}]*\}', '', latex)
                         body_parts.extend([f"\n$$\n{latex}\n$$\n", ""])
                     else:
                         img = child.find('img')
