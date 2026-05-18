@@ -417,6 +417,18 @@ class IOPHandler(PublisherHandler):
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _process_table_cell(cell_html: str) -> str:
+        """Process a table cell's inner HTML to plain text with formulas preserved.
+
+        Handles <script type=\"math/tex\"> → $...$, GIF epsilon, and HTML formatting
+        (sub/sup/em) using the same IOP preprocessing pipeline as body paragraphs.
+        """
+        processed, _ = IOPHandler._preprocess_iop_html(cell_html)
+        md = convert_html_fragment_to_markdown(processed) if processed else ''
+        md = re.sub(r'\s+', ' ', md).strip()
+        return md
+
+    @staticmethod
     def _table_element_to_md(table_element, description: str = '') -> str:
         """Convert a single <table data-toolbar-type="table"> to Markdown.
 
@@ -434,7 +446,7 @@ class IOPHandler(PublisherHandler):
         if thead:
             header_cells = []
             for th in thead.find_all('th'):
-                header_cells.append(th.get_text(' ', strip=True))
+                header_cells.append(IOPHandler._process_table_cell(str(th)))
             if header_cells:
                 md_rows.append('| ' + ' | '.join(header_cells) + ' |')
                 md_rows.append('|' + '|'.join(['---'] * len(header_cells)) + '|')
@@ -445,7 +457,7 @@ class IOPHandler(PublisherHandler):
                 continue
             cells = []
             for cell in tr.find_all(['td', 'th']):
-                text = cell.get_text(' ', strip=True)
+                text = IOPHandler._process_table_cell(str(cell))
                 text = re.sub(r'\s+', ' ', text)
                 cells.append(text)
             if cells and not all(c == '' for c in cells):
