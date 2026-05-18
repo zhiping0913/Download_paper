@@ -622,15 +622,19 @@ class IOPHandler(PublisherHandler):
         return f"https://doi.org/{self.doi}" if self.doi else None
 
     async def get_pdf_url(self, doi: str) -> str:
+        """PDF URL is extracted from citation_pdf_url meta tag in extract_metadata."""
         return None
 
     async def get_supplemental_url(self, doi: str) -> str:
+        """Supplementary links are extracted via _extract_supplementary_from_data_page."""
         return None
 
     async def extract_references(self, html: str) -> list:
-        return []
+        """Delegates to extract_references_from_html (classmethod)."""
+        return self.extract_references_from_html(html) if html else []
 
     async def get_figures(self, json_data: dict) -> dict:
+        """Figure extraction uses extract_figures_from_html (classmethod) in extract_all."""
         return {}
 
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
