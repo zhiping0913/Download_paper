@@ -525,6 +525,47 @@ class IOPHandler(PublisherHandler):
                 soup.find_all('meta', {'name': 'citation_reference'})
                 if tag.get('content', '').strip()]
 
+    @classmethod
+    def extract_footnotes_from_html(cls, html_content: str) -> list:
+        """Extract footnotes from <h2 id=\"footnotes\"> section.
+
+        Returns a list of markdown strings, one per footnote.
+        Footnotes may contain LaTeX formulas (handled via IOP math pipeline).
+        """
+        if not html_content:
+            return []
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        footnotes_h2 = soup.find('h2', id='footnotes')
+        if not footnotes_h2:
+            return []
+
+        footnotes = []
+        container = footnotes_h2.find_next_sibling('div')
+        if not container:
+            return []
+
+        for li in container.find_all('li', class_='indices-list'):
+            id_div = li.find('div', class_='indices-id')
+            content_div = li.find('div', class_='indices-content')
+            if not id_div or not content_div:
+                continue
+
+            fn_num = id_div.get_text(' ', strip=True)
+            fn_ps = content_div.find_all('p')
+            fn_texts = []
+            for p in fn_ps:
+                p_html = str(p)
+                md = cls._convert_iop_paragraph_to_md(p_html)
+                if md:
+                    fn_texts.append(md)
+
+            combined = ' '.join(fn_texts) if fn_texts else content_div.get_text(' ', strip=True)
+            if combined:
+                footnotes.append(f"{fn_num}. {combined}")
+
+        return footnotes
+
     # ------------------------------------------------------------------
     # Supplemental material extraction
     # ------------------------------------------------------------------
@@ -723,6 +764,7 @@ class IOPHandler(PublisherHandler):
             if fulltext_html:
                 metadata['references'] = self.extract_references_from_html(fulltext_html)
                 metadata['_refs_raw'] = self._extract_raw_citation_references(fulltext_html)
+                metadata['footnotes'] = self.extract_footnotes_from_html(fulltext_html)
 
             figure_urls = {}
             supp_urls = []
@@ -889,6 +931,19 @@ class IOPHandler(PublisherHandler):
                 for url in supplemental_urls:
                     md_parts.append(f"- [{url}]({url})")
             md_parts.append("")
+
+        # Footnotes (before references)
+        footnotes = metadata.get('footnotes', [])
+        if footnotes:
+            md_parts.extend([
+                "---",
+                "",
+                "## Footnotes",
+                "",
+            ])
+            for fn in footnotes:
+                md_parts.append(fn)
+                md_parts.append("")
 
         # References: each ref = numbered text + its own BibTeX block
         references = metadata.get('references', [])
