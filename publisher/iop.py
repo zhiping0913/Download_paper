@@ -195,7 +195,7 @@ class IOPHandler(PublisherHandler):
 
         body_parts = []
 
-        for element in body_div.find_all(['h2', 'h3', 'h4', 'p', 'div', 'figure'], recursive=False):
+        for element in body_div.find_all(['h2', 'h3', 'h4', 'p', 'div', 'figure', 'table'], recursive=False):
             if element.name in ('h2', 'h3', 'h4'):
                 heading_text = element.get_text(' ', strip=True)
                 heading_text = re.sub(r'\s+', ' ', heading_text or '').strip()
@@ -241,6 +241,11 @@ class IOPHandler(PublisherHandler):
                 elif 'article-text' in classes:
                     cls._walk_iop_body(element, body_parts)
 
+            elif element.name == 'table' and element.get('data-toolbar-type') == 'table':
+                tbl_md = cls._table_element_to_md(element)
+                if tbl_md:
+                    body_parts.extend([tbl_md, ""])
+
         body_md = ""
         if body_parts:
             # Restore any display equation placeholders (from preprocessed paragraphs)
@@ -256,7 +261,7 @@ class IOPHandler(PublisherHandler):
         IOP nests article content inside multiple ``div.article-text`` layers;
         this method handles arbitrary nesting depth.
         """
-        for child in container.find_all(['p', 'h3', 'h4', 'div', 'figure'], recursive=False):
+        for child in container.find_all(['p', 'h3', 'h4', 'div', 'figure', 'table'], recursive=False):
             if child.name in ('h3', 'h4'):
                 heading_text = child.get_text(' ', strip=True)
                 heading_text = re.sub(r'\s+', ' ', heading_text or '').strip()
@@ -299,7 +304,18 @@ class IOPHandler(PublisherHandler):
                 elif 'article-text' in classes:
                     cls._walk_iop_body(child, body_parts)
 
-                # Ignore other divs (boxout figures are handled by figure extraction)
+                elif 'boxout' in classes:
+                    # IOP wraps tables/figures in <div class="boxout ...">
+                    table = child.find('table', {'data-toolbar-type': 'table'})
+                    if table:
+                        tbl_md = cls._table_element_to_md(table)
+                        if tbl_md:
+                            body_parts.extend([tbl_md, ""])
+
+            elif child.name == 'table' and child.get('data-toolbar-type') == 'table':
+                tbl_md = cls._table_element_to_md(child)
+                if tbl_md:
+                    body_parts.extend([tbl_md, ""])                # Ignore other divs (boxout figures are handled by figure extraction)
 
     @staticmethod
     def _convert_iop_paragraph_to_md(html_fragment: str) -> str:
@@ -390,6 +406,49 @@ class IOPHandler(PublisherHandler):
     # Table extraction
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _table_element_to_md(table_element) -> str:
+        """Convert a single <table data-toolbar-type="table"> to Markdown.
+
+        Returns a markdown string like ``**Title.**\\n| ... |`` or ``""``
+        if the table has no data rows.
+        """
+        title = table_element.get('data-toolbar-title', '').strip()
+        if not title:
+            strong = table_element.find_previous('strong')
+            if strong:
+                title = strong.get_text(' ', strip=True)
+
+        md_rows = []
+        thead = table_element.find('thead')
+        if thead:
+            header_cells = []
+            for th in thead.find_all('th'):
+                header_cells.append(th.get_text(' ', strip=True))
+            if header_cells:
+                md_rows.append('| ' + ' | '.join(header_cells) + ' |')
+                md_rows.append('|' + '|'.join(['---'] * len(header_cells)) + '|')
+
+        tbody = table_element.find('tbody') or table_element
+        for tr in tbody.find_all('tr'):
+            if thead and tr.find_parent('thead'):
+                continue
+            cells = []
+            for cell in tr.find_all(['td', 'th']):
+                text = cell.get_text(' ', strip=True)
+                text = re.sub(r'\s+', ' ', text)
+                cells.append(text)
+            if cells and not all(c == '' for c in cells):
+                if md_rows and len(cells) < md_rows[0].count('|') - 1:
+                    cells.extend([''] * (md_rows[0].count('|') - 1 - len(cells)))
+                md_rows.append('| ' + ' | '.join(cells) + ' |')
+
+        if len(md_rows) <= 1:
+            return ''
+
+        lines = [f"**{title}.**", "", "\n".join(md_rows)] if title else ["\n".join(md_rows)]
+        return "\n".join(lines)
+
     @classmethod
     def extract_tables_from_html(cls, html_content: str) -> list:
         """Extract tables from IOP article body.
@@ -406,45 +465,10 @@ class IOPHandler(PublisherHandler):
         tables = []
 
         for tbl in soup.find_all('table', {'data-toolbar-type': 'table'}):
-            title = tbl.get('data-toolbar-title', '').strip()
-            if not title:
-                strong = tbl.find_previous('strong')
-                if strong:
-                    title = strong.get_text(' ', strip=True)
-
-            md_rows = []
-            # Header
-            thead = tbl.find('thead')
-            if thead:
-                header_cells = []
-                for th in thead.find_all('th'):
-                    header_cells.append(th.get_text(' ', strip=True))
-                if header_cells:
-                    md_rows.append('| ' + ' | '.join(header_cells) + ' |')
-                    md_rows.append('|' + '|'.join(['---'] * len(header_cells)) + '|')
-
-            # Body
-            tbody = tbl.find('tbody') or tbl
-            for tr in tbody.find_all('tr'):
-                # Skip header rows already captured from thead
-                if thead and tr.find_parent('thead'):
-                    continue
-                cells = []
-                for cell in tr.find_all(['td', 'th']):
-                    text = cell.get_text(' ', strip=True)
-                    text = re.sub(r'\s+', ' ', text)
-                    cells.append(text)
-                if cells and not all(c == '' for c in cells):
-                    # Pad short rows to match header width
-                    if md_rows and len(cells) < md_rows[0].count('|') - 1:
-                        cells.extend([''] * (md_rows[0].count('|') - 1 - len(cells)))
-                    md_rows.append('| ' + ' | '.join(cells) + ' |')
-
-            if len(md_rows) <= 1:  # No actual data rows
-                continue
-
-            md_table = '\n'.join(md_rows)
-            tables.append((title, md_table))
+            md = cls._table_element_to_md(tbl)
+            if md:
+                title = tbl.get('data-toolbar-title', '').strip()
+                tables.append((title, md))
 
         return tables
 
@@ -824,22 +848,6 @@ class IOPHandler(PublisherHandler):
             body_md or "[Article text not found.]",
             "",
         ])
-
-        # Tables
-        tables = metadata.get('_tables', [])
-        if tables:
-            md_parts.extend([
-                "---",
-                "",
-                "## Tables",
-                "",
-            ])
-            for title, tbl_md in tables:
-                if title:
-                    md_parts.append(f"**{title}**")
-                    md_parts.append("")
-                md_parts.append(tbl_md)
-                md_parts.append("")
 
         # Supplemental materials
         supplemental_urls = kwargs.get('supplemental_urls', [])
