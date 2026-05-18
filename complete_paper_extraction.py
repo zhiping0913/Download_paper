@@ -529,15 +529,8 @@ async def download_supplemental_materials(
             elif response:
                 try:
                     content_type = response.headers.get('content-type', '').lower()
-                    suffix = output_path.suffix.lower()
-                    downloadable_suffixes = {
-                        '.pdf', '.zip', '.doc', '.docx', '.xls', '.xlsx',
-                        '.csv', '.txt', '.ppt', '.pptx'
-                    }
 
-                    if response.ok and (
-                        'application/' in content_type or suffix in downloadable_suffixes
-                    ):
+                    if response.ok and 'text/html' not in content_type:
                         output_path.write_bytes(await response.body())
                         output_path = _detect_and_rename(output_path)
                         file_size_mb = output_path.stat().st_size / (1024 * 1024)

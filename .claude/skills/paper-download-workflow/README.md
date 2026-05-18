@@ -1,6 +1,6 @@
-# 论文自动下载 Skill
+# 论文自动提取 Skill — Download_paper
 
-自动化从DOI下载研究论文、提取元数据、组织存档的工作流。
+自动化从 DOI 提取论文全文、元数据、图片和补充材料的工作流。
 
 ## 快速使用
 
@@ -12,89 +12,86 @@
 
 ```bash
 /paper-download-workflow 10.1103/PhysRevLett.109.245005
-/paper-download-workflow 10.1103/PhysRevLett.94.103903
+/paper-download-workflow 10.1038/s41586-026-10400-2
+/paper-download-workflow 10.1088/1361-6463/ae36b8
 ```
 
 ## 完整工作流
 
-1. **启动Chrome** - 用已有的登录态启动浏览器
-2. **获取元数据** - 调用Semantic Scholar API获取标题和年份
-3. **打开DOI页面并保存网页** - 在Chrome中访问 `https://doi.org/{DOI}`，滚动加载所有内容，保存完整HTML
-4. **提取补充材料链接** - 从保存的HTML中搜索supplemental链接
-5. **打开PDF链接** - 在Chrome新建标签页直接访问PDF链接
-6. **保存PDF** - 用Ctrl+S保存到Downloads文件夹
-7. **检查补充材料关键字** - 用pdfplumber扫描PDF中的补充材料关键字（可选）
-8. **验证下载文件** - 查找并验证下载的PDF
-9. **整理文件** - 清理文件名，按`{year}/{year}--{title}.pdf`格式组织
+1. **激活研究环境** — `source /home/zhiping/research-env/bin/activate`
+2. **检测 DOI** — 识别 publisher 类型（Nature、APS、AIP、IOP、Cambridge、arXiv）
+3. **启动浏览器** — 根据 publisher 选择无头或有头 Chrome
+4. **访问 DOI 页面** — `https://doi.org/{DOI}`
+5. **提取元数据** — 标题、作者、期刊、摘要、年份、卷期页码
+6. **提取正文** — 遍历文章内容，保留公式（LaTeX/MathML）和章节结构
+7. **提取参考文献** — 格式化为 BibTeX 代码块
+8. **提取脚注** — 在参考文献前展示
+9. **下载图片** — 优先获取高分辨率版本
+10. **提取补充材料** — 从 `/data` 端点或 figshare widget 获取下载链接
+11. **下载 PDF** — 从 `citation_pdf_url` meta 标签获取链接
+12. **生成 Markdown** — 全文章 + 图引用 + 脚注 + 参考文献
+13. **保存输出** — 按 `{year}--{title}/` 目录组织
 
-## 新特性：完整网页保存 + 智能缓存
+## 输出结构
 
-现在工作流在下载PDF之前会**保存完整的DOI页面HTML**，包含：
-- ✅ 异步加载的论文内容
-- ✅ PDF下载链接
-- ✅ 补充材料链接
-- ✅ 图片和嵌入资源
-
-**智能缓存机制** (v2.0新增):
-- 检查本地`~/Downloads/`中是否有**15分钟内**保存的HTML
-- 如果有，直接使用本地缓存，**避免Chrome的"replace"提示**
-- 如果没有，才重新保存新的HTML
-- 效果：连续下载多篇论文时工作流完全自动化 ✅
-
-## 输出
-
-保存位置示例：
 ```
-/home/zhiping/Research/Papers/2012/2012--Isolated attosecond pulses from laser-driven synchrotron radiation..pdf
-/home/zhiping/Research/Papers/2005/2005--Coherent focusing of high harmonics: a new way towards the extreme intensities..pdf
+captured_data/
+└─ {YYYY}--{Title}/
+   ├─ paper.md                    # AI友好的Markdown全文
+   ├─ paper.pdf                   # 原始PDF
+   ├─ metadata.json               # 完整元数据记录
+   ├─ figure_1.jpg                # 高清图片（可有多张）
+   ├─ supplemental--Data.zip      # 补充材料（可选）
+   └─ page.html                   # 原始页面HTML（调试用）
 ```
 
-## 工作原理
+## 支持的 publisher
 
-- **Chrome持久化**: 复用已登录的浏览器会话
-- **Semantic Scholar API**: 快速获取标准化元数据
-- **自动验证**: 先访问DOI页面通过Cloudflare验证，再直接下载PDF
-- **智能重命名**: 自动去除文件名中的特殊字符
+| DOI / URL 模式 | Publisher | 浏览器模式 |
+|---|---|---|
+| `10.1038` / `nature.com` | Nature | 无头 |
+| `10.1103` / `journals.aps.org` | APS (PRL/PRA/PRX 等) | 有头 |
+| `10.1063` / `pubs.aip.org` | AIP Publishing | 无头 |
+| `10.1088` / `iopscience.iop.org` | IOP Science | 有头 |
+| `10.1017` / `cambridge.org` | Cambridge University Press | 无头 |
+| `10.1016` / `sciencedirect.com` | Elsevier (回退 Nature handler) | 无头 |
+| `10.1051` / `epj-conferences.org` | EDP Sciences (回退) | 无头 |
+| `arxiv.org` | arXiv | 有头 |
 
-## 时间预期
+## 关键文件
 
-约30-40秒完成一篇论文，主要取决于：
-- Cloudflare验证速度（5-10秒）
-- PDF文件大小（5-15秒）
-- 网络延迟
-
-## 支持的期刊
-
-- **Physical Review Letters** (PRL) - ✅ 完全支持
-- 其他APS期刊 - 应该可以工作（URL格式相同）
-- 其他期刊 - 可能需要调整PDF链接格式
-
-## 依赖项
-
-- Chrome浏览器
-- xdotool
-- curl
-- Python 3
-
-## 故障排除
-
-### Q: Chrome窗口没有出现新标签页？
-A: 检查Chrome是否正在运行。脚本会在已打开的Chrome实例中创建新标签页。
-
-### Q: PDF没有保存？
-A: 检查验证步骤是否完成。可能需要在浏览器中手动点击PDF链接。
-
-### Q: 文件名很长且包含特殊字符？
-A: 脚本会自动清理，去除 `/ : * ? " < > |` 等字符。
+| 文件 | 用途 |
+|---|---|
+| `complete_paper_extraction.py` | 主入口，编排完整提取流程 |
+| `download_paper.py` | 同步 API，可被其他 Python 程序 import |
+| `batch_process.py` | 批量 DOI 处理器（支持文件/命令行输入） |
+| `config.py` | Chrome 路径、输出目录、批处理延迟等全局配置 |
+| `chrome_launcher.py` | 跨平台 Chrome 启动/关闭 |
+| `publisher/orchestrator.py` | DOI/URL → publisher 类型 → handler 工厂 |
+| `publisher/base.py` | `PublisherHandler` 抽象基类 |
+| `publisher/nature.py` | Nature/Springer/Elsevier/EDP 处理器 |
+| `publisher/aps.py` | APS 处理器（依赖网络请求捕获） |
+| `publisher/aip.py` | AIP 处理器 |
+| `publisher/iop.py` | IOP Science 处理器（含脚注、表格公式） |
+| `publisher/cambridge.py` | Cambridge University Press 处理器 |
+| `publisher/wildcard.py` | 共享工具：正文查找、公式转换、BibTeX 格式化 |
+| `core/utilities.py` | Semantic Scholar 查询、BibTeX 格式化 |
+| `json_to_md_converter.py` | APS JSON → Markdown 转换器 |
 
 ## 配置
 
-编辑 `paper-download.sh` 中的以下内容：
-- `DOI` - 论文标识符
-- `/home/zhiping/Research/Papers/` - 存档目录
-- `https://journals.aps.org/prl/pdf/` - PDF链接格式
+编辑 `config.py` 可调整：
 
----
+- `OUTPUT_DIR_DEFAULT` — 输出目录（默认 `captured_data/`）
+- `BATCH_SLEEP_ENABLED` / `BATCH_SLEEP_MIN` / `BATCH_SLEEP_MAX` — 批量处理时随机睡眠防拉黑
+- `SAVE_WITHOUT_REFERENCES` — 参考文献为空时仍保存 Markdown
+- `CHROME_PATH` / `CHROME_USER_DATA_DIR` — Chrome 浏览器路径与用户数据目录
 
-**版本**: 2.0 (HTML缓存优化)  
-**最后更新**: 2026-05-09
+## 网络要求
+
+需要在有相关期刊访问权限的网络内使用（**校园网**或机构 VPN）。
+
+## 版本
+
+**版本**: 3.0 (publisher 多处理器架构)  
+**最后更新**: 2026-05-18
