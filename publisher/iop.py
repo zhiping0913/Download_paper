@@ -524,34 +524,24 @@ class IOPHandler(PublisherHandler):
                 return [], {}
 
         try:
-            # Use JS to find supplementary download links, filtering out nav/footer junk.
-            # Real supplementary files come from the IOP S3 content bucket and have
-            # recognizable file extensions.
+            # IOP supplementary links are structured as:
+            #   <div id="supplementarydata">
+            #     <div class="reveal-content" style="display: block;">
+            #       <p class="mb-0">
+            #         <a class="link--decoration-none" href="S3_URL">Supplementary data N</a>
+            #       </p>
+            #       <div>(size FORMAT) description</div>
+            #       ...
             links_js = """() => {
-                const suppExts = [
-                    '.py', '.csv', '.docx', '.pdf', '.zip', '.xlsx', '.txt',
-                    '.ipynb', '.pptx', '.doc', '.xls', '.gz', '.tar', '.7z',
-                    '.rar', '.png', '.jpg', '.jpeg', '.gif', '.mp4', '.avi',
-                    '.mov', '.html', '.xml', '.json', '.tex', '.bib', '.svg'
-                ];
                 const results = [];
-                const seen = new Set();
-                document.querySelectorAll('a').forEach(a => {
+                const suppDiv = document.querySelector('#supplementarydata');
+                if (!suppDiv) return results;
+                const links = suppDiv.querySelectorAll('a.link--decoration-none');
+                links.forEach(a => {
                     const href = a.getAttribute('href');
                     const text = (a.innerText || a.textContent || '').trim();
-                    if (!href || href.startsWith('#') || href.startsWith('javascript:'))
-                        return;
-                    const url = new URL(href, window.location.href).href;
-                    if (seen.has(url)) return;
-                    seen.add(url);
-                    // Only keep links from the IOP S3 content bucket (actual supp files)
-                    const path = url.split('?')[0].toLowerCase();
-                    const isSuppFile = suppExts.some(ext => path.endsWith(ext)) ||
-                                       path.includes('/supp') || path.includes('supplement');
-                    const isIOPContent = url.includes('cfn-live-content-bucket-iop-org') ||
-                                         url.includes('content.cld.iop.org');
-                    if (isSuppFile && isIOPContent) {
-                        seen.add(url);
+                    if (href) {
+                        const url = new URL(href, window.location.href).href;
                         results.push({text: text.substring(0, 200), url: url});
                     }
                 });
