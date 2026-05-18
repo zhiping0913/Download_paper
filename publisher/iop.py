@@ -306,9 +306,19 @@ class IOPHandler(PublisherHandler):
 
                 elif 'boxout' in classes:
                     # IOP wraps tables/figures in <div class="boxout ...">
+                    # Extract description from leading <p> (e.g., "Parameter ranges and sweep configurations")
+                    desc = ''
+                    caption_p = child.find('p')
+                    if caption_p:
+                        bold = caption_p.find('b')
+                        if bold:
+                            label = bold.get_text(' ', strip=True)
+                            desc_full = caption_p.get_text(' ', strip=True)
+                            # Remove the label part to get just the description
+                            desc = desc_full[len(label):].strip().lstrip('\xa0').strip()
                     table = child.find('table', {'data-toolbar-type': 'table'})
                     if table:
-                        tbl_md = cls._table_element_to_md(table)
+                        tbl_md = cls._table_element_to_md(table, description=desc)
                         if tbl_md:
                             body_parts.extend([tbl_md, ""])
 
@@ -407,11 +417,11 @@ class IOPHandler(PublisherHandler):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _table_element_to_md(table_element) -> str:
+    def _table_element_to_md(table_element, description: str = '') -> str:
         """Convert a single <table data-toolbar-type="table"> to Markdown.
 
-        Returns a markdown string like ``**Title.**\\n| ... |`` or ``""``
-        if the table has no data rows.
+        Returns a markdown string like ``**Title.** description\\n| ... |``
+        or ``""`` if the table has no data rows.
         """
         title = table_element.get('data-toolbar-title', '').strip()
         if not title:
@@ -446,7 +456,10 @@ class IOPHandler(PublisherHandler):
         if len(md_rows) <= 1:
             return ''
 
-        lines = [f"**{title}.**", "", "\n".join(md_rows)] if title else ["\n".join(md_rows)]
+        heading = title.rstrip('.')
+        if description:
+            heading = f"{heading} — {description}"
+        lines = [f"**{heading}**", "", "\n".join(md_rows)]
         return "\n".join(lines)
 
     @classmethod
