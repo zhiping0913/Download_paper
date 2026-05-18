@@ -210,8 +210,12 @@ class IOPHandler(PublisherHandler):
                     if strong:
                         label = strong.get_text(' ', strip=True)
                         caption_p = fig_div.find('p')
-                        caption = caption_p.get_text(' ', strip=True) if caption_p else ''
-                        caption = re.sub(r'\s+', ' ', caption).strip()
+                        if caption_p:
+                            caption = cls._convert_iop_paragraph_to_md(str(caption_p))
+                            # Strip leading bold label (e.g., **Fig. 1:**) — we add our own
+                            caption = re.sub(r'^\*\*Fig\.?\s*\d+[.:]\*\*\s*', '', caption).strip()
+                        else:
+                            caption = ''
                         body_parts.append(f"**{label}** {caption}")
                         body_parts.append("")
 
@@ -278,8 +282,11 @@ class IOPHandler(PublisherHandler):
                     if strong:
                         label = strong.get_text(' ', strip=True)
                         caption_p = fig_div.find('p')
-                        caption = caption_p.get_text(' ', strip=True) if caption_p else ''
-                        caption = re.sub(r'\s+', ' ', caption).strip()
+                        if caption_p:
+                            caption = cls._convert_iop_paragraph_to_md(str(caption_p))
+                            caption = re.sub(r'^\*\*Fig\.?\s*\d+[.:]\*\*\s*', '', caption).strip()
+                        else:
+                            caption = ''
                         body_parts.append(f"**{label}** {caption}")
                         body_parts.append("")
 
@@ -388,7 +395,10 @@ class IOPHandler(PublisherHandler):
             fig_div = fig_elem.find('div', class_='figure-caption')
             if fig_div:
                 caption_p = fig_div.find('p')
-                caption = caption_p.get_text(' ', strip=True) if caption_p else ''
+                if caption_p:
+                    caption = cls._convert_iop_paragraph_to_md(str(caption_p))
+                else:
+                    caption = fig_div.get_text(' ', strip=True)
                 caption = re.sub(r'\s+', ' ', caption).strip()
 
             figures[key] = {
