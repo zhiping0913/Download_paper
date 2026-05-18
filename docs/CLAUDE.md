@@ -2,440 +2,215 @@
 
 **工作目录**: `/home/zhiping/Projects/Download_paper`  
 **用户角色**: 科研工作者 (激光等离子体相互作用研究)  
-**主要工具**: Playwright CLI (浏览器自动化)  
-**日期**: 2026-04-24
+**日期**: 2026-05-18
 
 ---
 
-## 🎯 项目目标
+## 项目目标
 
-使用 `playwright-cli` 工具自动化论文查询和下载流程：
-1. 根据用户提供的 **DOI 标识符**
-2. 利用 playwright-cli **有头模式**自动访问论文页面
-3. 处理页面交互和用户验证
-4. 保存并优化为可重复使用的 skill
+通过有头/无头浏览器直接访问论文网页，提取格式正确的论文全文并转为 AI 友好的 Markdown 文件，同时下载 PDF、高清原图和补充材料。
+
+核心原则：**始终通过浏览器访问**，不使用 `curl`/`wget` 等直接 HTTP 请求，以免被期刊网站的反爬机制限制访问。
 
 ---
 
-## 🔧 工作方式
+## 快速使用
 
-### 基本流程
+### 单篇论文
 
-```
-用户提供 DOI
-    ↓
-使用 playwright-cli open --persistent
-    ↓
-导航到 https://doi.org/{DOI}
-    ↓
-获取页面快照（snapshot）
-    ↓
-需要用户验证? 
-    ├─ 是 → 提示用户手动验证，等待继续
-    └─ 否 → 继续自动化流程
-    ↓
-提取论文信息/下载链接
-    ↓
-保存结果
-```
-
-### 技术要求
-
-- **有头模式**: 显示浏览器窗口（用户可见）
-- **持久化会话**: 使用 `--persistent` 参数保存会话状态、cookies、登录信息
-- **等待用户验证**: 遇到验证码或需要登录时，提示用户手动完成，然后程序继续
-
-### DOI 访问方式
-
-标准格式：`https://doi.org/{DOI}`
-
-示例：
-- DOI: `10.1103/PhysRevLett.125.015001`
-- URL: `https://doi.org/10.1103/PhysRevLett.125.015001`
-
----
-
-## 💡 我的职责
-
-### ✅ 我应该做的
-
-1. **理解 DOI 格式** - 解析用户提供的各种 DOI 格式
-2. **调用 playwright-cli** - 使用正确的参数启动有头浏览器
-3. **获取页面快照** - 定期使用 `snapshot` 了解页面状态
-4. **处理页面交互** - 根据页面内容点击、填充表单等
-5. **提示用户验证** - 检测验证码/登录要求，提示用户
-6. **保存工作流** - 将流程转化为可重复的 skill
-7. **优化和改进** - 基于测试结果改进流程
-
-### ⚠️ 需要确认的事项
-
-- 是否删除或修改现有文件
-- 是否需要长时间运行的自动化任务
-- 任何可能消耗资源的操作
-
----
-
-## 🚀 快速开始命令
-
-### 启动持久化浏览器会话
-
-```bash
-# 打开浏览器访问论文
-playwright-cli open --persistent https://doi.org/10.1103/PhysRevLett.125.015001
-
-# 获取页面快照
-playwright-cli snapshot
-
-# 交互示例
-playwright-cli click e5        # 点击元素
-playwright-cli fill e3 "text"  # 填充表单
-playwright-cli press Enter     # 按回车键
-
-# 关闭浏览器
-playwright-cli close
-```
-
-### 使用命名会话（推荐）
-
-```bash
-# 创建命名会话
-playwright-cli -s=paper_session open --persistent
-
-# 在同一会话中进行操作
-playwright-cli -s=paper_session goto https://doi.org/10.1103/PhysRevLett.125.015001
-playwright-cli -s=paper_session snapshot
-
-# 关闭会话
-playwright-cli -s=paper_session close
-```
-
----
-
-## 📋 工作流模板
-
-### 单篇论文下载流程
-
-```bash
-# 1. 打开持久化浏览器
-playwright-cli -s=paper open --persistent
-
-# 2. 导航到 DOI 页面
-playwright-cli -s=paper goto https://doi.org/{DOI}
-
-# 3. 获取快照了解页面结构
-playwright-cli -s=paper snapshot
-
-# 4. 检查是否需要验证
-# 如果有验证码/登录要求 → 提示用户手动完成
-
-# 5. 与页面交互（示例）
-playwright-cli -s=paper click e5      # 点击下载按钮
-playwright-cli -s=paper wait-for-load # 等待加载
-
-# 6. 保存结果
-playwright-cli -s=paper screenshot --filename=paper.png
-
-# 7. 关闭浏览器
-playwright-cli -s=paper close
-```
-
----
-
-## 📚 参考资源
-
-### Playwright CLI 文档
-- 核心命令: 在 `.claude/skills/playwright-cli/SKILL.md` 中查看
-- 参考资料: `.claude/skills/playwright-cli/references/` 目录
-
-### 关键概念
-- **Snapshot**: 页面状态快照，包含可交互元素的引用（e1, e2等）
-- **持久化会话**: 保存 cookies、localStorage、sessionStorage
-- **有头模式**: 显示浏览器窗口，便于调试和用户验证
-
----
-
-## 🔄 工作流优化建议
-
-1. **批量处理**: 可以为多个 DOI 循环执行
-2. **错误处理**: 捕获网络错误、超时等情况
-3. **缓存结果**: 保存已下载的论文信息，避免重复
-4. **并行处理**: 使用多个命名会话同时处理多篇论文
-5. **验证检测**: 自动检测验证码和登录页面
-
----
-
-## 🎓 示例场景
-
-### 场景1: 访问开放获取论文
-```
-用户: "帮我获取 DOI 10.1103/PhysRevLett.125.015001 的论文"
-流程: 直接访问 → 获取链接 → 下载成功
-```
-
-### 场景2: 需要登录/验证
-```
-用户: "我需要下载 Nature 上的论文"
-流程: 访问 → 检测登录页面 → 提示用户登录 → 用户手动操作 → 继续下载
-```
-
-### 场景3: 批量下载
-```
-用户: "帮我下载这100篇论文"
-流程: 循环处理每个 DOI → 管理会话 → 处理验证 → 保存结果
-```
-
----
-
-## 📊 性能指标
-
-- 单篇论文访问: ~3-5秒
-- 页面快照生成: ~1-2秒
-- 用户验证等待: 需要用户手动操作
-- 会话建立: ~2-3秒
-
----
-
-## 🔐 安全考虑
-
-- **会话管理**: 使用 `--persistent` 保存会话，避免重复登录
-- **Cookie 处理**: 自动保存认证信息
-- **隐私**: 不保存用户密码（由浏览器管理）
-
----
-
-## 📝 下一步
-
-1. ✅ 学习和熟悉 playwright-cli 的基本命令
-2. ⏳ 开发单篇论文下载的自动化脚本
-3. ⏳ 创建可重复使用的 skill
-4. ⏳ 测试和优化流程
-5. ⏳ 支持批量处理
-
----
-
-**最后更新**: 2026-04-24  
-**维护者**: Claude AI Assistant  
-**状态**: 项目初始化阶段
-
----
-
-## 📝 关键优化发现：使用 Semantic Scholar API
-
-**问题**：从网页解析标题和年份较慢且容易出错
-
-**解决方案**：使用 Semantic Scholar API（来自 Academic_graph_miner 项目）
-
-```python
-# 配置
-S2_API_URL = "https://api.semanticscholar.org/graph/v1/paper/DOI:"
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Accept': 'application/json'
-}
-
-# 获取论文信息
-s2_fields = 'title,year'
-response = requests.get(
-    f"{S2_API_URL}{doi}", 
-    params={'fields': s2_fields}, 
-    headers=HEADERS, 
-    timeout=15
-)
-data = response.json()  # {"title": "...", "year": 2025}
-```
-
-**优势**：
-- ✅ 更快（无需渲染网页）
-- ✅ 更可靠（结构化数据）
-- ✅ 更标准（学术库标准格式）
-- ✅ 防变化（不依赖网页结构）
-
-**集成到工作流**：在 playwright-cli 之前先调用 API 获取信息，然后打开浏览器下载 PDF。
-
----
-
-**最后更新**：2026-04-24（添加 Semantic Scholar API 优化）
-
----
-
-## 🔐 Chrome持久化配置（关键配置 - 2026-05-10）
-
-**问题**：每次AI会话重新开始时，Playwright会打开新的、没有登录态的Chrome，导致遇到Cloudflare验证等需要手动操作的页面。
-
-**解决方案**：在 `config.py` 中配置Chrome用户数据目录
-
-```python
-# config.py 中的关键配置
-CHROME_USER_DATA_DIR = "/home/zhiping/.config/google-chrome"  # 自动加载登录状态
-CHROME_PROFILE = "Default"
-USE_CHROME_MODE = "persistent"  # 使用持久化模式
-```
-
-**效果**：
-- ✅ 所有Playwright脚本（network_listener.py 等）默认使用已登录的Chrome
-- ✅ 即使AI会话压缩或重新开始，仍然保持登录态和cookies
-- ✅ 无需手动验证Cloudflare等挑战页面
-- ✅ 无需每次都提醒配置Chrome路径
-
-**使用方式**：
-
-```bash
-# 自动使用配置文件中的Chrome用户数据目录
-python network_listener.py "https://doi.org/10.1103/PhysRevLett.109.245005"
-
-# 或使用新脚本（支持更多选项）
-python network_listener_with_auth.py "https://..." 
-# 会自动使用 config.py 中的 CHROME_USER_DATA_DIR
-
-# 如需显式指定其他路径（覆盖配置）
-python network_listener_with_auth.py "https://..." --user-data-dir /custom/path
-```
-
-**配置文件位置**：`/home/zhiping/Projects/Download_paper/config.py`
-
-**重要提示**：这个配置是持久的，即使会话重新开始，我的脚本也会自动使用您已登录的Chrome，无需您重复配置！
-
----
-
-**最后更新**：2026-05-10（添加Chrome持久化配置）
-
----
-
-## 🎯 完整论文提取工作流 (v2.0 - 2026-05-11)
-
-### 📌 概述
-
-当前项目已升级到**完整端到端论文提取系统**，支持以下功能：
-
-```
-DOI输入 → 元数据提取 → 网络请求监听 → 内容转换 → 
-图片下载 → PDF下载 → 补充材料提取 → 元数据JSON记录
-```
-
-### 🔄 完整工作流步骤
-
-| 步骤 | 功能 | 输出 |
-|------|------|------|
-| 1 | 获取论文基本信息 | 标题、年份、DOI |
-| 2 | 启动Playwright浏览器 | Chrome连接 |
-| 3 | 提取元数据 | 作者、机构、摘要、期刊 |
-| 4 | 监听网络请求 | JSON API数据 |
-| 5 | 下载高分辨率图片 | PNG文件 |
-| 6 | HTML→Markdown转换 | 格式化文本 |
-| 7 | 下载PDF | 完整论文 |
-| 8 | 提取补充材料 | 链接+描述 |
-| 9 | 下载补充文件 | 各类附件 |
-| 10 | 保存元数据JSON | 完整记录 |
-
-### 📁 输出文件结构
-
-```
-~/Downloads/papers/
-└─ {年份}--{标题}/
-   ├─ {年份}--{标题}.md              # Markdown文档
-   ├─ {年份}--{标题}.pdf             # PDF论文
-   ├─ {年份}--{标题}.json            # 元数据
-   ├─ figure_1.png                  # 图片1
-   ├─ figure_2.png                  # 图片2
-   ├─ ...                           # 更多图片
-   └─ {年份}--{标题}--Supplemental--{文件}  # 补充材料
-```
-
-### 🔑 核心改进 (v2.0)
-
-#### 1. 引用编号保留 ✅
-**修复**: 引用编号 `[1–8]` 在转换中丢失
-**方案**: 修改HTML清理函数，保留span内容
-```python
-# 保留内容，只移除标签
-html = re.sub(r'<span[^>]*(?:ref-target|multi-ref-content)[^>]*>(.*?)</span>', r'\1', html)
-```
-
-#### 2. 智能换行处理 ✅
-**修复**: 过度删除换行导致段落合并
-**方案**: 识别句子边界（句号+大写字母）
-```python
-para = re.sub(r'([\.!?])\s*\n+(?=[A-Z])', r'\1:::PARA_BREAK:::', para)
-```
-
-#### 3. 补充材料完整提取 ✅
-**功能**: 
-- JavaScript提取链接和描述
-- 浏览器内下载保持登录态
-- 单一补充材料部分（无重复）
-
-#### 4. 完整元数据JSON ✅
-**记录**:
-```json
-{
-  "pdf": "2025--Title.pdf",
-  "supplemental": [
-    "2025--Title--Supplemental--Movie.gif",
-    "2025--Title--Supplemental--Data.pdf"
-  ]
-}
-```
-
-### 🚀 快速使用
-
-#### 基本命令
 ```bash
 source /home/zhiping/research-env/bin/activate
-python complete_paper_extraction.py "10.1103/PhysRevLett.110.175001"
+cd /home/zhiping/Projects/Download_paper
+python complete_paper_extraction.py "10.1103/PhysRevLett.109.245005"
 ```
 
-#### 支持的期刊
-- Physical Review Letters (prl)
-- Physical Review Research (prresearch)
-- 其他APS期刊（自动检测）
+需要强制有头浏览器（某些 publisher 需要登录态才能获取补充材料）：
+```bash
+python complete_paper_extraction.py "10.1088/1361-6463/ae36b8" --force-headed
+```
 
-### 📊 性能指标
+### 批量处理
 
-| 操作 | 时间 |
-|------|------|
-| 单篇论文完整提取 | 1-3分钟 |
-| 图片下载 | 10-20秒 |
-| PDF下载 | 5-15秒 |
-| 补充材料处理 | 10-60秒 |
+```bash
+python batch_process.py --file dois.txt
+python batch_process.py --dois "10.1103/..." "10.1063/..."
+```
 
-### 💡 使用建议
+### 作为 Python API 调用
 
-1. **确保Chrome已登录**: `~/.config/google-chrome` 配置
-2. **激活研究环境**: `source /home/zhiping/research-env/bin/activate`
-3. **检查网络连接**: 确保能访问论文网站
-4. **查看输出**: `~/Downloads/papers/` 目录
-
-### 📚 关键文件
-
-| 文件 | 说明 |
-|------|------|
-| `complete_paper_extraction.py` | 主程序 |
-| `WORKFLOW_SUMMARY.md` | 详细工作流文档 |
-| `config.py` | Chrome配置 |
-| `chrome_launcher.py` | Chrome启动脚本 |
-
-### 🔧 故障排查
-
-**问题**: 引用编号丢失
-- ✅ 已在v2.0版本修复（2026-05-11）
-
-**问题**: 补充材料未下载
-- 检查Chrome登录状态
-- 验证补充材料页面存在
-
-**问题**: 公式格式错误
-- 检查pypandoc配置
-- 查看转换后的markdown
-
-### 📖 相关文档
-
-- `WORKFLOW_SUMMARY.md` - 完整工作流总结
-- `README.md` - 项目说明
-- `.claude/Download_paper/CLAUDE.md` - 本文件
+```python
+from download_paper import download_paper
+md_path = download_paper("10.1103/PhysRevLett.125.015001")
+```
 
 ---
 
-**最后更新**: 2026-05-11 21:40 UTC  
-**版本**: v2.0 (完整功能版)  
-**状态**: 生产就绪 ✅  
+## 项目结构
+
+### 入口文件
+
+| 文件 | 用途 |
+|---|---|
+| `complete_paper_extraction.py` | 主入口，编排完整提取流程（浏览器→提取→下载→保存） |
+| `download_paper.py` | 同步 API，可被其他 Python 程序 import |
+| `batch_process.py` | 批量 DOI 处理器 |
+
+### 配置与基础设施
+
+| 文件 | 用途 |
+|---|---|
+| `config.py` | Chrome 路径、输出目录、批处理延迟、`SAVE_WITHOUT_REFERENCES` 等全局配置 |
+| `chrome_launcher.py` | 跨平台 Chrome 启动/关闭，从 `config.py` 读取路径 |
+| `json_to_md_converter.py` | APS JSON 结构 → 层级化 Markdown 转换器，其中的关键函数可以被其他模块独立调用 |
+
+### `json_to_md_converter.py` 可复用的关键函数
+
+这些函数不依赖 APS 上下文，可以被任何 publisher handler 或脚本独立调用：
+
+| 函数 | 用途 | 调用方式示例 |
+|---|---|---|
+| `convert_html_to_markdown(html_content)` | HTML → Markdown（通过 pandoc），自动处理 MathJax 公式和引用编号 | 被所有 publisher handler 间接使用 |
+| `cleanup_markdown(md_content)` | 清理 Markdown 中的不兼容 LaTeX 命令（`\mspace`、`\ensuremath`、`\slash`）、HTML 实体、转义括号 | `from json_to_md_converter import cleanup_markdown` |
+| `remove_newlines_in_paragraph(text)` | 清除段落内换行但保留数学环境（`$$...$$`）结构 | 用于段落合并 |
+| `mathml_to_latex_pandoc(mathml_html)` | MathML → LaTeX 转换（通过 pandoc），返回 LaTeX 字符串 | `from json_to_md_converter import mathml_to_latex_pandoc` |
+
+### Publisher 处理器
+
+| 文件 | 处理范围 | 浏览器模式 |
+|---|---|---|
+| `publisher/nature.py` | Nature / Springer / Elsevier / EDP Sciences | 无头 |
+| `publisher/aps.py` | APS (PRL/PRA/PRX 等) | 有头 |
+| `publisher/aip.py` | AIP Publishing | 无头 |
+| `publisher/iop.py` | IOP Science | 有头 |
+| `publisher/cambridge.py` | Cambridge University Press | 无头 |
+
+各 handler 继承 `publisher/base.py` 中的 `PublisherHandler` 抽象基类，实现统一的 `extract_all()` 和 `convert_to_markdown()` 接口。
+
+### 共享工具
+
+| 文件 | 用途 |
+|---|---|
+| `publisher/orchestrator.py` | DOI/URL → publisher 类型 → handler 工厂 |
+| `publisher/wildcard.py` | 跨 publisher 共享函数：正文查找、摘要提取、公式转换、BibTeX 格式化 |
+| `publisher/__init__.py` | 模块导出 |
+| `core/utilities.py` | Semantic Scholar 查询、BibTeX 格式化 |
+
+---
+
+## 工作流（complete_paper_extraction.py）
+
+1. **准备输出目录** — `captured_data/{doi_safe}/`
+2. **启动浏览器** — 根据 publisher 选择无头或有头 Chrome，使用 `config.py` 中配置的持久化用户数据目录（复用已登录态）
+3. **访问 DOI** — `https://doi.org/{doi}`
+4. **识别 publisher** — 根据最终 URL / DOI 前缀确定 handler 类型
+5. **提取元数据** — 从 `<meta>` 标签和 DOM 中提取标题、作者、期刊、摘要等
+6. **提取正文** — 遍历文章 HTML，通过公式转换管道保留 LaTeX 数学公式
+7. **提取参考文献** — 格式化为 BibTeX 代码块
+8. **提取脚注** — 在参考文献前展示（IOP 支持）
+9. **提取图片链接** — 优先高分辨率版本，传给主流程下载
+10. **提取补充材料** — 从文章页面或专用 `/data` 端点发现下载链接
+11. **下载 PDF** — 从 `citation_pdf_url` 或 handler 提供的链接下载
+12. **生成 Markdown** — 调用 handler 的 `convert_to_markdown()`
+13. **保存** — Markdown、PDF、图片、补充材料、元数据 JSON
+
+---
+
+## 输出目录结构
+
+```
+captured_data/
+└─ {YYYY}--{Title}/
+   ├─ paper.md                    # AI 友好的 Markdown 全文
+   ├─ paper.pdf                   # 原始 PDF
+   ├─ metadata.json               # 完整元数据记录
+   ├─ figure_1.jpg                # 高清图片（可有多张）
+   ├─ figure_2.jpg
+   ├─ supplemental--Data.zip      # 补充材料（可选）
+   └─ page.html                   # 原始页面 HTML（调试用）
+```
+
+---
+
+## 输出文件内容
+
+`paper.md` 包含以下部分：
+
+1. **标题** — `# Title`
+2. **作者** — 含机构信息
+3. **DOI**
+4. **Publication** — 期刊、卷期、页码、出版日期
+5. **Abstract** — 摘要（含公式）
+6. **Article Text** — 正文（含公式、图表引用、表格）
+7. **Supplemental Material** — 补充材料链接
+8. **Footnotes** — 脚注（IOP 支持）
+9. **References** — 编号引用 + BibTeX 代码块
+
+---
+
+## 关键设计原则
+
+### 浏览器优先，避免直接 HTTP 请求
+
+所有期刊页面都通过 Playwright（有头或无头 Chromium）访问。这确保了：
+- ✅ Cloudflare 等反爬验证可以正常通过（利用持久化登录态）
+- ✅ JavaScript 动态加载的内容可以完整获取
+- ✅ 需要登录/订阅的页面可以正常访问（复用 Chrome 用户数据目录）
+- ❌ 不使用 `curl`、`requests`、`wget` 等直接 HTTP 工具访问期刊页面
+
+### 公式完整保留
+
+不同 publisher 使用不同的公式格式，各 handler 针对处理：
+- **IOP**: `<script type="math/tex">` — 正则提取，预处理后走 pandoc 转换
+- **APS**: MathML — 通过 pandoc `--mathjax` 转 LaTeX
+- **AIP/Cambridge/Nature**: MathJax CHTML — `wildcard.py` 中的 `prepare_mathjax_html_fragment()` 折叠为占位符后转换
+
+### publisher 无关的主流程
+
+`complete_paper_extraction.py` 不直接处理任何 publisher 的网页结构。所有 publisher 特定的逻辑封装在各 `PublisherHandler` 中，通过统一的 `extract_all()` / `convert_to_markdown()` 接口调用。
+
+---
+
+## 配置说明 (`config.py`)
+
+```python
+OUTPUT_DIR_DEFAULT = "captured_data"        # 输出目录
+BATCH_SLEEP_ENABLED = True                  # 批量处理时随机睡眠
+BATCH_SLEEP_MIN = 60                        # 最小睡眠秒数
+BATCH_SLEEP_MAX = 300                       # 最大睡眠秒数
+SAVE_WITHOUT_REFERENCES = False             # 参考文献为空时仍保存
+CHROME_PATH = "/usr/bin/google-chrome"       # Chrome 可执行文件路径
+CHROME_USER_DATA_DIR = "~/.config/google-chrome"  # 用户数据目录
+```
+
+---
+
+## 支持的 publisher
+
+| DOI / URL 模式 | Handler | 浏览器 | 公式格式 |
+|---|---|---|---|
+| `10.1038` / `nature.com` | NatureHandler | 无头 | MathJax |
+| `10.1103` / `journals.aps.org` | APSHandler | 有头 | MathML |
+| `10.1063` / `pubs.aip.org` | AIPHandler | 无头 | MathJax |
+| `10.1088` / `iopscience.iop.org` | IOPHandler | 有头 | `<script type="math/tex">` |
+| `10.1017` / `cambridge.org` | CambridgeHandler | 无头 | MathJax |
+| `10.1016` / `sciencedirect.com` | NatureHandler (回退) | 无头 | MathJax |
+| `10.1051` / `epj-conferences.org` | NatureHandler (回退) | 无头 | MathJax |
+| `arxiv.org` | APSHandler (回退) | 有头 | 取决于源格式 |
+
+---
+
+## 故障排查
+
+| 问题 | 可能原因 | 解决 |
+|---|---|---|
+| 图片未在 Markdown 中显示 | 正则未匹配到 `**Fig. N:**` 格式 | 检查 `convert_to_markdown()` 中的正则 |
+| 公式缺失或格式错误 | pandoc 或 MathML 转换失败 | 检查 `_preprocess_iop_html()` 或 `convert_mathml()` |
+| 补充材料未下载 | 需要登录态 | 使用 `--force-headed` 复用已登录 Chrome |
+| 反爬检测 | 无头浏览器被识别 | 回退到有头模式 |
+| "database is locked" | SQLite 多进程写入 | 已启用 WAL 模式，重试即可 |
+
+---
+
+**最后更新**: 2026-05-18  
+**版本**: v3.0 (publisher 多处理器架构)  
 **维护者**: Claude AI Assistant
