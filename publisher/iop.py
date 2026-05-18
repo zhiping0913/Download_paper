@@ -898,7 +898,7 @@ class IOPHandler(PublisherHandler):
             figure_filenames = kwargs['figure_filenames']
             for fig_num, filename in sorted(figure_filenames.items(), key=lambda x: int(x[0])):
                 body_md = re.sub(
-                    rf'(\*\*Figure\s*{re.escape(fig_num)}\.\*\*[^\n]*)',
+                    rf'(\*\*(?:Fig\.?|Figure)\s*{re.escape(fig_num)}[.:]\*\*[^\n]*)',
                     rf'\1\n\n![Figure {fig_num}.]({filename})',
                     body_md,
                 )
