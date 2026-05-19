@@ -36,13 +36,6 @@ python batch_process.py --file dois.txt
 python batch_process.py --dois "10.1103/..." "10.1063/..."
 ```
 
-### 作为 Python API 调用
-
-```python
-from download_paper import download_paper
-md_path = download_paper("10.1103/PhysRevLett.125.015001")
-```
-
 ---
 
 ## 项目结构
@@ -52,7 +45,6 @@ md_path = download_paper("10.1103/PhysRevLett.125.015001")
 | 文件 | 用途 |
 |---|---|
 | `complete_paper_extraction.py` | 主入口，编排完整提取流程（浏览器→提取→下载→保存） |
-| `download_paper.py` | 同步 API，可被其他 Python 程序 import |
 | `batch_process.py` | 批量 DOI 处理器 |
 
 ### 配置与基础设施
@@ -61,18 +53,18 @@ md_path = download_paper("10.1103/PhysRevLett.125.015001")
 |---|---|
 | `config.py` | Chrome 路径、输出目录、批处理延迟、`SAVE_WITHOUT_REFERENCES` 等全局配置 |
 | `chrome_launcher.py` | 跨平台 Chrome 启动/关闭，从 `config.py` 读取路径 |
-| `json_to_md_converter.py` | APS JSON 结构 → 层级化 Markdown 转换器，其中的关键函数可以被其他模块独立调用 |
+| `html_to_md_converter.py` | HTML → Markdown 转换工具函数（pandoc、LaTeX清理、MathML→LaTeX），可被任意 publisher handler 独立调用 |
 
-### `json_to_md_converter.py` 可复用的关键函数
+### `html_to_md_converter.py` 可复用的关键函数
 
-这些函数不依赖 APS 上下文，可以被任何 publisher handler 或脚本独立调用：
+这些函数不依赖任何 publisher 上下文，可独立调用：
 
 | 函数 | 用途 | 调用方式示例 |
 |---|---|---|
 | `convert_html_to_markdown(html_content)` | HTML → Markdown（通过 pandoc），自动处理 MathJax 公式和引用编号 | 被所有 publisher handler 间接使用 |
-| `cleanup_markdown(md_content)` | 清理 Markdown 中的不兼容 LaTeX 命令（`\mspace`、`\ensuremath`、`\slash`）、HTML 实体、转义括号 | `from json_to_md_converter import cleanup_markdown` |
+| `cleanup_markdown(md_content)` | 清理 Markdown 中的不兼容 LaTeX 命令（`\mspace`、`\ensuremath`、`\slash`）、HTML 实体、转义括号 | `from html_to_md_converter import cleanup_markdown` |
 | `remove_newlines_in_paragraph(text)` | 清除段落内换行但保留数学环境（`$$...$$`）结构 | 用于段落合并 |
-| `mathml_to_latex_pandoc(mathml_html)` | MathML → LaTeX 转换（通过 pandoc），返回 LaTeX 字符串 | `from json_to_md_converter import mathml_to_latex_pandoc` |
+| `mathml_to_latex_pandoc(mathml_html)` | MathML → LaTeX 转换（通过 pandoc），返回 LaTeX 字符串 | `from html_to_md_converter import mathml_to_latex_pandoc` |
 
 ### Publisher 处理器
 

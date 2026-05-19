@@ -14,7 +14,7 @@ from html import unescape
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
-from json_to_md_converter import cleanup_markdown, convert_html_to_markdown, mathml_to_latex_pandoc
+from html_to_md_converter import cleanup_markdown, convert_html_to_markdown, mathml_to_latex_pandoc
 from playwright.async_api import async_playwright
 
 from publisher.wildcard import (

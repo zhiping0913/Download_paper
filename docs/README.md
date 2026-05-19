@@ -309,7 +309,7 @@ APS 由 `publisher/aps.py` 的 `APSHandler` 处理。
 - `extract_all()` 依赖有头页面和捕获到的 JSON/HTML。
 - 正文来自 APS fulltext JSON。
 - references 从 abstract HTML 的 `ol.references` 提取。
-- Markdown 正文转换由 `json_to_md_converter.convert_json_data_to_markdown()` 完成。
+- APS JSON → Markdown 正文转换由 `publisher/aps.py` 中的 `convert_json_data_to_markdown()` 完成。
 
 ## Nature 当前实现
 
@@ -502,16 +502,17 @@ Cambridge 由 `publisher/cambridge.py` 的 `CambridgeHandler` 处理。
 
 ## 顶层 API 文件
 
-### download_paper.py
+### complete_paper_extraction.py
 
-同步接口，可被其他 Python 程序 import 调用：
+主入口，可通过 `asyncio.run()` 作为 Python API 调用：
 
 ```python
-from download_paper import download_paper
-md_path = download_paper("10.1103/PhysRevLett.125.015001")
+import asyncio
+from complete_paper_extraction import complete_extraction_workflow
+md_path = asyncio.run(complete_extraction_workflow("10.1103/PhysRevLett.125.015001"))
 ```
 
-也支持 CLI：`python download_paper.py "10.1103/PhysRevLett.125.015001" --output ~/papers`
+也支持 CLI：`python complete_paper_extraction.py "10.1103/PhysRevLett.125.015001"`
 
 ### batch_process.py
 

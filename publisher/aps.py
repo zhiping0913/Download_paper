@@ -13,7 +13,7 @@ from html import unescape
 from publisher.base import PublisherHandler
 from core.network_capture import setup_response_capture
 from core.utilities import fetch_semanticscholar, _build_bibtex_from_s2
-from json_to_md_converter import mathml_to_latex_pandoc, extract_text_without_math
+from html_to_md_converter import cleanup_markdown, convert_html_to_markdown, mathml_to_latex_pandoc, remove_newlines_in_paragraph
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 
@@ -768,7 +768,7 @@ class APSHandler(PublisherHandler):
                             Use False when figures haven't been downloaded yet.
             figure_filenames: Mapping of figure number to downloaded local filename.
         """
-        from json_to_md_converter import convert_json_data_to_markdown, cleanup_markdown
+        from html_to_md_converter import cleanup_markdown
 
         figure_filenames = figure_filenames or {}
         md_content = ""
@@ -868,7 +868,7 @@ class APSHandler(PublisherHandler):
                 if i < len(bibtex_refs) and bibtex_refs[i]:
                     md_content += f"```bibtex\n{bibtex_refs[i]}\n```\n\n"
 
-        # 跨发布商通用的清理 (移到 json_to_md_converter.cleanup_markdown)
+        # 跨发布商通用的清理 (移到 html_to_md_converter.cleanup_markdown)
         md_content = cleanup_markdown(md_content)
 
         # ===== 后处理：在独立的 FIG./Fig. X 行后添加图片引用 =====
@@ -902,24 +902,6 @@ class APSHandler(PublisherHandler):
 # APS-Specific Extraction Functions
 # (These will be gradually moved from complete_paper_extraction.py)
 # ============================================================================
-
-def extract_supplemental_info(html: str) -> str:
-    """Extract Supplemental Material information from abstract page HTML"""
-    try:
-        # Look for supplemental link
-        supp_match = re.search(
-            r'<a[^>]*href=["\']([^"\']*supplemental[^"\']*)["\'][^>]*>([^<]+)</a>',
-            html,
-            re.IGNORECASE
-        )
-        if supp_match:
-            supp_url = supp_match.group(1)
-            supp_text = supp_match.group(2).strip()
-            return f"[{supp_text}]({supp_url})"
-        return None
-    except:
-        return None
-
 
 def extract_figure_assets_from_fulltext(fulltext_data: dict) -> dict:
     """
@@ -966,87 +948,157 @@ def extract_figure_assets_from_fulltext(fulltext_data: dict) -> dict:
     return figure_assets
 
 
-def extract_supplemental_descriptions(supplemental_data: dict) -> dict:
-    """从supplemental API响应中提取每个文件的描述
+# ============================================================================
+# APS Paper Conversion Functions
+# ============================================================================
+# These functions traverse the APS fulltext JSON structure and convert it
+# to Markdown. They were moved from html_to_md_converter.py.
 
-    Returns: {filename: description, ...}
+
+def traverse_json_recursive(data, depth=0, parent_type=None, skip_section_header=False):
     """
-    descriptions = {}
+    递归遍历JSON结构，生成Markdown
+    skip_section_header: 是否跳过 front/back 等section标题
+    """
+    md_output = []
 
-    if not supplemental_data:
-        return descriptions
+    if isinstance(data, dict):
+        # 处理单个对象
 
-    try:
-        # 尝试多种可能的JSON结构
-        files = supplemental_data.get('files', [])
+        # 特殊处理图片: 在FIG标记后添加图片引用
+        if data.get("type") == "fig":
+            fig_id = data.get("id", "")
 
-        # 如果没有files字段，尝试其他结构
-        if not files:
-            if isinstance(supplemental_data, list):
-                files = supplemental_data
-            elif 'data' in supplemental_data:
-                files = supplemental_data.get('data', [])
-            elif 'supplemental' in supplemental_data:
-                files = supplemental_data.get('supplemental', [])
+            # 获取图片标题(caption)
+            caption_text = ""
+            if "components" in data and isinstance(data["components"], list):
+                for component in data["components"]:
+                    if component.get("type") == "fig-caption":
+                        caption_text = component.get("body", "")
+                        break
 
-        if not isinstance(files, list):
-            files = [files] if files else []
+            # 从caption中提取图片编号 (e.g., "FIG. 1." or "Fig. 1." -> "1")
+            fig_match = re.search(r'[Ff][Ii][Gg]\.\s*(\d+)', caption_text)
+            if fig_match:
+                fig_num = fig_match.group(1)
+                # 添加图标记和图片引用
+                md_text = convert_html_to_markdown(caption_text)
+                md_text = remove_newlines_in_paragraph(md_text, "", "fig-caption")
+                md_text = re.sub(r'\[\]\{#[^}]*\}', '', md_text).strip()
 
-        for file_item in files:
-            if isinstance(file_item, dict):
-                # 获取文件名
-                filename = file_item.get('filename', '') or file_item.get('name', '') or file_item.get('file', '')
-                url = file_item.get('url', '')
+                if md_text:
+                    # 查找图文本后的位置，插入图片引用
+                    # 在第一行(通常是"FIG. X." 或 "Fig. X.")后插入图片
+                    lines = md_text.split('\n')
+                    if lines and re.search(r'[Ff][Ii][Gg]\.\s*\d+', lines[0]):
+                        # 在FIG行后插入空行和图片引用
+                        md_output.append(f"{lines[0]}\n\n")
+                        md_output.append(f"![Figure {fig_num}](figure_{fig_num}.png)\n\n")
+                        # 添加剩余的caption文本
+                        if len(lines) > 1:
+                            remaining = '\n'.join(lines[1:]).strip()
+                            if remaining:
+                                md_output.append(f"{remaining}\n\n")
+                    else:
+                        md_output.append(f"{md_text}\n\n")
+            return "".join(md_output)
 
-                if not filename and url:
-                    filename = url.split('/')[-1]
+        # 如果有body，转换它
+        if "body" in data and data["body"]:
+            klass = data.get("klass", "")
+            body_type = data.get("type", "")
 
-                # 获取描述
-                description = (
-                    file_item.get('description', '') or
-                    file_item.get('desc', '') or
-                    file_item.get('caption', '')
+            # 转换HTML到Markdown
+            md_text = convert_html_to_markdown(data["body"])
+
+            # 移除换行
+            md_text = remove_newlines_in_paragraph(md_text, klass, body_type)
+
+            # 过滤掉空标记如 []{#acknowledgements}
+            md_text = re.sub(r'\[\]\{#[^}]*\}', '', md_text).strip()
+
+            if md_text:
+                # 根据type和klass添加适当的标记
+                if body_type == "p" and klass == "article-fulltext-paragraph":
+                    md_output.append(f"{md_text}\n\n")
+                elif body_type == "h1":
+                    md_output.append(f"# {md_text}\n\n")
+                elif body_type == "h2":
+                    md_output.append(f"## {md_text}\n\n")
+                elif body_type == "h3":
+                    md_output.append(f"### {md_text}\n\n")
+                else:
+                    md_output.append(f"{md_text}\n\n")
+
+        # 递归处理嵌套的components
+        if "components" in data and isinstance(data["components"], list):
+            for component in data["components"]:
+                nested_md = traverse_json_recursive(
+                    component,
+                    depth + 1,
+                    parent_type=data.get("type"),
+                    skip_section_header=True
                 )
+                md_output.append(nested_md)
 
-                if description:
-                    # 清理HTML标签
-                    description = re.sub(r'<br\s*/?>', ' ', description)  # <br> -> 空格
-                    description = re.sub(r'<p[^>]*>', '', description)    # 移除<p>
-                    description = re.sub(r'</p>', ' ', description)        # </p> -> 空格
-                    description = re.sub(r'<[^>]+>', '', description)      # 移除所有HTML标签
-                    description = re.sub(r'&\w+;', lambda m: {'&lt;': '<', '&gt;': '>', '&amp;': '&', '&#x2F;': '/'}.get(m.group(0), m.group(0)), description)  # 解码HTML实体
-                    description = re.sub(r'\s+', ' ', description)         # 多空格->单空格
-                    from html import unescape
-                    description = unescape(description).strip()
+        # 处理其他可能的嵌套结构
+        for key, value in data.items():
+            if key not in ["body", "components", "id", "type", "klass", "sectioned", "expandable", "media", "style"]:
+                if isinstance(value, (dict, list)):
+                    nested_md = traverse_json_recursive(value, depth, parent_type, skip_section_header=True)
+                    if nested_md.strip():
+                        # 跳过 front/back 等section header
+                        if key not in ["front", "back"] and not skip_section_header:
+                            md_output.append(f"**{key}:**\n")
+                        md_output.append(nested_md)
 
-                    if filename and description:
-                        descriptions[filename] = description
-                        print(f"  📝 找到描述: {filename[:40]} - {description[:50]}...")
+    elif isinstance(data, list):
+        # 处理数组
+        for item in data:
+            item_md = traverse_json_recursive(item, depth, parent_type)
+            md_output.append(item_md)
 
-    except Exception as e:
-        print(f"  ⚠️  解析supplemental描述失败: {e}")
-
-    return descriptions
-
-
-def extract_pdf_link_from_html(html_content: str) -> str:
-    """Extract PDF download link from abstract page HTML"""
-    try:
-        pdf_match = re.search(r'href=["\']([^"\']*\.pdf)["\']', html_content)
-        if pdf_match:
-            pdf_url = pdf_match.group(1)
-            if not pdf_url.startswith('http'):
-                pdf_url = f"https://journals.aps.org{pdf_url}"
-            return pdf_url
-    except:
-        pass
-    return None
+    return "".join(md_output)
 
 
-# ============================================================================
-# APS Paper Conversion Functions - From convert_complete_paper.py
-# ============================================================================
+def convert_json_data_to_markdown(data: dict) -> str:
+    """
+    将JSON数据转换为Markdown文本
 
+    Args:
+        data: 从APS API返回的JSON数据对象
+
+    Returns:
+        转换后的Markdown文本
+    """
+    return traverse_json_recursive(data, skip_section_header=False)
+
+
+def extract_text_without_math(html_str: str) -> str:
+    """Extract text and convert inline formulas"""
+    def replace_inline_formula(match):
+        math_section = match.group(0)
+        math_match = re.search(r'<math[^>]*>.*?</math>', math_section, re.DOTALL)
+        if math_match:
+            math_html = math_match.group(0)
+            latex = mathml_to_latex_pandoc(math_html)
+            if latex:
+                return latex
+        return match.group(0)
+
+    result = re.sub(
+        r'<span class="inline-formula">[^<]*<math[^>]*>.*?</math>[^<]*</span>',
+        replace_inline_formula,
+        html_str,
+        flags=re.DOTALL
+    )
+
+    result = re.sub(r'<button[^>]*>.*?</button>', '', result, flags=re.DOTALL)
+    result = re.sub(r'<span[^>]*>', '', result)
+    result = re.sub(r'</span>', '', result)
+    result = unescape(result)
+    result = re.sub(r'\s+', ' ', result).strip()
+    return result
 
 
 def extract_figure_caption(comp: dict) -> tuple:

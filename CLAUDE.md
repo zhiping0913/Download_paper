@@ -29,7 +29,7 @@ python batch_process.py --file dois.txt                     # 批量
 
 ## 可复用函数
 
-`json_to_md_converter.py` 中的函数可独立调用：
+`html_to_md_converter.py` 中的函数可独立调用：
 - `convert_html_to_markdown(html)` — HTML→MD（pandoc，含 MathJax 公式）
 - `cleanup_markdown(md)` — 清理 LaTeX 不兼容命令、HTML 实体
 - `mathml_to_latex_pandoc(mathml)` — MathML→LaTeX
