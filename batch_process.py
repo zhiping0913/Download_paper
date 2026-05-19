@@ -40,7 +40,8 @@ def batch_process(
     Returns:
         tuple: (成功数, 失败数, 成功的 md 路径列表, 失败的 DOI 列表)
     """
-    from download_paper import download_paper
+    import asyncio
+    from complete_paper_extraction import complete_extraction_workflow
 
     success_count = 0
     fail_count = 0
@@ -69,10 +70,12 @@ def batch_process(
         print(f"{'='*80}")
 
         try:
-            md_path = download_paper(
-                doi,
-                output_dir=output_dir,
-                force_headed=force_headed,
+            md_path = asyncio.run(
+                complete_extraction_workflow(
+                    doi,
+                    output_file=output_dir,
+                    force_headed=force_headed,
+                )
             )
             success_count += 1
             success_paths.append(md_path)

@@ -10,7 +10,7 @@ import re
 from bs4 import BeautifulSoup, NavigableString
 from playwright.async_api import async_playwright
 
-from json_to_md_converter import (
+from html_to_md_converter import (
     cleanup_markdown,
     convert_html_to_markdown,
     mathml_to_latex_pandoc,

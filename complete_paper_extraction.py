@@ -616,42 +616,7 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
 
 
 # ============================================================================
-# 第5部分：内容处理和Markdown生成
-# ============================================================================
-
-def extract_pdf_link_from_html(html_content: str) -> str:
-    """
-    从abstract页面HTML中提取PDF下载链接
-    查找: <a href="/pre/pdf/10.1103/PhysRevE.101.033202" class="sm-primary-button">PDF</a>
-    """
-    if not html_content:
-        return None
-
-    try:
-        # 查找PDF链接的href属性
-        # 格式: href="/{journal}/pdf/{doi}"
-        match = re.search(r'href="(/[a-z]+/pdf/[^"]+)"[^>]*class="[^"]*primary-button', html_content)
-        if match:
-            pdf_path = match.group(1)
-            # 构建完整URL
-            pdf_url = f"https://journals.aps.org{pdf_path}"
-            return pdf_url
-
-        # 备选方案：尝试查找任何PDF链接
-        match = re.search(r'href="(/[a-z]+/pdf/10\.[^"]+)"', html_content)
-        if match:
-            pdf_path = match.group(1)
-            pdf_url = f"https://journals.aps.org{pdf_path}"
-            return pdf_url
-
-    except Exception as e:
-        print(f"  ⚠️  从HTML提取PDF链接失败: {e}")
-
-    return None
-
-
-# ============================================================================
-# 第6部分：主工作流
+# 第5部分：主工作流
 # ============================================================================
 
 async def complete_extraction_workflow(

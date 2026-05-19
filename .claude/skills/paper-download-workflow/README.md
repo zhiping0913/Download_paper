@@ -63,7 +63,7 @@ captured_data/
 | 文件 | 用途 |
 |---|---|
 | `complete_paper_extraction.py` | 主入口，编排完整提取流程 |
-| `download_paper.py` | 同步 API，可被其他 Python 程序 import |
+| `complete_paper_extraction.py` | 主入口，异步工作流编排 |
 | `batch_process.py` | 批量 DOI 处理器（支持文件/命令行输入） |
 | `config.py` | Chrome 路径、输出目录、批处理延迟等全局配置 |
 | `chrome_launcher.py` | 跨平台 Chrome 启动/关闭 |
@@ -76,7 +76,7 @@ captured_data/
 | `publisher/cambridge.py` | Cambridge University Press 处理器 |
 | `publisher/wildcard.py` | 共享工具：正文查找、公式转换、BibTeX 格式化 |
 | `core/utilities.py` | Semantic Scholar 查询、BibTeX 格式化 |
-| `json_to_md_converter.py` | APS JSON → Markdown 转换器 |
+| `html_to_md_converter.py` | HTML → Markdown 转换工具函数 |
 
 ## 配置
 

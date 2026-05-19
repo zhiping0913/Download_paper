@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-递归分析APS API JSON结构，转换为层级化Markdown
+HTML/Markdown 转换工具函数
+
+通用函数：HTML→Markdown转换、LaTeX清理、MathML→LaTeX等。
+APS JSON 递归转换已移至 publisher/aps.py。
 """
 
-import json
 import re
-import os
-from pathlib import Path
 import pypandoc
-from html import unescape
 
 def clean_html_body(html, klass=None):
     """
@@ -140,112 +139,6 @@ def merge_superscript_citations(text):
 
     return result
 
-def traverse_json_recursive(data, depth=0, parent_type=None, skip_section_header=False):
-    """
-    递归遍历JSON结构，生成Markdown
-    skip_section_header: 是否跳过 front/back 等section标题
-    """
-    md_output = []
-
-    if isinstance(data, dict):
-        # 处理单个对象
-
-        # 特殊处理图片: 在FIG标记后添加图片引用
-        if data.get("type") == "fig":
-            fig_id = data.get("id", "")
-
-            # 获取图片标题(caption)
-            caption_text = ""
-            if "components" in data and isinstance(data["components"], list):
-                for component in data["components"]:
-                    if component.get("type") == "fig-caption":
-                        caption_text = component.get("body", "")
-                        break
-
-            # 从caption中提取图片编号 (e.g., "FIG. 1." or "Fig. 1." -> "1")
-            fig_match = re.search(r'[Ff][Ii][Gg]\.\s*(\d+)', caption_text)
-            if fig_match:
-                fig_num = fig_match.group(1)
-                # 添加图标记和图片引用
-                md_text = convert_html_to_markdown(caption_text)
-                md_text = remove_newlines_in_paragraph(md_text, "", "fig-caption")
-                md_text = re.sub(r'\[\]\{#[^}]*\}', '', md_text).strip()
-
-                if md_text:
-                    # 查找图文本后的位置，插入图片引用
-                    # 在第一行(通常是"FIG. X." 或 "Fig. X.")后插入图片
-                    lines = md_text.split('\n')
-                    if lines and re.search(r'[Ff][Ii][Gg]\.\s*\d+', lines[0]):
-                        # 在FIG行后插入空行和图片引用
-                        md_output.append(f"{lines[0]}\n\n")
-                        md_output.append(f"![Figure {fig_num}](figure_{fig_num}.png)\n\n")
-                        # 添加剩余的caption文本
-                        if len(lines) > 1:
-                            remaining = '\n'.join(lines[1:]).strip()
-                            if remaining:
-                                md_output.append(f"{remaining}\n\n")
-                    else:
-                        md_output.append(f"{md_text}\n\n")
-            return "".join(md_output)
-
-        # 如果有body，转换它
-        if "body" in data and data["body"]:
-            klass = data.get("klass", "")
-            body_type = data.get("type", "")
-
-            # 转换HTML到Markdown
-            md_text = convert_html_to_markdown(data["body"])
-
-            # 移除换行
-            md_text = remove_newlines_in_paragraph(md_text, klass, body_type)
-
-            # 过滤掉空标记如 []{#acknowledgements}
-            md_text = re.sub(r'\[\]\{#[^}]*\}', '', md_text).strip()
-
-            if md_text:
-                # 根据type和klass添加适当的标记
-                if body_type == "p" and klass == "article-fulltext-paragraph":
-                    md_output.append(f"{md_text}\n\n")
-                elif body_type == "h1":
-                    md_output.append(f"# {md_text}\n\n")
-                elif body_type == "h2":
-                    md_output.append(f"## {md_text}\n\n")
-                elif body_type == "h3":
-                    md_output.append(f"### {md_text}\n\n")
-                else:
-                    md_output.append(f"{md_text}\n\n")
-
-        # 递归处理嵌套的components
-        if "components" in data and isinstance(data["components"], list):
-            for component in data["components"]:
-                nested_md = traverse_json_recursive(
-                    component,
-                    depth + 1,
-                    parent_type=data.get("type"),
-                    skip_section_header=True
-                )
-                md_output.append(nested_md)
-
-        # 处理其他可能的嵌套结构
-        for key, value in data.items():
-            if key not in ["body", "components", "id", "type", "klass", "sectioned", "expandable", "media", "style"]:
-                if isinstance(value, (dict, list)):
-                    nested_md = traverse_json_recursive(value, depth, parent_type, skip_section_header=True)
-                    if nested_md.strip():
-                        # 跳过 front/back 等section header
-                        if key not in ["front", "back"] and not skip_section_header:
-                            md_output.append(f"**{key}:**\n")
-                        md_output.append(nested_md)
-
-    elif isinstance(data, list):
-        # 处理数组
-        for item in data:
-            item_md = traverse_json_recursive(item, depth, parent_type)
-            md_output.append(item_md)
-
-    return "".join(md_output)
-
-
 def cleanup_markdown(md_content: str) -> str:
     """
     清理Markdown中的不兼容命令和HTML实体 - 跨发布商通用
@@ -314,19 +207,6 @@ def cleanup_markdown(md_content: str) -> str:
     return md_content
 
 
-def convert_json_data_to_markdown(data: dict) -> str:
-    """
-    将JSON数据转换为Markdown文本
-
-    Args:
-        data: 从APS API返回的JSON数据对象
-
-    Returns:
-        转换后的Markdown文本
-    """
-    return traverse_json_recursive(data, skip_section_header=False)
-
-
 def mathml_to_latex_pandoc(mathml_html: str) -> str:
     """Convert MathML to LaTeX using pandoc"""
     try:
@@ -344,71 +224,3 @@ def mathml_to_latex_pandoc(mathml_html: str) -> str:
         return None
 
 
-def extract_text_without_math(html_str: str) -> str:
-    """Extract text and convert inline formulas"""
-    def replace_inline_formula(match):
-        math_section = match.group(0)
-        math_match = re.search(r'<math[^>]*>.*?</math>', math_section, re.DOTALL)
-        if math_match:
-            math_html = math_match.group(0)
-            latex = mathml_to_latex_pandoc(math_html)
-            if latex:
-                return latex
-        return match.group(0)
-
-    result = re.sub(
-        r'<span class="inline-formula">[^<]*<math[^>]*>.*?</math>[^<]*</span>',
-        replace_inline_formula,
-        html_str,
-        flags=re.DOTALL
-    )
-
-    result = re.sub(r'<button[^>]*>.*?</button>', '', result, flags=re.DOTALL)
-    result = re.sub(r'<span[^>]*>', '', result)
-    result = re.sub(r'</span>', '', result)
-    result = unescape(result)
-    result = re.sub(r'\s+', ' ', result).strip()
-    return result
-
-
-def main():
-    import sys
-    # 文件路径 - 支持命令行参数
-    if len(sys.argv) > 1:
-        json_file = sys.argv[1]
-    else:
-        json_file = "1.json"
-
-    json_path = Path("/home/zhiping/Projects/Download_paper/captured_data/test") / json_file
-    output_dir = Path("/home/zhiping/Projects/Download_paper/captured_data/test")
-
-    # 生成输出文件名
-    output_name = json_file.replace(".json", ".md")
-    output_path = output_dir / output_name
-
-    # 创建输出目录
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    print("📖 读取JSON文件...")
-    with open(json_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-
-    print("🔄 递归转换JSON结构...")
-    md_content = convert_json_data_to_markdown(data)
-
-    # 添加header
-    header = ""
-
-    final_content = header + md_content
-
-    print("💾 保存Markdown文件...")
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(final_content)
-
-    print(f"✅ 转换完成！")
-    print(f"📁 输出文件: {output_path}")
-    print(f"📊 文件大小: {len(final_content)} 字符")
-    print(f"📝 行数: {len(final_content.splitlines())} 行")
-
-if __name__ == "__main__":
-    main()
