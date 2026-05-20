@@ -296,8 +296,15 @@ async def extract_metadata_from_page(page) -> dict:
     return metadata
 
 
-async def get_supplemental_links(page, doi: str, journal_prefix: str = None) -> tuple:
+async def get_supplemental_links(page, doi: str, journal_prefix: str = None,
+                                 captured_data_dir: Path = None) -> tuple:
     """获取补充材料的所有下载链接和描述信息
+
+    Args:
+        page: Playwright page object
+        doi: Paper DOI
+        journal_prefix: APS journal prefix (e.g., 'prl', 'pre')
+        captured_data_dir: If set, save supplemental page HTML to this directory
 
     Returns: (supplemental_links, descriptions_dict)
     """
@@ -323,98 +330,57 @@ async def get_supplemental_links(page, doi: str, journal_prefix: str = None) -> 
 
         await page.goto(supplemental_url, wait_until='networkidle', timeout=60000)
 
-        # 提取所有链接
+        # 保存补充材料页面HTML
+        if captured_data_dir:
+            try:
+                supp_html = await page.content()
+                supp_file = Path(captured_data_dir) / "supplemental.html"
+                with open(supp_file, 'w', encoding='utf-8') as f:
+                    f.write(supp_html)
+                print(f"  ✓ 补充材料页面已保存: {supp_file}")
+            except Exception as e:
+                print(f"  ⚠️  保存补充材料页面失败: {e}")
+
+        # 提取所有链接 — APS 补充材料页面上每个文件对应一个 <a data-id="filename">
         links_js = """
         () => {
             const links = [];
-
-            // 找所有指向PDF、doc等的链接
-            document.querySelectorAll('a').forEach(a => {
+            document.querySelectorAll('a[data-id]').forEach(a => {
                 const href = a.getAttribute('href');
-                const text = a.innerText || a.textContent;
-                if (href && !href.includes('login') && !href.includes('scholar.google')) {
-                    if (href.includes('supplemental') || href.includes('pdf') || href.includes('doc') || href.includes('zip') || href.includes('gif')) {
-                        links.push({
-                            text: text.trim(),
-                            href: href,
-                            url: new URL(href, window.location.href).href
-                        });
-                    }
+                const filename = a.getAttribute('data-id');
+                if (href && filename) {
+                    links.push({
+                        text: filename,
+                        href: href,
+                        url: new URL(href, window.location.href).href
+                    });
                 }
             });
-
-            // 去重
-            const seen = new Set();
-            return links.filter(link => {
-                if (seen.has(link.url)) return false;
-                seen.add(link.url);
-                return link.url.length > 0 && !link.url.includes('login');
-            });
+            return links;
         }
         """
 
         supp_links = await page.evaluate(links_js)
 
         # 从页面HTML中提取补充材料描述
-        # description通常在<p>标签中，与下载链接相关
         descriptions_js = """
         () => {
             const descriptions = {};
+            document.querySelectorAll('a[data-id]').forEach(a => {
+                const filename = a.getAttribute('data-id');
+                if (!filename) return;
 
-            // 方法1: 查找每个文件对应的<p>标签描述
-            const links = document.querySelectorAll('a');
-            links.forEach(link => {
-                const href = link.getAttribute('href');
-                if (href && (href.includes('supplemental') || href.includes('.gif') || href.includes('.pdf') || href.includes('.doc'))) {
-                    const filename = href.split('/').pop();
-
-                    // 查找最近的段落或描述
-                    let element = link.parentElement;
-                    let description = '';
-
-                    // 向上查找最多5层
-                    for (let i = 0; i < 5; i++) {
-                        if (!element) break;
-
-                        // 查找<p>标签中的文本
-                        const pTags = element.querySelectorAll('p');
-                        if (pTags.length > 0) {
-                            description = pTags[0].innerText || pTags[0].textContent;
-                            if (description && description.length > 10) break;
-                        }
-
-                        element = element.parentElement;
-                    }
-
-                    if (description) {
-                        descriptions[filename] = description.trim();
+                // 查找文件项容器中的描述文本
+                let item = a.closest('[class*="supplemental"]') || a.closest('li') || a.parentElement;
+                if (item) {
+                    const text = item.innerText || item.textContent;
+                    // 去除文件名自身，剩余部分作为描述
+                    let desc = text.replace(filename, '').trim();
+                    if (desc.length > 5) {
+                        descriptions[filename] = desc;
                     }
                 }
             });
-
-            // 方法2: 如果没找到，直接获取所有<p>标签
-            if (Object.keys(descriptions).length === 0) {
-                const allP = document.querySelectorAll('p');
-                allP.forEach(p => {
-                    const text = (p.innerText || p.textContent).trim();
-                    if (text.length > 20 && !text.includes('Copyright')) {
-                        // 尝试匹配到文件
-                        const links = p.querySelectorAll('a');
-                        if (links.length > 0) {
-                            links.forEach(link => {
-                                const href = link.getAttribute('href');
-                                if (href) {
-                                    const filename = href.split('/').pop();
-                                    if (!descriptions[filename]) {
-                                        descriptions[filename] = text;
-                                    }
-                                }
-                            });
-                        }
-                    }
-                });
-            }
-
             return descriptions;
         }
         """
@@ -734,7 +700,39 @@ class APSHandler(PublisherHandler):
             except:
                 fulltext_data = {}
 
-        # 5. Extract all links from fulltext data
+        # 5. Update journal_prefix from captured data (detected from URL) or DOI
+        detected_prefix = captured.get('journal_prefix')
+        if not detected_prefix:
+            # Fallback: extract from DOI: 10.1103/PhysRevApplied.18.024026
+            doi_match = re.search(r'10\.1103/([A-Za-z]+)', doi or '')
+            if doi_match:
+                journal_name = doi_match.group(1)
+                APS_JOURNAL_PREFIXES = {
+                    'PhysRevLett': 'prl',
+                    'PhysRevApplied': 'prapplied',
+                    'PhysReviewX': 'prx',
+                    'PhysRevA': 'pra',
+                    'PhysRevB': 'prb',
+                    'PhysRevC': 'prc',
+                    'PhysRevD': 'prd',
+                    'PhysRevE': 'pre',
+                    'PhysRevResearch': 'prresearch',
+                    'PhysRevFluids': 'prfluids',
+                    'PhysRevMaterials': 'prmaterials',
+                    'PhysRevAccelBeams': 'prab',
+                    'PhysRevPhysEducRes': 'prper',
+                    'PhysRevSTAB': 'prstab',
+                    'PhysRevSTPER': 'prstper',
+                    'RevModPhys': 'rmp',
+                }
+                mapped = APS_JOURNAL_PREFIXES.get(journal_name)
+                if mapped:
+                    detected_prefix = mapped
+        if detected_prefix:
+            self.journal_prefix = detected_prefix
+            print(f"  ✓ 期刊前缀: {self.journal_prefix}")
+
+        # 6. Extract all links from fulltext data
         links = {
             'pdf_url': f"https://journals.aps.org/{self.journal_prefix}/pdf/{doi}",
             'figure_urls': extract_figure_assets_from_fulltext(fulltext_data),
@@ -743,7 +741,9 @@ class APSHandler(PublisherHandler):
 
         # 6. Get supplemental links if available
         try:
-            supp_links, supp_descriptions = await get_supplemental_links(page, doi, self.journal_prefix)
+            supp_links, supp_descriptions = await get_supplemental_links(
+                page, doi, self.journal_prefix, captured_data_dir=self.captured_data_dir
+            )
             links['supplemental_urls'] = supp_links
             links['supplemental_descriptions'] = supp_descriptions
         except:
