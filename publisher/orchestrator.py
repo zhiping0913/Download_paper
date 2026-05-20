@@ -15,10 +15,13 @@ def detect_publisher_from_url(url: str) -> str:
     Detect publisher from URL or DOI pattern
 
     Returns: 'aps' | 'nature' | 'aip' | 'unknown'
+
+    Detection order is important: more specific matches first to avoid false positives.
+    For example, AIP's DOI (10.1063) must be checked before APS's loose substring matches.
     """
     url_lower = url.lower()
 
-    # Nature/Springer detection
+    # Nature/Springer detection (most specific first)
     if 'nature.com' in url_lower:
         return 'nature'
     elif 'springer.com' in url_lower:
@@ -28,19 +31,38 @@ def detect_publisher_from_url(url: str) -> str:
     elif 's41' in url_lower:  # Nature journal ID pattern
         return 'nature'
 
-    # APS detection
-    elif 'journals.aps.org' in url_lower:
-        return 'aps'
-    elif '10.1103' in url_lower:  # APS DOI
-        return 'aps'
-    elif 'prl' in url_lower or 'pre' in url_lower or 'pra' in url_lower:
-        return 'aps'
-
-    # IOP Publishing detection
+    # IOP Publishing detection (very specific)
     elif 'iopscience.iop.org' in url_lower:
         return 'iop'
     elif '10.1088' in url_lower:
         return 'iop'
+
+    # AIP Publishing detection (BEFORE APS loose matching!)
+    # Must check specific URLs and DOI prefix before APS patterns
+    elif 'pubs.aip.org' in url_lower:
+        return 'aip'
+    elif 'aip.scitation.org' in url_lower:
+        return 'aip'
+    elif '10.1063' in url_lower:  # AIP DOI - check BEFORE APS loose patterns
+        return 'aip'
+
+    # Cambridge University Press detection
+    elif 'cambridge.org' in url_lower:
+        return 'cambridge'
+    elif '10.1017' in url_lower:
+        return 'cambridge'
+
+    # APS detection (least specific - loose substring matching)
+    # WARNING: These patterns are vague and may match other content.
+    # Must be checked AFTER more specific publishers.
+    elif 'journals.aps.org' in url_lower:
+        return 'aps'
+    elif '10.1103' in url_lower:  # APS DOI
+        return 'aps'
+    elif 'prl' in url_lower or 'pra' in url_lower:
+        # Note: removed 'pre' check as it matches too many words (e.g., "Compressing")
+        # Only check well-defined APS journal abbreviations
+        return 'aps'
 
     # Elsevier / ScienceDirect (routes through NatureHandler fallbacks)
     elif 'sciencedirect.com' in url_lower:
@@ -53,20 +75,6 @@ def detect_publisher_from_url(url: str) -> str:
         return 'nature'
     elif '10.1051' in url_lower:
         return 'nature'
-
-    # Cambridge University Press detection
-    elif 'cambridge.org' in url_lower:
-        return 'cambridge'
-    elif '10.1017' in url_lower:
-        return 'cambridge'
-
-    # AIP Publishing detection
-    elif 'pubs.aip.org' in url_lower:
-        return 'aip'
-    elif 'aip.scitation.org' in url_lower:
-        return 'aip'
-    elif '10.1063' in url_lower:
-        return 'aip'
 
     # ArXiv (treat as generic, default to APS-like handling)
     elif 'arxiv.org' in url_lower:
