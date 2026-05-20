@@ -899,7 +899,7 @@ class NatureHandler(PublisherHandler):
         return self.extract_section_paragraphs_from_html_content(html_content, 'Code availability')
 
     def extract_supplementary_items_from_html_content(self, html_content: str, section_title: str) -> str:
-        """Extract Nature supplementary-style item lists from a named section."""
+        """Extract Nature supplementary-style item lists from a named section (exact match)."""
         soup = BeautifulSoup(html_content, 'html.parser')
 
         section = soup.find('section', {'data-title': section_title})
@@ -907,6 +907,40 @@ class NatureHandler(PublisherHandler):
             print(f"  ⚠️  {section_title} section not found")
             return ""
 
+        return self._process_supplementary_items_from_section(section, section_title)
+
+    def extract_supplementary_items_by_keywords(self, html_content: str, keywords: list) -> str:
+        """Extract supplementary items from sections matching any of the keywords (case-insensitive).
+
+        Args:
+            html_content: HTML content to search
+            keywords: List of keywords to match (e.g., ['supplementary', 'supporting', 'supplemental'])
+
+        Returns:
+            Concatenated markdown from all matching sections
+        """
+        soup = BeautifulSoup(html_content, 'html.parser')
+        keywords_lower = [kw.lower() for kw in keywords]
+
+        matching_sections = []
+        for section in soup.find_all('section'):
+            data_title = (section.get('data-title') or '').lower()
+            if any(kw in data_title for kw in keywords_lower):
+                matching_sections.append((section.get('data-title', 'Unknown'), section))
+
+        if not matching_sections:
+            return ""
+
+        all_results = []
+        for section_title, section in matching_sections:
+            result = self._process_supplementary_items_from_section(section, section_title)
+            if result:
+                all_results.append(result)
+
+        return "\n\n".join(all_results) if all_results else ""
+
+    def _process_supplementary_items_from_section(self, section, section_title: str) -> str:
+        """Helper to process supplementary items from a section element."""
         items = section.find_all('div', {'class': 'c-article-supplementary__item'})
         if not items:
             print(f"  ⚠️  {section_title} items not found")
@@ -944,14 +978,34 @@ class NatureHandler(PublisherHandler):
         return result
 
     def extract_extended_data_from_html_content(self, html_content: str) -> str:
-        """Extract Nature extended data figures and tables."""
+        """Extract Nature extended data figures and tables.
+
+        Searches for sections matching 'extended' keyword (case-insensitive).
+        Falls back to exact match if keyword search fails.
+        """
+        result = self.extract_supplementary_items_by_keywords(html_content, ['extended'])
+        if result:
+            return result
+        # Fallback to exact match for compatibility
         return self.extract_supplementary_items_from_html_content(
             html_content,
             'Extended data figures and tables',
         )
 
     def extract_supplementary_information_from_html_content(self, html_content: str) -> str:
-        """Extract Nature supplementary information item links."""
+        """Extract Nature supplementary information item links.
+
+        Searches for sections matching 'supplementary', 'supporting', 'supplemental',
+        or 'electronic' keywords (case-insensitive). Falls back to exact match if
+        keyword search fails.
+        """
+        result = self.extract_supplementary_items_by_keywords(
+            html_content,
+            ['supplementary', 'supporting', 'supplemental', 'electronic']
+        )
+        if result:
+            return result
+        # Fallback to exact match for compatibility
         return self.extract_supplementary_items_from_html_content(
             html_content,
             'Supplementary information',
