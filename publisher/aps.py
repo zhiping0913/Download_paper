@@ -734,7 +734,7 @@ class APSHandler(PublisherHandler):
 
         # 6. Extract all links from fulltext data
         links = {
-            'pdf_url': f"https://journals.aps.org/{self.journal_prefix}/pdf/{doi}",
+            'pdf_url': f"http://link.aps.org/pdf/{doi}",
             'figure_urls': extract_figure_assets_from_fulltext(fulltext_data),
             'supplemental_urls': []
         }
