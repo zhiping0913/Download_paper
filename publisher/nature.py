@@ -447,14 +447,34 @@ class NatureHandler(PublisherHandler):
         return None
 
     async def get_supplemental_links(self, page) -> tuple:
-        """Find Nature supplementary material file links."""
+        """Find Nature supplementary material file links.
+
+        Searches for any section with title containing: supplementary, supporting,
+        supplemental, extended (case-insensitive). Returns links from all matching sections.
+        """
         print("  🔍 Looking for supplementary materials...")
 
         candidates = await page.evaluate("""() => {
             const links = [];
+            const keywords = ['supplementary', 'supporting', 'supplemental', 'extended'];
+
+            // Strategy 1: Find sections with matching title keywords
+            const sections = document.querySelectorAll('section[data-title]');
+            sections.forEach(section => {
+                const title = (section.getAttribute('data-title') || '').toLowerCase();
+                const isSupplementary = keywords.some(keyword => title.includes(keyword));
+                if (isSupplementary) {
+                    section.querySelectorAll('a[href]').forEach(link => {
+                        const href = link.getAttribute('href') || '';
+                        const label = (link.textContent || '').replace(/\\s+/g, ' ').trim();
+                        links.push({href, label, section_title: section.getAttribute('data-title')});
+                    });
+                }
+            });
+
+            // Strategy 2: Direct selectors (fallback)
             const selectors = [
                 'a[data-test="supp-info-link"]',
-                'section[data-title="Supplementary information"] a[href]',
                 'a[href*="static-content.springer.com/esm"]',
                 'a[href*="/esm/"]',
                 'a[href*="MOESM"]'
@@ -463,14 +483,20 @@ class NatureHandler(PublisherHandler):
             document.querySelectorAll(selectors.join(',')).forEach(link => {
                 const href = link.getAttribute('href') || '';
                 const label = (link.textContent || '').replace(/\\s+/g, ' ').trim();
-                links.push({href, label});
+                // Check if not already added via section search
+                const isDuplicate = links.some(l => l.href === href && l.label === label);
+                if (!isDuplicate) {
+                    links.push({href, label, section_title: 'Direct link'});
+                }
             });
+
             return links;
         }""")
 
         supplemental_urls = []
         supplemental_descriptions = {}
         seen = set()
+        section_sources = {}  # Track which section each URL came from
 
         for item in candidates:
             href = (item.get('href') or '').strip()
@@ -498,10 +524,27 @@ class NatureHandler(PublisherHandler):
             if filename and label:
                 supplemental_descriptions[filename] = label
 
+            # Track which section this came from
+            section_title = item.get('section_title', 'Unknown')
+            if url not in section_sources:
+                section_sources[url] = section_title
+
         if supplemental_urls:
             print(f"  ✅ Found supplementary materials: {len(supplemental_urls)}")
-            for url in supplemental_urls[:5]:
-                print(f"     - {url[:100]}...")
+            # Group and display by section
+            sections_found = {}
+            for url in supplemental_urls:
+                section = section_sources.get(url, 'Unknown')
+                if section not in sections_found:
+                    sections_found[section] = []
+                sections_found[section].append(url)
+
+            for section, urls in sections_found.items():
+                print(f"     📋 From '{section}': {len(urls)} link(s)")
+                for url in urls[:3]:
+                    print(f"        - {url[:100]}...")
+                if len(urls) > 3:
+                    print(f"        ... and {len(urls) - 3} more")
         else:
             print("  ⚠️  Supplementary materials link not found")
 
