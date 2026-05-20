@@ -725,13 +725,25 @@ async def complete_extraction_workflow(
             force_headed_downloads,
         )
 
-        # Step 3.5: Check references before saving
+        # Step 3.5: Check if paper has meaningful content before saving
+        # Skip save only if there's no title (truly empty paper)
+        # References are optional - some publishers don't provide them
+        title = metadata.get('title', '').strip()
+        abstract = metadata.get('abstract', '').strip()
+        has_content = bool(title) or bool(abstract)
+
+        if not has_content:
+            print(f"\n⚠️  论文缺少标题和摘要，跳过保存")
+            print(f"  DOI: {doi}")
+            return None
+
         refs = metadata.get('references', [])
         if not refs and not SAVE_WITHOUT_REFERENCES:
-            print(f"\n⚠️  参考文献提取失败，且 SAVE_WITHOUT_REFERENCES=False，跳过保存")
-            print(f"  DOI: {doi}")
-            print(f"  提示: 在 config.py 中设置 SAVE_WITHOUT_REFERENCES=True 可强制保存")
-            return None
+            print(f"\n⚠️  未找到参考文献（某些出版商可能不提供）")
+            if SAVE_WITHOUT_REFERENCES:
+                print(f"  提示：将继续保存，因为 SAVE_WITHOUT_REFERENCES=True")
+            else:
+                print(f"  提示：可在 config.py 中设置 SAVE_WITHOUT_REFERENCES=True 强制保存")
 
         # Step 3.5: Generate markdown with figures
         print("\nStep 3.5️⃣  生成Markdown...")

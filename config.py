@@ -113,7 +113,9 @@ SAVE_RAW_HTML = True
 SAVE_RENDERED_HTML = True
 
 # 当参考文献为空时是否仍然保存Markdown
-SAVE_WITHOUT_REFERENCES = False
+# 注意：即使没有参考文献，通常也应该保存metadata和markdown
+# 只有特殊情况（如标题为空）时才应该跳过保存
+SAVE_WITHOUT_REFERENCES = True
 
 # ============================================================================
 # 批处理配置
