@@ -123,8 +123,8 @@ SAVE_WITHOUT_REFERENCES = False
 BATCH_SLEEP_ENABLED = True
 
 # 批次处理随机休眠最小/最大秒数
-BATCH_SLEEP_MIN = 60
-BATCH_SLEEP_MAX = 300
+BATCH_SLEEP_MIN = 30
+BATCH_SLEEP_MAX = 60
 
 # ============================================================================
 # 脚本配置
