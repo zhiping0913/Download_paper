@@ -732,9 +732,25 @@ class APSHandler(PublisherHandler):
             self.journal_prefix = detected_prefix
             print(f"  ✓ 期刊前缀: {self.journal_prefix}")
 
-        # 6. Extract all links from fulltext data
+        # 6. Extract PDF URL: try meta tag, then fallback to known patterns
+        pdf_url = None
+        try:
+            pdf_url = await page.evaluate("""
+                () => {
+                    const meta = document.querySelector('meta[name="citation_pdf_url"]');
+                    return meta ? meta.getAttribute('content') : null;
+                }
+            """)
+        except:
+            pass
+
+        if not pdf_url:
+            pdf_url = f"http://link.aps.org/pdf/{doi}"
+        if not pdf_url:
+            pdf_url = f"https://journals.aps.org/{self.journal_prefix}/pdf/{doi}"
+
         links = {
-            'pdf_url': f"http://link.aps.org/pdf/{doi}",
+            'pdf_url': pdf_url,
             'figure_urls': extract_figure_assets_from_fulltext(fulltext_data),
             'supplemental_urls': []
         }
