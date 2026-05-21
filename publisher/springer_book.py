@@ -30,6 +30,7 @@ class SpringerBookHandler(PublisherHandler):
             doi: DOI of the book or chapter
         """
         # Normalize chapter DOI to book DOI if needed
+        self.original_doi = doi  # Store original DOI for later check
         if doi and '_' in doi:
             # Extract DOI prefix before the last underscore (e.g., 10.1007/978-981-15-2381-6 from 10.1007/978-981-15-2381-6_2)
             book_doi = doi.rsplit('_', 1)[0]
@@ -53,6 +54,21 @@ class SpringerBookHandler(PublisherHandler):
         page, managed_playwright, managed_browser, managed_context = await init_extract_all_page(
             self, page, doi, 'SpringerBookHandler'
         )
+
+        # If original DOI was a chapter DOI and page is already loaded,
+        # navigate to the book page instead
+        if hasattr(self, 'original_doi') and self.original_doi and '_' in self.original_doi:
+            if self.original_doi != self.doi:
+                # Chapter DOI was normalized to book DOI, but page might be at chapter URL
+                print(f"  → 重新导航到书籍页面: https://doi.org/{self.doi}")
+                try:
+                    await page.goto(f"https://doi.org/{self.doi}", wait_until='domcontentloaded', timeout=60000)
+                    try:
+                        await page.wait_for_load_state('networkidle', timeout=15000)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"  ⚠️  导航到书籍页面失败: {e}")
 
         # Get the actual page URL for correct base_url resolution
         set_actual_base_url(self, page)
