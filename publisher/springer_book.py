@@ -254,10 +254,13 @@ class SpringerBookHandler(PublisherHandler):
                 # Extract DOI from URL like "/chapter/10.1007/978-981-15-2381-6_1"
                 if href:
                     chapter_info['url'] = href
-                    # Extract DOI from href
-                    parts = href.split('/')
-                    if parts[-1]:
-                        chapter_info['doi'] = parts[-1]  # e.g., "10.1007/978-981-15-2381-6_1"
+                    # Extract DOI from href - everything after "/chapter/"
+                    if '/chapter/' in href:
+                        doi_part = href.split('/chapter/')[-1]
+                        # Remove trailing slash if present
+                        doi_part = doi_part.rstrip('/')
+                        if doi_part:
+                            chapter_info['doi'] = doi_part
 
             # Find PDF download link
             pdf_link = chapter.find('a', class_='c-pdf-chapter-download__link')
