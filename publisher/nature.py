@@ -1166,14 +1166,14 @@ class NatureHandler(PublisherHandler):
 
         # Replace both Springer and other remote image URLs
         markdown = re.sub(
-            r'!\[([^\]]*)\]\((?:https?:)?//[^/]*media\.springernature\.com[^)]*\)',
+            r'!\[([^\]]*)\]\(((?:https?:)?//[^/]*media\.springernature\.com[^)]*)\)',
             replace_match,
             markdown,
         )
 
         # Also handle other remote URLs that might have been inserted
         markdown = re.sub(
-            r'!\[([^\]]*)\]\((?:https?:)?//[^/]*(?:springer|nature|sciencedirect)[^)]*\)',
+            r'!\[([^\]]*)\]\(((?:https?:)?//[^/]*(?:springer|nature|sciencedirect)[^)]*)\)',
             replace_match,
             markdown,
         )
