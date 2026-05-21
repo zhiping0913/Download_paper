@@ -10,6 +10,9 @@ from bs4 import BeautifulSoup
 from publisher.base import PublisherHandler
 from publisher.wildcard import init_extract_all_page, set_actual_base_url
 from publisher.nature import NatureHandler
+from core import fetch_crossref, fetch_semanticscholar
+from core.utilities import _build_bibtex_from_crossref
+import re
 
 
 class SpringerBookHandler(PublisherHandler):
@@ -541,8 +544,19 @@ class SpringerBookHandler(PublisherHandler):
                     if refs:
                         md_content += "#### References\n\n"
                         for idx, ref in enumerate(refs, 1):
-                            md_content += f"{idx}. {ref}\n"
-                        md_content += "\n"
+                            md_content += f"[{idx}] {ref}\n\n"
+                            # Try to generate BibTeX from DOI in reference
+                            doi_match = re.search(r'(10\.\d{4,}/[^\s"\'\]]+)', ref)
+                            if doi_match:
+                                doi_ref = doi_match.group(1).rstrip('.')
+                                try:
+                                    crossref_data = fetch_crossref(doi_ref)
+                                    if crossref_data and crossref_data.get('title'):
+                                        bibtex = _build_bibtex_from_crossref(crossref_data, doi_ref)
+                                        if bibtex:
+                                            md_content += f"```bibtex\n{bibtex}\n```\n\n"
+                                except Exception:
+                                    pass
 
                 md_content += "---\n\n"
 
