@@ -87,6 +87,9 @@ class SpringerBookHandler(PublisherHandler):
 
             # Extract content from each chapter with a DOI
             chapters_content = []
+            all_chapter_figures = {}
+            global_fig_counter = 0
+
             if chapters_info:
                 print(f"  📚 Found {len(chapters_info)} chapters, extracting content...")
                 for idx, chapter_info in enumerate(chapters_info, 1):
@@ -96,6 +99,20 @@ class SpringerBookHandler(PublisherHandler):
                         if chapter_content:
                             chapter_content['_chapter_info'] = chapter_info
                             chapters_content.append(chapter_content)
+
+                            # Collect figures from each chapter with unique numbering
+                            chapter_figures = chapter_content.get('links', {}).get('figure_urls', {})
+                            if chapter_figures:
+                                chapter_fig_mapping = {}
+                                for fig_key, fig_url in chapter_figures.items():
+                                    global_fig_counter += 1
+                                    # Create unique key: ch_X_figY where X is chapter, Y is global counter
+                                    prefixed_key = f"ch{idx}_fig{global_fig_counter}"
+                                    all_chapter_figures[prefixed_key] = fig_url
+                                    chapter_fig_mapping[fig_key] = prefixed_key
+
+                                # Store mapping for convert_to_markdown
+                                chapter_content['_figure_mapping'] = chapter_fig_mapping
                         else:
                             print(f"      ⚠️  Failed to extract content for chapter {idx}")
 
@@ -106,7 +123,7 @@ class SpringerBookHandler(PublisherHandler):
                 'metadata': metadata,
                 'links': {
                     'pdf_url': pdf_url,
-                    'figure_urls': {},
+                    'figure_urls': all_chapter_figures,
                     'supplemental_urls': supplemental_urls,
                     'supplemental_descriptions': supplemental_descriptions,
                 },
@@ -398,8 +415,21 @@ class SpringerBookHandler(PublisherHandler):
             md_content += "## About This Book\n\n"
             md_content += metadata['_about'] + "\n\n"
 
-        # ===== Chapters =====
+        # ===== Table of Contents =====
         chapters_content = metadata.get('_chapters_content', [])
+        if chapters_content:
+            md_content += "## Table of Contents\n\n"
+            for idx, chapter in enumerate(chapters_content, 1):
+                chapter_info = chapter.get('_chapter_info', {})
+                chapter_title = chapter_info.get('title', f'Chapter {idx}')
+                chapter_doi = chapter_info.get('doi', '')
+                md_content += f"{idx}. {chapter_title}"
+                if chapter_doi:
+                    md_content += f" (DOI: {chapter_doi})"
+                md_content += "\n"
+            md_content += "\n"
+
+        # ===== Chapters =====
         if chapters_content:
             md_content += "## Chapters\n\n"
 
@@ -432,10 +462,15 @@ class SpringerBookHandler(PublisherHandler):
 
                 # Chapter figures
                 chapter_figures = chapter.get('links', {}).get('figure_urls', {})
+                figure_mapping = chapter.get('_figure_mapping', {})
                 if chapter_figures:
                     md_content += "#### Figures\n\n"
-                    for fig_num, fig_url in chapter_figures.items():
-                        md_content += f"- **{fig_num}**: {fig_url}\n"
+                    for fig_key, fig_url in chapter_figures.items():
+                        mapped_key = figure_mapping.get(fig_key, fig_key)
+                        if figure_filenames and mapped_key in figure_filenames:
+                            md_content += f"- **{fig_key}**: ![{fig_key}]({figure_filenames[mapped_key]})\n"
+                        else:
+                            md_content += f"- **{fig_key}**: {fig_url}\n"
                     md_content += "\n"
 
                 md_content += "---\n\n"
