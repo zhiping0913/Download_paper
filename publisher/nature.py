@@ -1305,6 +1305,7 @@ class NatureHandler(PublisherHandler):
                     md_content += ref_text + "\n\n"
 
                 # Generate BibTeX from Crossref data
+                ref_key = ref.get('key', f'ref{idx}')
                 parts = {
                     'author': ref.get('author', ''),
                     'title': ref.get('article-title', ''),
@@ -1315,8 +1316,9 @@ class NatureHandler(PublisherHandler):
                     'year': str(ref.get('year', '')),
                     'doi': ref.get('DOI', ''),
                 }
-                parts = {k: v for k, v in parts.items() if v}
-                if parts:
+                # Filter empty values but preserve DOI even if empty
+                parts = {k: v for k, v in parts.items() if v or k == 'doi'}
+                if any(parts.get(k) for k in ['author', 'title', 'journal']):
                     bibtex = format_as_bibtex(parts, key=ref_key)
                     md_content += f"```bibtex\n{bibtex}\n```\n\n"
         elif metadata.get('references'):
