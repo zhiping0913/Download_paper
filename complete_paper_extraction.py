@@ -727,6 +727,9 @@ async def complete_extraction_workflow(
             # Store Crossref reference data for unified BibTeX generation
             if crossref_data.get('reference'):
                 metadata['_crossref_references'] = crossref_data['reference']
+                print(f"  ✓ 从Crossref获取{len(crossref_data['reference'])}条参考文献")
+            else:
+                print(f"  ⚠️  Crossref中没有参考文献数据")
 
         print(f"  ✓ 标题: {metadata.get('title', 'N/A')[:60]}...")
         print(f"  ✓ 作者: {len(metadata.get('authors', []))} 位")
