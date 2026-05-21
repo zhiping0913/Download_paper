@@ -24,6 +24,7 @@ from publisher.wildcard import (
     format_as_bibtex,
     format_citation_as_text,
     generate_bibtex_key,
+    init_extract_all_page,
     parse_citation_reference_string,
     prepare_mathjax_html_fragment,
     set_actual_base_url,
@@ -55,33 +56,13 @@ class NatureHandler(PublisherHandler):
             dict with keys: 'metadata', 'links', 'fulltext_data', 'journal_name'
             where 'links' contains: 'pdf_url', 'figure_urls', 'supplemental_urls'
         """
-        doi = doi or self.doi
-        if doi is None:
-            raise ValueError("NatureHandler.extract_all() requires a DOI")
+        # Initialize page and managed resources using shared function
+        page, managed_playwright, managed_browser, managed_context = await init_extract_all_page(
+            self, page, doi, 'NatureHandler'
+        )
 
-        page = page or self.page
-        managed_playwright = None
-        managed_browser = None
-        managed_context = None
-
-        if page is None:
-            print("  ✓ NatureHandler未收到page，使用无头浏览器访问")
-            managed_playwright = await async_playwright().start()
-            managed_browser = await managed_playwright.chromium.launch(headless=True)
-            managed_context = await managed_browser.new_context(accept_downloads=True)
-            page = await managed_context.new_page()
-            self.configure(page=page, doi=doi)
-
-            if captured is None:
-                captured = self.setup_network_capture(page, doi)
-
-            await page.goto(f"https://doi.org/{doi}", wait_until='domcontentloaded', timeout=60000)
-            try:
-                await page.wait_for_load_state('networkidle', timeout=15000)
-            except:
-                pass
-        else:
-            self.configure(page=page, doi=doi)
+        if captured is None:
+            captured = self.setup_network_capture(page, self.doi or doi)
 
         # Get the actual page URL for correct base_url resolution
         set_actual_base_url(self, page)

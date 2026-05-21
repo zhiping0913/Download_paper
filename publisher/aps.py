@@ -21,7 +21,7 @@ from core.utilities import (
 from html_to_md_converter import cleanup_markdown, convert_html_to_markdown, mathml_to_latex_pandoc, remove_newlines_in_paragraph
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
-from publisher.wildcard import set_actual_base_url
+from publisher.wildcard import set_actual_base_url, init_extract_all_page
 
 
 # ============================================================================
@@ -637,12 +637,10 @@ class APSHandler(PublisherHandler):
             dict with keys: 'metadata', 'links', 'fulltext_data', 'journal_prefix'
             where 'links' contains: 'pdf_url', 'figure_urls', 'supplemental_urls'
         """
-        page = page or self.page
-        doi = doi or self.doi
-        if page is None:
-            raise ValueError("APSHandler.extract_all() requires a Playwright page")
-        if doi is None:
-            raise ValueError("APSHandler.extract_all() requires a DOI")
+        # Initialize page and managed resources using shared function
+        page, managed_playwright, managed_browser, managed_context = await init_extract_all_page(
+            self, page, doi, 'APSHandler'
+        )
 
         self.configure(page=page, doi=doi)
 

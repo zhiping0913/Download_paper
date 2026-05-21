@@ -11,6 +11,7 @@ from html import unescape
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup, NavigableString
+from playwright.async_api import async_playwright
 
 from html_to_md_converter import (
     cleanup_markdown,
@@ -424,4 +425,59 @@ def set_actual_base_url(handler, page) -> None:
     if page_url and not page_url.startswith('about:'):
         parsed = urlparse(page_url)
         handler.actual_base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+
+# ------------------------------------------------------------------
+# Handler initialization helpers
+# ------------------------------------------------------------------
+
+async def init_extract_all_page(handler, page=None, doi: str = None, handler_name: str = 'Handler') -> tuple:
+    """Initialize page for extract_all across all handlers.
+
+    Handles common setup: DOI validation, page creation if needed, browser launch,
+    DOI navigation, and page configuration.
+
+    Args:
+        handler: PublisherHandler instance
+        page: Optional Playwright page object
+        doi: DOI string (uses handler.doi if not provided)
+        handler_name: Handler name for logging (e.g., 'IOPHandler')
+
+    Returns:
+        tuple: (page, managed_playwright, managed_browser, managed_context)
+            - page: Active Playwright page object
+            - managed_playwright: Playwright instance (None if page was provided)
+            - managed_browser: Browser instance (None if page was provided)
+            - managed_context: Browser context (None if page was provided)
+
+    Raises:
+        ValueError: If DOI is None
+    """
+    # Validate DOI
+    doi = doi or handler.doi
+    if doi is None:
+        raise ValueError(f"{handler_name}.extract_all() requires a DOI")
+
+    # Use provided page or create new one
+    page = page or handler.page
+    managed_playwright = None
+    managed_browser = None
+    managed_context = None
+
+    if page is None:
+        print(f"  ✓ {handler_name}未收到page，使用无头浏览器访问")
+        managed_playwright = await async_playwright().start()
+        managed_browser = await managed_playwright.chromium.launch(headless=True)
+        managed_context = await managed_browser.new_context(accept_downloads=True)
+        page = await managed_context.new_page()
+        handler.configure(page=page, doi=doi)
+        await page.goto(f"https://doi.org/{doi}", wait_until='domcontentloaded', timeout=60000)
+        try:
+            await page.wait_for_load_state('networkidle', timeout=15000)
+        except Exception:
+            pass
+    else:
+        handler.configure(page=page, doi=doi)
+
+    return page, managed_playwright, managed_browser, managed_context
 
