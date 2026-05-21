@@ -7,7 +7,7 @@ For chapter DOIs (e.g., 10.1007/978-981-15-2381-6_2), normalizes to book DOI.
 
 from typing import Optional, Dict, List
 from publisher.base import PublisherHandler
-from publisher.wildcard import set_actual_base_url
+from publisher.wildcard import init_extract_all_page, set_actual_base_url
 
 
 class SpringerBookHandler(PublisherHandler):
@@ -44,30 +44,51 @@ class SpringerBookHandler(PublisherHandler):
         Returns:
             dict with keys: 'metadata', 'links', 'fulltext_data', 'journal_name'
         """
-        doi = doi or self.doi
-        if doi is None:
-            raise ValueError("SpringerBookHandler.extract_all() requires a DOI")
+        # Initialize page and managed resources using shared function
+        page, managed_playwright, managed_browser, managed_context = await init_extract_all_page(
+            self, page, doi, 'SpringerBookHandler'
+        )
 
-        page = page or self.page
+        # Get the actual page URL for correct base_url resolution
+        set_actual_base_url(self, page)
 
-        # TODO: Implement full extraction flow
-        # - Extract metadata (title, authors, publisher info, etc.)
-        # - Extract TOC and chapter information
-        # - Extract figures from the main chapter or representative section
-        # - Extract references
-        # - Generate markdown content
+        try:
+            # TODO: Implement full extraction flow
+            # - Extract metadata (title, authors, publisher info, etc.)
+            # - Extract TOC and chapter information
+            # - Extract figures from the main chapter or representative section
+            # - Extract references
+            # - Generate markdown content
 
-        return {
-            'metadata': {},
-            'links': {
-                'pdf_url': None,
-                'figure_urls': {},
-                'supplemental_urls': [],
-                'supplemental_descriptions': {},
-            },
-            'fulltext_data': None,
-            'journal_name': 'springer_book',
-        }
+            return {
+                'metadata': {},
+                'links': {
+                    'pdf_url': None,
+                    'figure_urls': {},
+                    'supplemental_urls': [],
+                    'supplemental_descriptions': {},
+                },
+                'fulltext_data': None,
+                'journal_name': 'springer_book',
+            }
+        finally:
+            if managed_context is not None:
+                try:
+                    await managed_context.close()
+                except Exception:
+                    pass
+            if managed_browser is not None:
+                try:
+                    await managed_browser.close()
+                except Exception:
+                    pass
+            if managed_playwright is not None:
+                try:
+                    await managed_playwright.stop()
+                except Exception:
+                    pass
+            if managed_context is not None:
+                self.page = None
 
     async def extract_metadata(self, page) -> dict:
         """Extract metadata from Springer book page"""
