@@ -724,6 +724,9 @@ async def complete_extraction_workflow(
                 metadata['publisher'] = crossref_data['publisher']
             if crossref_data.get('type') and not metadata.get('type'):
                 metadata['type'] = crossref_data['type']
+            # Store Crossref reference data for unified BibTeX generation
+            if crossref_data.get('reference'):
+                metadata['_crossref_references'] = crossref_data['reference']
 
         print(f"  ✓ 标题: {metadata.get('title', 'N/A')[:60]}...")
         print(f"  ✓ 作者: {len(metadata.get('authors', []))} 位")
