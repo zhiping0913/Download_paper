@@ -789,10 +789,15 @@ class CambridgeHandler(PublisherHandler):
                 "",
             ])
             for idx, ref in enumerate(crossref_refs, 1):
-                # Generate readable text from Crossref data
-                ref_text = generate_reference_text_from_crossref(ref, index=idx)
-                md_parts.append(ref_text)
-                md_parts.append("")
+                # Get original unstructured reference if available
+                unstructured = ref.get('unstructured', '')
+                if unstructured:
+                    md_parts.extend([f"[{idx}] {unstructured}", ""])
+                else:
+                    # Generate readable text from Crossref data
+                    ref_text = generate_reference_text_from_crossref(ref, index=idx)
+                    md_parts.extend([ref_text, ""])
+
                 # Generate BibTeX from Crossref data
                 ref_key = ref.get('key', f'ref{idx}')
                 parts = {

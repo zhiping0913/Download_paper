@@ -895,9 +895,15 @@ class APSHandler(PublisherHandler):
         if crossref_refs:
             md_content += "## References\n\n"
             for idx, ref in enumerate(crossref_refs, 1):
-                # Generate readable text from Crossref data
-                ref_text = generate_reference_text_from_crossref(ref, index=idx)
-                md_content += ref_text + "\n\n"
+                # Get original unstructured reference if available
+                unstructured = ref.get('unstructured', '')
+                if unstructured:
+                    md_content += f"[{idx}] {unstructured}\n\n"
+                else:
+                    # Generate readable text from Crossref data
+                    ref_text = generate_reference_text_from_crossref(ref, index=idx)
+                    md_content += ref_text + "\n\n"
+
                 # Generate BibTeX from Crossref data
                 ref_key = ref.get('key', f'ref{idx}')
                 parts = {

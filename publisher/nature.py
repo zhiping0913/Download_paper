@@ -1292,11 +1292,19 @@ class NatureHandler(PublisherHandler):
         if crossref_refs:
             md_content += "## References\n\n"
             for idx, ref in enumerate(crossref_refs, 1):
-                # Generate readable text from Crossref data
-                ref_text = generate_reference_text_from_crossref(ref, index=idx)
-                md_content += ref_text + "\n\n"
-                # Generate BibTeX from Crossref data
+                # Get original reference text if available
                 ref_key = ref.get('key', f'ref{idx}')
+                # Try to find matching original reference by unstructured field or use key
+                unstructured = ref.get('unstructured', '')
+
+                if unstructured:
+                    md_content += f"[{idx}] {unstructured}\n\n"
+                else:
+                    # Generate readable text from Crossref data
+                    ref_text = generate_reference_text_from_crossref(ref, index=idx)
+                    md_content += ref_text + "\n\n"
+
+                # Generate BibTeX from Crossref data
                 parts = {
                     'author': ref.get('author', ''),
                     'title': ref.get('article-title', ''),
