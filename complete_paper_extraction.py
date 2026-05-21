@@ -41,7 +41,7 @@ from config import OUTPUT_DIR_DEFAULT, BATCH_SLEEP_ENABLED, BATCH_SLEEP_MIN, BAT
 
 OUTPUT_DIR = OUTPUT_DIR_DEFAULT
 # Publisher IDs that can be entered from the Phase 0 headless page.
-HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature', 'aip', 'cambridge']
+HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature', 'aip', 'cambridge', 'springer']
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.tif', '.tiff', '.svg'}
 
 MIME_TO_EXT = {
@@ -937,6 +937,23 @@ async def complete_extraction_workflow(
         print("  ⚠️  Crossref未返回数据")
     print()
 
+    # ========== 第1步判断：根据Crossref publisher决定是否需要Phase 0 ==========
+    should_use_headless_phase0 = False
+    if not force_headed:
+        crossref_publisher = crossref_data.get('publisher', '').lower()
+        if crossref_publisher:
+            # Check if Crossref publisher contains any HEADLESS_ACCESSIBLE_PUBLISHERS
+            for publisher_name in HEADLESS_ACCESSIBLE_PUBLISHERS:
+                if publisher_name.lower() in crossref_publisher:
+                    should_use_headless_phase0 = True
+                    print(f"✓ 根据Crossref publisher '{crossref_publisher}' 判断出版商为 {publisher_name.upper()}")
+                    print(f"  → 将使用Phase 0进行无头浏览器预检\n")
+                    break
+
+        if not should_use_headless_phase0:
+            print(f"⊘ Crossref publisher '{crossref_publisher}' 不在无头直连列表中")
+            print(f"  → 跳过Phase 0，直接使用有头浏览器\n")
+
     # ========== 阶段0（可选）：使用无头浏览器快速预检 ==========
     # 如果 force_headed=True，跳过此阶段直接使用有头浏览器
     # 典型使用场景：已知目标期刊必须使用有头浏览器访问
@@ -950,6 +967,10 @@ async def complete_extraction_workflow(
         print("\n🔧 强制有头模式 - 跳过无头浏览器预检")
         print("=" * 80)
         print("  将直接使用有头Chrome访问\n")
+    elif not should_use_headless_phase0:
+        print("\n⊘ 出版商不支持无头浏览器 - 跳过Phase 0")
+        print("=" * 80)
+        print("  将直接使用有头浏览器完整提取\n")
     else:
         print("\n📋 Phase 0️⃣  使用无头浏览器快速预检页面...")
         print("=" * 80)
