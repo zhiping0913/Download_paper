@@ -324,7 +324,12 @@ def format_as_bibtex(parts: dict, *, key: str = None) -> str:
         else:
             lines.append(f"  pages = {{{pages}}},")
     if year_str:
-        lines.append(f"  year = {{{year_str}}},")
+        # Year might be last field before DOI, so add comma
+        if doi:
+            lines.append(f"  year = {{{year_str}}},")
+        else:
+            lines.append(f"  year = {{{year_str}}}")
+    # DOI should be the last field (no comma after)
     if doi:
         lines.append(f"  doi = {{{doi}}}")
     lines.append("}")
