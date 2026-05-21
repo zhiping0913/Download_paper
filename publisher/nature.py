@@ -672,10 +672,9 @@ class NatureHandler(PublisherHandler):
                 table_infos.append((table_id, caption, href))
         return table_infos
 
-    @staticmethod
-    async def _fetch_table_page(page, table_url: str, base_url: str = 'https://www.nature.com') -> str:
+    async def _fetch_table_page(self, page, table_url: str) -> str:
         """Navigate to a table page and return its HTML content."""
-        full_url = table_url if table_url.startswith('http') else base_url + table_url
+        full_url = table_url if table_url.startswith('http') else self.actual_base_url + table_url
         try:
             await page.goto(full_url, wait_until='domcontentloaded', timeout=30000)
             try:
@@ -802,7 +801,7 @@ class NatureHandler(PublisherHandler):
                 table_link = table_soup.find('a', href=re.compile(r'/tables?/\d+'))
                 link_href = table_link.get('href', '') if table_link else ''
                 if link_href and not link_href.startswith('http'):
-                    link_href = 'https://www.nature.com' + link_href
+                    link_href = self.actual_base_url + link_href
                 lines = [f"\n**{caption}**"]
                 if link_href:
                     lines.append(f"[View full table]({link_href})")
