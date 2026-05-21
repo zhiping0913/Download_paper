@@ -516,6 +516,8 @@ class SpringerBookHandler(PublisherHandler):
                     chapter_html = chapter['fulltext_data']
                     # Use NatureHandler's method to extract main content only
                     nature_handler = NatureHandler()
+                    # Set actual_base_url for convert_paragraph to work
+                    nature_handler.actual_base_url = self.actual_base_url
                     chapter_md = nature_handler.convert_main_content_by_paragraph(chapter_html)
                     if chapter_md:
                         md_content += chapter_md + "\n\n"
