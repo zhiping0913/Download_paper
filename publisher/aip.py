@@ -24,7 +24,7 @@ from core.utilities import (
     _build_bibtex_from_crossref,
 )
 from publisher.base import PublisherHandler
-from publisher.wildcard import set_actual_base_url
+from publisher.wildcard import set_actual_base_url, init_extract_all_page
 
 
 class AIPHandler(PublisherHandler):
@@ -620,29 +620,10 @@ class AIPHandler(PublisherHandler):
 
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
         """Run the AIP handler through the unified publisher contract."""
-        doi = doi or self.doi
-        if doi is None:
-            raise ValueError("AIPHandler.extract_all() requires a DOI")
-
-        page = page or self.page
-        managed_playwright = None
-        managed_browser = None
-        managed_context = None
-
-        if page is None:
-            print("  ✓ AIPHandler未收到page，使用无头浏览器访问")
-            managed_playwright = await async_playwright().start()
-            managed_browser = await managed_playwright.chromium.launch(headless=True)
-            managed_context = await managed_browser.new_context(accept_downloads=True)
-            page = await managed_context.new_page()
-            self.configure(page=page, doi=doi)
-            await page.goto(f"https://doi.org/{doi}", wait_until='domcontentloaded', timeout=60000)
-            try:
-                await page.wait_for_load_state('networkidle', timeout=15000)
-            except Exception:
-                pass
-        else:
-            self.configure(page=page, doi=doi)
+        # Initialize page and managed resources using shared function
+        page, managed_playwright, managed_browser, managed_context = await init_extract_all_page(
+            self, page, doi, 'AIPHandler'
+        )
 
         # Get the actual page URL for correct base_url resolution
         set_actual_base_url(self, page)
