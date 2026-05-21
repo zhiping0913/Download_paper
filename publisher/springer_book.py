@@ -9,6 +9,7 @@ from typing import Optional, Dict, List
 from bs4 import BeautifulSoup
 from publisher.base import PublisherHandler
 from publisher.wildcard import init_extract_all_page, set_actual_base_url
+from publisher.nature import NatureHandler
 
 
 class SpringerBookHandler(PublisherHandler):
@@ -80,6 +81,15 @@ class SpringerBookHandler(PublisherHandler):
             # Extract chapter PDFs from Table of Contents
             supplemental_urls, supplemental_descriptions = self._extract_toc_chapter_pdfs(fulltext_html)
 
+            # Extract chapters information (links and DOIs)
+            chapters_info = self._extract_chapters_info(fulltext_html)
+            metadata['_chapters_info'] = chapters_info
+
+            # TODO: Extract content from each chapter
+            # For each chapter with a DOI link, call NatureHandler to extract:
+            # - abstract, figures, body text
+            # Then organize by chapter in the markdown output
+
             # Return extraction results
             return {
                 'metadata': metadata,
@@ -142,7 +152,91 @@ class SpringerBookHandler(PublisherHandler):
 
         return '\n\n'.join(paragraphs)
 
-    def _extract_toc_chapter_pdfs(self, html_content: str) -> tuple:
+    def _extract_chapters_info(self, html_content: str) -> List[Dict]:
+        """Extract chapter information from Table of Contents.
+
+        Returns list of dicts with:
+        - title: Chapter title
+        - url: Chapter page URL (if available)
+        - doi: Chapter DOI (extracted from URL)
+        - pdf_url: PDF download link
+        """
+        soup = BeautifulSoup(html_content, 'html.parser')
+        chapters_info = []
+
+        # Find Table of contents section
+        toc_section = soup.find('section', {'data-title': 'Table of contents'})
+        if not toc_section:
+            return []
+
+        # Find all chapter list items
+        chapters = toc_section.find_all('li', {'data-test': 'chapter'})
+
+        for chapter in chapters:
+            chapter_info = {}
+
+            # Extract chapter title
+            heading = chapter.find('h3', class_='app-card-open__heading')
+            if heading:
+                chapter_info['title'] = heading.get_text(' ', strip=True)
+
+            # Look for chapter page link (either in heading or elsewhere)
+            chapter_link = chapter.find('a', href=lambda x: x and '/chapter/' in x)
+            if chapter_link:
+                href = chapter_link.get('href', '')
+                # Extract DOI from URL like "/chapter/10.1007/978-981-15-2381-6_1"
+                if href:
+                    chapter_info['url'] = href
+                    # Extract DOI from href
+                    parts = href.split('/')
+                    if parts[-1]:
+                        chapter_info['doi'] = parts[-1]  # e.g., "10.1007/978-981-15-2381-6_1"
+
+            # Find PDF download link
+            pdf_link = chapter.find('a', class_='c-pdf-chapter-download__link')
+            if pdf_link:
+                pdf_href = pdf_link.get('href', '')
+                if pdf_href:
+                    if pdf_href.startswith('//'):
+                        chapter_info['pdf_url'] = 'https:' + pdf_href
+                    elif not pdf_href.startswith('http'):
+                        chapter_info['pdf_url'] = self.actual_base_url + pdf_href
+                    else:
+                        chapter_info['pdf_url'] = pdf_href
+
+            if chapter_info.get('title'):  # Only add if we have at least a title
+                chapters_info.append(chapter_info)
+
+        return chapters_info
+
+    async def _extract_chapter_content(self, page, chapter_doi: str) -> Optional[Dict]:
+        """Extract content from a single chapter using NatureHandler.
+
+        Args:
+            page: Playwright page object (already in the browser context)
+            chapter_doi: Full chapter DOI (e.g., "10.1007/978-981-15-2381-6_1")
+
+        Returns:
+            dict with chapter content including metadata, figures, and fulltext
+        """
+        try:
+            # Create a NatureHandler for this chapter
+            handler = NatureHandler(page=page, doi=chapter_doi)
+
+            # Navigate to chapter page via DOI
+            await page.goto(f"https://doi.org/{chapter_doi}", wait_until='domcontentloaded', timeout=60000)
+            try:
+                await page.wait_for_load_state('networkidle', timeout=15000)
+            except Exception:
+                pass
+
+            # Extract chapter content using NatureHandler
+            chapter_result = await handler.extract_all(page=page, doi=chapter_doi)
+            return chapter_result
+
+        except Exception as e:
+            print(f"  ⚠️  Failed to extract chapter {chapter_doi}: {e}")
+            return None
         """Extract all chapter PDF links from Table of Contents section.
 
         Finds <section data-title="Table of contents">, then extracts each chapter's
