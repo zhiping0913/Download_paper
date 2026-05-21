@@ -11,7 +11,6 @@ so a dedicated preprocessing pass extracts them before the HTML→Markdown pipel
 import re
 import urllib.request
 import json
-from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
@@ -27,6 +26,7 @@ from publisher.wildcard import (
     generate_bibtex_key,
     parse_citation_reference_string,
     prepare_mathjax_html_fragment,
+    set_actual_base_url,
 )
 
 
@@ -760,11 +760,7 @@ class IOPHandler(PublisherHandler):
             self.configure(page=page, doi=doi)
 
         # Get the actual page URL for correct base_url resolution
-        page_url = page.url if hasattr(page, 'url') else str(page)
-        self.actual_base_url = ''
-        if page_url and not page_url.startswith('about:'):
-            parsed = urlparse(page_url)
-            self.actual_base_url = f"{parsed.scheme}://{parsed.netloc}"
+        set_actual_base_url(self, page)
 
         try:
             metadata = await self.extract_metadata(page)

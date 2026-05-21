@@ -8,6 +8,7 @@ into their own handlers.
 
 import re
 from html import unescape
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup, NavigableString
 
@@ -401,3 +402,26 @@ def parse_citation_reference_string(ref_str: str, *, bibtex_key: str = None) -> 
         return re.sub(r'\s+', ' ', unescape(ref_str or '')).strip()
 
     return format_as_bibtex(parts, key=bibtex_key)
+
+
+# ------------------------------------------------------------------
+# URL resolution helpers
+# ------------------------------------------------------------------
+
+def set_actual_base_url(handler, page) -> None:
+    """Extract and set actual base_url from page.url for correct domain resolution.
+
+    This function determines the actual domain of the loaded page by parsing page.url,
+    ensuring correct resolution of relative URLs regardless of DOI redirects or
+    publisher domains. Sets handler.actual_base_url.
+
+    Args:
+        handler: PublisherHandler instance to update
+        page: Playwright page object with url property
+    """
+    page_url = page.url if hasattr(page, 'url') else str(page)
+    handler.actual_base_url = ''
+    if page_url and not page_url.startswith('about:'):
+        parsed = urlparse(page_url)
+        handler.actual_base_url = f"{parsed.scheme}://{parsed.netloc}"
+

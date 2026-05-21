@@ -9,7 +9,6 @@ import json
 import requests
 from pathlib import Path
 from html import unescape
-from urllib.parse import urlparse
 
 from publisher.base import PublisherHandler
 from core.network_capture import setup_response_capture
@@ -22,6 +21,7 @@ from core.utilities import (
 from html_to_md_converter import cleanup_markdown, convert_html_to_markdown, mathml_to_latex_pandoc, remove_newlines_in_paragraph
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
+from publisher.wildcard import set_actual_base_url
 
 
 # ============================================================================
@@ -647,11 +647,7 @@ class APSHandler(PublisherHandler):
         self.configure(page=page, doi=doi)
 
         # Get the actual page URL for correct base_url resolution
-        page_url = page.url if hasattr(page, 'url') else str(page)
-        self.actual_base_url = ''
-        if page_url and not page_url.startswith('about:'):
-            parsed = urlparse(page_url)
-            self.actual_base_url = f"{parsed.scheme}://{parsed.netloc}"
+        set_actual_base_url(self, page)
 
         # 1. Extract metadata
         metadata = await self.extract_metadata(page)
