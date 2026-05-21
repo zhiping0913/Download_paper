@@ -1144,7 +1144,6 @@ class NatureHandler(PublisherHandler):
 
         figure_filenames = figure_filenames or {}
         if not figure_filenames:
-            print("    ℹ️  No figure filenames provided for replacement")
             return markdown
 
         def replace_match(match):
@@ -1164,10 +1163,7 @@ class NatureHandler(PublisherHandler):
                 local_filename = figure_filenames.get(str(int(fig_num)))
 
             if local_filename:
-                print(f"      ✓ Replacing fig {fig_num} with {local_filename}")
                 return f"![{alt_text}]({local_filename})"
-            else:
-                print(f"      ℹ️  No local filename for fig {fig_num} (available: {list(figure_filenames.keys())})")
             return match.group(0)
 
         # Replace both Springer and other remote image URLs
