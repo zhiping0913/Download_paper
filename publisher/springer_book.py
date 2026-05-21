@@ -186,46 +186,39 @@ class SpringerBookHandler(PublisherHandler):
     async def extract_metadata(self, page) -> dict:
         """Extract metadata from Springer book page"""
         metadata = {
-            'title': '',
+            'title': None,
             'authors': [],
-            'abstract': '',
-            'year': '',
-            'journal': '',
+            'abstract': None,
+            'year': None,
+            'journal': None,
         }
 
         try:
             html = await page.content()
-            if not html:
-                return metadata
-
             soup = BeautifulSoup(html, 'html.parser')
 
             # Extract book title - look for h1.app-card-open__heading or similar
             title_elem = soup.find('h1', class_='app-card-open__heading')
             if title_elem:
-                title_text = title_elem.get_text(' ', strip=True)
-                if title_text:
-                    metadata['title'] = title_text
+                metadata['title'] = title_elem.get_text(' ', strip=True)
 
             # If not found, try meta tags
             if not metadata['title']:
                 og_title = soup.find('meta', property='og:title')
-                if og_title and og_title.get('content'):
+                if og_title:
                     metadata['title'] = og_title.get('content', '').strip()
 
             # Extract publication year from meta tags
-            pub_time = soup.find('meta', property='article:published_time')
-            if pub_time and pub_time.get('content'):
+            if soup.find('meta', property='article:published_time'):
+                pub_time = soup.find('meta', property='article:published_time')
                 year_str = pub_time.get('content', '')[:4]
-                if year_str and year_str.isdigit():
+                if year_str.isdigit():
                     metadata['year'] = year_str
 
             # Extract publisher from page
             pub_elem = soup.find('span', class_='app-card-open__publishers')
             if pub_elem:
-                pub_text = pub_elem.get_text(' ', strip=True)
-                if pub_text:
-                    metadata['journal'] = pub_text
+                metadata['journal'] = pub_elem.get_text(' ', strip=True)
 
         except Exception as e:
             print(f"  ⚠️  Error extracting Springer metadata: {e}")
