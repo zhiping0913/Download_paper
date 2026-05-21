@@ -1135,37 +1135,50 @@ class NatureHandler(PublisherHandler):
 
     def replace_remote_figure_placeholders(self, markdown: str, metadata: dict,
                                            figure_filenames: dict = None) -> str:
-        """Replace Nature remote image placeholders with local downloaded files."""
-        json_ld_images = metadata.get('image') or []
-        if not markdown or not json_ld_images:
+        """Replace remote image URLs with local downloaded filenames.
+
+        Handles both JSON-LD images and HTML-extracted images.
+        """
+        if not markdown or not figure_filenames:
             return markdown
 
         figure_filenames = figure_filenames or {}
-        known_fig_nums = {
-            str(idx)
-            for idx, image_url in enumerate(json_ld_images, 1)
-            if image_url
-        }
 
         def replace_match(match):
             alt_text = match.group(1)
             image_url = match.group(2)
-            fig_match = re.search(r'Fig(\d+)[^/)]*', image_url)
+
+            # Extract figure number from URL (e.g., Fig1, Fig2, Fig10)
+            fig_match = re.search(r'[Ff]ig(?:ure)?[\s_]?(\d+)', image_url)
             if not fig_match:
                 return match.group(0)
 
             fig_num = fig_match.group(1)
-            if fig_num not in known_fig_nums:
-                return match.group(0)
+            # Try to find matching filename - check both with and without padding
+            local_filename = figure_filenames.get(fig_num)
+            if not local_filename:
+                # Try finding by index
+                local_filename = figure_filenames.get(str(int(fig_num)))
 
-            local_filename = figure_filenames.get(fig_num, f"figure_{fig_num}.png")
-            return f"![{alt_text}]({local_filename})"
+            if local_filename:
+                return f"![{alt_text}]({local_filename})"
+            return match.group(0)
 
-        return re.sub(
-            r'!\[([^\]]*)\]\(([^)]*media\.springernature\.com[^)]*MediaObjects[^)]*)\)',
+        # Replace both Springer and other remote image URLs
+        markdown = re.sub(
+            r'!\[([^\]]*)\]\((?:https?:)?//[^/]*media\.springernature\.com[^)]*\)',
             replace_match,
             markdown,
         )
+
+        # Also handle other remote URLs that might have been inserted
+        markdown = re.sub(
+            r'!\[([^\]]*)\]\((?:https?:)?//[^/]*(?:springer|nature|sciencedirect)[^)]*\)',
+            replace_match,
+            markdown,
+        )
+
+        return markdown
 
     def convert_to_markdown(self, metadata: dict, fulltext_data = None,
                           add_figure_refs: bool = False,
