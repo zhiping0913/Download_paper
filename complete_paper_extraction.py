@@ -725,9 +725,10 @@ async def complete_extraction_workflow(
             if crossref_data.get('type') and not metadata.get('type'):
                 metadata['type'] = crossref_data['type']
             # Store Crossref reference data for unified BibTeX generation
-            if crossref_data.get('reference'):
-                metadata['_crossref_references'] = crossref_data['reference']
-                print(f"  ✓ 从Crossref获取{len(crossref_data['reference'])}条参考文献")
+            # Note: fetch_crossref returns 'references' (plural), not 'reference'
+            if crossref_data.get('references'):
+                metadata['_crossref_references'] = crossref_data['references']
+                print(f"  ✓ 从Crossref获取{len(crossref_data['references'])}条参考文献")
             else:
                 print(f"  ⚠️  Crossref中没有参考文献数据")
 
