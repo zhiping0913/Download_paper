@@ -8,6 +8,7 @@ from publisher.base import PublisherHandler
 from publisher import APSHandler, AIPHandler, CambridgeHandler
 from publisher.nature import NatureHandler
 from publisher.iop import IOPHandler
+from publisher.springer_book import SpringerBookHandler
 
 
 def detect_publisher_from_url(url: str) -> str:
@@ -20,6 +21,10 @@ def detect_publisher_from_url(url: str) -> str:
     For example, AIP's DOI (10.1063) must be checked before APS's loose substring matches.
     """
     url_lower = url.lower()
+
+    # Springer Book/Chapter detection (BEFORE general Springer/Nature detection)
+    if 'springer.com/book' in url_lower or 'springer.com/chapter' in url_lower:
+        return 'springer_book'
 
     # Nature/Springer detection (most specific first)
     if 'nature.com' in url_lower:
@@ -88,7 +93,7 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
     Factory function to instantiate appropriate publisher handler
 
     Args:
-        publisher: Publisher name ('aps', 'nature', etc.)
+        publisher: Publisher name ('aps', 'nature', 'springer_book', etc.)
         **kwargs: Additional arguments for handler initialization
 
     Returns:
@@ -96,6 +101,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
     """
     if publisher == 'nature':
         return NatureHandler(**kwargs)
+    elif publisher == 'springer_book':
+        return SpringerBookHandler(**kwargs)
     elif publisher == 'iop':
         return IOPHandler(**kwargs)
     elif publisher == 'aip':
