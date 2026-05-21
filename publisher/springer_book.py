@@ -349,7 +349,7 @@ class SpringerBookHandler(PublisherHandler):
         Returns:
             tuple: (supplemental_urls, supplemental_descriptions)
                 - supplemental_urls: List of chapter PDF URLs
-                - supplemental_descriptions: Dict mapping filenames to chapter titles
+                - supplemental_descriptions: Dict mapping chapter titles to descriptions
         """
         soup = BeautifulSoup(html_content, 'html.parser')
 
@@ -394,12 +394,9 @@ class SpringerBookHandler(PublisherHandler):
             else:
                 url = href
 
-            # Extract filename from URL for description mapping
-            from pathlib import Path
-            filename = Path(href).name or f"chapter_{len(supplemental_urls) + 1}.pdf"
-
             supplemental_urls.append(url)
-            supplemental_descriptions[filename] = chapter_title
+            # Use chapter title as the key for descriptions (ensures unique naming)
+            supplemental_descriptions[chapter_title] = chapter_title
 
         return supplemental_urls, supplemental_descriptions
 
