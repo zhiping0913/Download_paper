@@ -121,6 +121,12 @@ class SpringerBookHandler(PublisherHandler):
 
             metadata['_chapters_content'] = chapters_content
 
+            # Collect chapter DOIs from chapters_info
+            if chapters_info:
+                chapter_dois = [ch.get('doi') for ch in chapters_info if ch.get('doi')]
+                if chapter_dois:
+                    metadata['additional_doi'] = chapter_dois
+
             # Return extraction results
             return {
                 'metadata': metadata,

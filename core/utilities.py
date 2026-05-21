@@ -181,6 +181,10 @@ def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
             'supplemental': supplemental_files if supplemental_files else []
         }
 
+        # Add additional_doi field for books with multiple chapters
+        if metadata.get('additional_doi'):
+            metadata_json['additional_doi'] = metadata['additional_doi']
+
         # Save as metadata.json (canonical filename)
         json_file = paper_dir / "metadata.json"
         with open(json_file, 'w', encoding='utf-8') as f:
