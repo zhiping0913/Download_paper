@@ -46,9 +46,19 @@ complete_extraction_workflow(doi, output_file=None, force_headed=False)
    https://doi.org/{doi}
    ```
 
-3. 根据 `force_headed` 决定浏览器路径。
-   - `force_headed=True`：跳过无头预检，直接使用有头 Chrome。
-   - `force_headed=False`：先使用无头 Chromium 访问 DOI，根据最终跳转 URL 判断 publisher。
+3. 获取元数据并进行两阶段 publisher 判断。
+   
+   **阶段一（Crossref 元数据决策）**：先通过 Crossref API 获取 DOI 的元数据，检查 `publisher` 字段是否包含以下出版商名称：
+   
+   ```python
+   HEADLESS_ACCESSIBLE_PUBLISHERS = ["nature", "aip", "cambridge", "springer"]
+   ```
+   
+   - 如果匹配且 `force_headed=False`：进入阶段二（无头预检）。
+   - 如果不匹配或 `force_headed=True`：跳过阶段二，直接使用有头 Chrome。
+   
+   **阶段二（Phase 0 无头预检）**：启动无头 Chromium 访问 DOI，根据最终跳转 URL 进行备选 publisher 判断。
+   这是对阶段一的补充，确保在 Crossref 信息不完整或延迟高的情况下仍可做出正确决策。
 
 4. 根据 URL/DOI 判断 publisher。
    规则位于 `publisher/orchestrator.py` 的 `detect_publisher_from_url()`。
@@ -112,7 +122,7 @@ https://www.nature.com/articles/{doi_suffix}
 如果最终 publisher 在：
 
 ```python
-HEADLESS_ACCESSIBLE_PUBLISHERS = ["nature", "aip", "cambridge"]
+HEADLESS_ACCESSIBLE_PUBLISHERS = ["nature", "aip", "cambridge", "springer"]
 ```
 
 中，主流程直接把这个无头 `page` 传给对应 handler，然后进入统一处理阶段。
