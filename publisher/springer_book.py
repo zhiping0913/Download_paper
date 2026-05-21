@@ -154,6 +154,45 @@ class SpringerBookHandler(PublisherHandler):
         # TODO: Implement metadata extraction
         return {}
 
+    async def get_fulltext_url(self, page) -> str:
+        """Get URL for full article text (not applicable for Springer books)"""
+        return None
+
+    async def get_pdf_url(self, doi: str) -> str:
+        """Get PDF URL from DOI (extracted from page HTML)"""
+        # PDF is extracted from HTML in extract_all
+        return None
+
+    async def get_supplemental_url(self, doi: str) -> str:
+        """Get supplemental materials URL (handled in extract_all)"""
+        return None
+
+    async def extract_references(self, html: str) -> list:
+        """Extract references from Springer book chapter"""
+        if not html:
+            return []
+
+        soup = BeautifulSoup(html, 'html.parser')
+        references = []
+
+        # Look for references section
+        ref_section = soup.find('section', {'data-title': 'References'})
+        if not ref_section:
+            return []
+
+        # Extract individual references
+        ref_items = ref_section.find_all('li')
+        for item in ref_items:
+            text = item.get_text(' ', strip=True)
+            if text:
+                references.append(text)
+
+        return references
+
+    async def get_figures(self, json_data: dict) -> dict:
+        """Extract figure URLs and captions (handled in extract_all)"""
+        return {}
+
     def _extract_section_paragraphs(self, html_content: str, section_title: str) -> str:
         """Extract paragraphs from a specific section by data-title attribute.
 
