@@ -732,20 +732,22 @@ class APSHandler(PublisherHandler):
             self.journal_prefix = detected_prefix
             print(f"  ✓ 期刊前缀: {self.journal_prefix}")
 
-        # 6. Extract PDF URL: try meta tag, then fallback to known patterns
+        # 6. Extract PDF URL from <a class="sm-primary-button">, fallback to journal pattern
         pdf_url = None
         try:
             pdf_url = await page.evaluate("""
                 () => {
-                    const meta = document.querySelector('meta[name="citation_pdf_url"]');
-                    return meta ? meta.getAttribute('content') : null;
+                    const btn = document.querySelector('a.sm-primary-button[href*="/pdf/"]');
+                    if (!btn) return null;
+                    const href = btn.getAttribute('href');
+                    if (!href) return null;
+                    if (href.startsWith('http')) return href;
+                    return new URL(href, window.location.origin).href;
                 }
             """)
         except:
             pass
 
-        if not pdf_url:
-            pdf_url = f"http://link.aps.org/pdf/{doi}"
         if not pdf_url:
             pdf_url = f"https://journals.aps.org/{self.journal_prefix}/pdf/{doi}"
 
