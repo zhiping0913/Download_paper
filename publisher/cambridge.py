@@ -9,6 +9,7 @@ import re
 
 from bs4 import BeautifulSoup, NavigableString
 from playwright.async_api import async_playwright
+from urllib.parse import urlparse
 
 from html_to_md_converter import (
     cleanup_markdown,
@@ -24,7 +25,6 @@ class CambridgeHandler(PublisherHandler):
 
     def __init__(self, page=None, captured_data_dir=None, doi: str = None):
         super().__init__(page=page, captured_data_dir=captured_data_dir, doi=doi)
-        self.base_url = "https://www.cambridge.org"
 
     # ------------------------------------------------------------------
     # Metadata extraction
@@ -582,6 +582,13 @@ class CambridgeHandler(PublisherHandler):
                 pass
         else:
             self.configure(page=page, doi=doi)
+
+        # Get the actual page URL for correct base_url resolution
+        page_url = page.url if hasattr(page, 'url') else str(page)
+        self.actual_base_url = ''
+        if page_url and not page_url.startswith('about:'):
+            parsed = urlparse(page_url)
+            self.actual_base_url = f"{parsed.scheme}://{parsed.netloc}"
 
         try:
             metadata = await self.extract_metadata(page)
