@@ -167,10 +167,19 @@ class SpringerBookHandler(PublisherHandler):
         """Get supplemental materials URL (handled in extract_all)"""
         return None
 
+    async def extract_references(self, html: str) -> list:
+        """Extract references from Springer book chapter (not used in extract_all flow)"""
+        if not html:
+            return [], []
+
+        # For consistency with abstract method, return tuple (references, raw_refs)
+        refs = self._extract_references_from_html(html)
+        return refs, refs
+
     def _extract_references_from_html(self, html: str) -> list:
         """Extract references from Springer book chapter HTML"""
         if not html:
-            return [], []
+            return []
 
         soup = BeautifulSoup(html, 'html.parser')
         references = []
@@ -183,7 +192,7 @@ class SpringerBookHandler(PublisherHandler):
             ref_section = soup.find('section', attrs={'aria-labelledby': lambda x: x and 'Bib' in (x or '')})
 
         if not ref_section:
-            return [], []
+            return []
 
         # Extract individual references
         ref_items = ref_section.find_all('li')
@@ -192,7 +201,7 @@ class SpringerBookHandler(PublisherHandler):
             if text:
                 references.append(text)
 
-        return references, references
+        return references
 
         return references
 
