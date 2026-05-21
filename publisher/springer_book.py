@@ -26,8 +26,8 @@ class SpringerBookHandler(PublisherHandler):
         """
         # Normalize chapter DOI to book DOI if needed
         if doi and '_' in doi:
-            # Extract DOI prefix before underscore (e.g., 10.1007/978-981-15-2381-6 from 10.1007/978-981-15-2381-6_2)
-            book_doi = doi.split('_')[0]
+            # Extract DOI prefix before the last underscore (e.g., 10.1007/978-981-15-2381-6 from 10.1007/978-981-15-2381-6_2)
+            book_doi = doi.rsplit('_', 1)[0]
             print(f"  ℹ️  Chapter DOI detected: {doi} → normalized to book DOI: {book_doi}")
             doi = book_doi
 
