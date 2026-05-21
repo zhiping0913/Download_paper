@@ -26,6 +26,7 @@ from publisher.wildcard import (
     generate_bibtex_key,
     parse_citation_reference_string,
     prepare_mathjax_html_fragment,
+    set_actual_base_url,
 )
 
 
@@ -83,11 +84,7 @@ class NatureHandler(PublisherHandler):
             self.configure(page=page, doi=doi)
 
         # Get the actual page URL for correct base_url resolution
-        page_url = page.url if hasattr(page, 'url') else str(page)
-        self.actual_base_url = ''
-        if page_url and not page_url.startswith('about:'):
-            parsed = urlparse(page_url)
-            self.actual_base_url = f"{parsed.scheme}://{parsed.netloc}"
+        set_actual_base_url(self, page)
 
         try:
             # 1. Extract metadata
