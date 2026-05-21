@@ -8,7 +8,7 @@ For chapter DOIs (e.g., 10.1007/978-981-15-2381-6_2), normalizes to book DOI.
 from typing import Optional, Dict, List
 from bs4 import BeautifulSoup
 from publisher.base import PublisherHandler
-from publisher.wildcard import init_extract_all_page, set_actual_base_url
+from publisher.wildcard import init_extract_all_page, set_actual_base_url, convert_html_fragment_to_markdown
 from publisher.nature import NatureHandler
 
 
@@ -85,10 +85,21 @@ class SpringerBookHandler(PublisherHandler):
             chapters_info = self._extract_chapters_info(fulltext_html)
             metadata['_chapters_info'] = chapters_info
 
-            # TODO: Extract content from each chapter
-            # For each chapter with a DOI link, call NatureHandler to extract:
-            # - abstract, figures, body text
-            # Then organize by chapter in the markdown output
+            # Extract content from each chapter with a DOI
+            chapters_content = []
+            if chapters_info:
+                print(f"  📚 Found {len(chapters_info)} chapters, extracting content...")
+                for idx, chapter_info in enumerate(chapters_info, 1):
+                    if chapter_info.get('doi'):
+                        print(f"    📖 Chapter {idx}: {chapter_info.get('title', 'Unknown')}")
+                        chapter_content = await self._extract_chapter_content(page, chapter_info['doi'])
+                        if chapter_content:
+                            chapter_content['_chapter_info'] = chapter_info
+                            chapters_content.append(chapter_content)
+                        else:
+                            print(f"      ⚠️  Failed to extract content for chapter {idx}")
+
+            metadata['_chapters_content'] = chapters_content
 
             # Return extraction results
             return {
@@ -237,6 +248,8 @@ class SpringerBookHandler(PublisherHandler):
         except Exception as e:
             print(f"  ⚠️  Failed to extract chapter {chapter_doi}: {e}")
             return None
+
+    def _extract_toc_chapter_pdfs(self, html_content: str) -> tuple:
         """Extract all chapter PDF links from Table of Contents section.
 
         Finds <section data-title="Table of contents">, then extracts each chapter's
@@ -298,6 +311,8 @@ class SpringerBookHandler(PublisherHandler):
             supplemental_descriptions[filename] = chapter_title
 
         return supplemental_urls, supplemental_descriptions
+
+    def _extract_pdf_url(self, html_content: str) -> Optional[str]:
         """Extract PDF download URL from page.
 
         Looks for <div class="c-pdf-download u-clear-both"> containing the PDF link.
@@ -331,21 +346,99 @@ class SpringerBookHandler(PublisherHandler):
                           figure_filenames: dict = None, **kwargs) -> str:
         """Convert extracted Springer book data to Markdown
 
+        Organizes content by chapter, including book overview and each chapter's
+        abstract, body, and figures.
+
         Args:
-            metadata: Book metadata dict
-            fulltext_data: HTML content or other fulltext data
+            metadata: Book metadata dict (contains _overview, _about, _chapters_content)
+            fulltext_data: HTML content (not used for Springer books)
             add_figure_refs: If True, add figure references
             figure_filenames: Mapping of figure number to downloaded local filename
 
         Returns:
             Markdown formatted text
         """
-        # TODO: Implement markdown conversion
         md_content = ""
 
-        # TODO: Add title, authors, DOI, publication info, etc.
-        # TODO: Add book/chapter summary and TOC if available
-        # TODO: Add main content with proper formatting
+        # ===== Book Title =====
+        title = metadata.get('title') or "Springer Book"
+        md_content += f"# {title}\n\n"
+
+        # ===== Authors and Publication Info =====
+        if metadata.get('author_with_affiliations'):
+            md_content += "## Authors\n\n"
+            for item in metadata['author_with_affiliations']:
+                author = item['author']
+                affiliations = item['affiliations']
+                if affiliations:
+                    md_content += f"- {author}\n  {', '.join(affiliations)}\n"
+                else:
+                    md_content += f"- {author}\n"
+            md_content += "\n"
+
+        # ===== DOI and Publication =====
+        if metadata.get('doi'):
+            md_content += f"**DOI**: {metadata['doi']}\n\n"
+
+        if metadata.get('journal'):
+            md_content += f"**Publisher**: {metadata['journal']}\n"
+        if metadata.get('year'):
+            md_content += f"**Year**: {metadata['year']}\n"
+        if metadata.get('volume'):
+            md_content += f"**Volume**: {metadata['volume']}\n"
+        md_content += "\n"
+
+        # ===== Book Overview =====
+        if metadata.get('_overview'):
+            md_content += "## Overview\n\n"
+            md_content += metadata['_overview'] + "\n\n"
+
+        # ===== About This Book =====
+        if metadata.get('_about'):
+            md_content += "## About This Book\n\n"
+            md_content += metadata['_about'] + "\n\n"
+
+        # ===== Chapters =====
+        chapters_content = metadata.get('_chapters_content', [])
+        if chapters_content:
+            md_content += "## Chapters\n\n"
+
+            for idx, chapter in enumerate(chapters_content, 1):
+                chapter_info = chapter.get('_chapter_info', {})
+                chapter_title = chapter_info.get('title', f'Chapter {idx}')
+                chapter_doi = chapter_info.get('doi', '')
+
+                # Chapter heading
+                md_content += f"### Chapter {idx}: {chapter_title}\n"
+                if chapter_doi:
+                    md_content += f"**DOI**: {chapter_doi}\n"
+                md_content += "\n"
+
+                # Chapter metadata
+                chapter_metadata = chapter.get('metadata', {})
+
+                # Chapter abstract
+                if chapter_metadata.get('abstract'):
+                    md_content += "#### Abstract\n\n"
+                    md_content += chapter_metadata['abstract'] + "\n\n"
+
+                # Chapter body (from fulltext_data extraction)
+                if chapter.get('fulltext_data'):
+                    md_content += "#### Content\n\n"
+                    chapter_html = chapter['fulltext_data']
+                    chapter_md = convert_html_fragment_to_markdown(chapter_html)
+                    if chapter_md:
+                        md_content += chapter_md + "\n\n"
+
+                # Chapter figures
+                chapter_figures = chapter.get('links', {}).get('figure_urls', {})
+                if chapter_figures:
+                    md_content += "#### Figures\n\n"
+                    for fig_num, fig_url in chapter_figures.items():
+                        md_content += f"- **{fig_num}**: {fig_url}\n"
+                    md_content += "\n"
+
+                md_content += "---\n\n"
 
         return md_content
 
