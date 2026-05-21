@@ -167,18 +167,23 @@ class SpringerBookHandler(PublisherHandler):
         """Get supplemental materials URL (handled in extract_all)"""
         return None
 
-    async def extract_references(self, html: str) -> list:
-        """Extract references from Springer book chapter"""
+    def _extract_references_from_html(self, html: str) -> list:
+        """Extract references from Springer book chapter HTML"""
         if not html:
-            return []
+            return [], []
 
         soup = BeautifulSoup(html, 'html.parser')
         references = []
 
-        # Look for references section
+        # Look for references section by data-title attribute
         ref_section = soup.find('section', {'data-title': 'References'})
+
+        # Also try with aria-labelledby pattern used in Springer
         if not ref_section:
-            return []
+            ref_section = soup.find('section', attrs={'aria-labelledby': lambda x: x and 'Bib' in (x or '')})
+
+        if not ref_section:
+            return [], []
 
         # Extract individual references
         ref_items = ref_section.find_all('li')
@@ -186,6 +191,8 @@ class SpringerBookHandler(PublisherHandler):
             text = item.get_text(' ', strip=True)
             if text:
                 references.append(text)
+
+        return references, references
 
         return references
 
@@ -516,6 +523,15 @@ class SpringerBookHandler(PublisherHandler):
                         else:
                             md_content += f"- **{fig_key}**: {fig_url}\n"
                     md_content += "\n"
+
+                # Chapter references
+                if chapter.get('fulltext_data'):
+                    refs = self._extract_references_from_html(chapter['fulltext_data'])
+                    if refs:
+                        md_content += "#### References\n\n"
+                        for idx, ref in enumerate(refs, 1):
+                            md_content += f"{idx}. {ref}\n"
+                        md_content += "\n"
 
                 md_content += "---\n\n"
 
