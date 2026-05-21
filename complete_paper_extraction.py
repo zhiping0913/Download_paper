@@ -26,6 +26,7 @@ from playwright.async_api import async_playwright
 
 # 导入核心模块 (Phase 2 refactoring)
 from core import (
+    fetch_crossref,
     fetch_semanticscholar,
     organize_paper_output,
     save_metadata_json
@@ -167,6 +168,42 @@ def get_publisher_handler_factory(publisher: str, **kwargs):
     """
     return get_publisher_handler(publisher, **kwargs)
 
+
+def fetch_metadata_with_priority(doi: str) -> dict:
+    """Fetch paper metadata with priority: Crossref → Semantic Scholar
+
+    Attempts to fetch metadata from Crossref first (richer data: publisher, ISBN, references),
+    then falls back to Semantic Scholar if Crossref fails.
+
+    Args:
+        doi: Digital Object Identifier (without 'https://doi.org/' prefix)
+
+    Returns:
+        dict with metadata from whichever source succeeds
+    """
+    print("\n🔍 获取论文元数据...")
+    print("=" * 80)
+
+    # Try Crossref first (primary source - has publisher, date, ISBN, references)
+    print("  → 尝试 Crossref (优先)...")
+    crossref_data = fetch_crossref(doi)
+
+    if crossref_data and crossref_data.get('title'):
+        print("  ✓ 使用 Crossref 数据\n")
+        return crossref_data
+
+    # Fallback to Semantic Scholar
+    print("  → Crossref 未获取到数据，尝试 Semantic Scholar (备用)...")
+    s2_data = fetch_semanticscholar(doi)
+
+    if s2_data and s2_data.get('title'):
+        print("  ✓ 使用 Semantic Scholar 数据\n")
+        return s2_data
+
+    print("  ⚠️  两个来源都未获取到元数据\n")
+    return {}
+
+
 # ============================================================================
 # Semantic Scholar API 配置
 # ============================================================================
@@ -176,20 +213,6 @@ HEADERS = {
     'Accept': 'application/json'
 }
 
-
-
-
-
-# NOTE: capture_network_data has been moved to APSHandler._capture_network_data
-# This function is kept for backward compatibility but delegates to the handler
-async def capture_network_data(page, url: str) -> dict:
-    """Legacy wrapper - use APSHandler._capture_network_data instead
-
-    This function is kept for backward compatibility with existing code.
-    New code should use APSHandler.extract_all() instead.
-    """
-    handler = get_publisher_handler('aps', page=page)
-    return await handler._capture_network_data(page, url)
 
 
 def normalize_image_url(image_url: str, base_url: str = None) -> str:
@@ -673,7 +696,7 @@ async def complete_extraction_workflow(
 
         return candidates
 
-    async def process_with_handler(page, context, handler, publisher, captured_data, s2_data, force_headed_downloads):
+    async def process_with_handler(page, context, handler, publisher, captured_data, force_headed_downloads):
         """Run publisher extraction and shared output/download steps."""
         print(f"Step 2️⃣  使用{publisher.upper()}Handler完整提取...")
         print("=" * 80)
@@ -683,7 +706,6 @@ async def complete_extraction_workflow(
         metadata = extraction_result['metadata']
         links = extraction_result['links']
         fulltext_data = extraction_result['fulltext_data']
-        s2_metadata = s2_data or {}
 
         # Save HTML to the per-DOI capture directory.
         if isinstance(fulltext_data, str) and fulltext_data:
@@ -692,12 +714,16 @@ async def complete_extraction_workflow(
                 f.write(fulltext_data)
             print(f"  ✓ HTML已保存: {html_file}")
 
-        # Merge with Semantic Scholar data
-        if s2_metadata:
-            if s2_metadata.get('year') and not metadata.get('year'):
-                metadata['year'] = s2_metadata['year']
-            if s2_metadata.get('title') and not metadata.get('title'):
-                metadata['title'] = s2_metadata['title']
+        # Merge with Crossref data (fill in missing fields)
+        if crossref_data:
+            if crossref_data.get('year') and not metadata.get('year'):
+                metadata['year'] = str(crossref_data['year'])
+            if crossref_data.get('title') and not metadata.get('title'):
+                metadata['title'] = crossref_data['title']
+            if crossref_data.get('publisher') and not metadata.get('publisher'):
+                metadata['publisher'] = crossref_data['publisher']
+            if crossref_data.get('type') and not metadata.get('type'):
+                metadata['type'] = crossref_data['type']
 
         print(f"  ✓ 标题: {metadata.get('title', 'N/A')[:60]}...")
         print(f"  ✓ 作者: {len(metadata.get('authors', []))} 位")
@@ -709,7 +735,7 @@ async def complete_extraction_workflow(
         # Prepare output directory
         base_output_dir = output_path
         base_output_dir.mkdir(parents=True, exist_ok=True)
-        paper_output_dir = organize_paper_output(base_output_dir, metadata, s2_metadata)
+        paper_output_dir = organize_paper_output(base_output_dir, metadata, crossref_data)
 
         markdown_filename = "paper.md"
         markdown_file = paper_output_dir / markdown_filename
@@ -763,7 +789,7 @@ async def complete_extraction_workflow(
         print(f"  ✓ Markdown已保存: {markdown_filename}")
 
         # Save metadata
-        save_metadata_json(paper_output_dir, metadata, s2_metadata, doi,
+        save_metadata_json(paper_output_dir, metadata, crossref_data, doi,
                          downloads['pdf'], downloads['supplemental'])
 
         # Statistics
@@ -897,6 +923,20 @@ async def complete_extraction_workflow(
         print("  → Phase 0将使用干净无头context继续预检")
         return None
 
+    # ========== 预获取Crossref元数据（Phase 0之前）==========
+    print("\nStep 0️⃣ (Pre)  获取Crossref元数据...")
+    print("=" * 80)
+    crossref_data = fetch_crossref(doi)
+    if crossref_data.get('title'):
+        print(f"  ✓ 标题: {crossref_data['title'][:60]}...")
+        print(f"  ✓ 出版商: {crossref_data.get('publisher', 'N/A')}")
+        print(f"  ✓ 类型: {crossref_data.get('type', 'N/A')}")
+        print(f"  ✓ 年份: {crossref_data.get('year', 'N/A')}")
+        print(f"  ✓ 参考文献: {len(crossref_data.get('references', []))} 条")
+    else:
+        print("  ⚠️  Crossref未返回数据")
+    print()
+
     # ========== 阶段0（可选）：使用无头浏览器快速预检 ==========
     # 如果 force_headed=True，跳过此阶段直接使用有头浏览器
     # 典型使用场景：已知目标期刊必须使用有头浏览器访问
@@ -993,18 +1033,12 @@ async def complete_extraction_workflow(
                             captured_data = handler.setup_network_capture(headless_page, doi)
                             print("✓ 网络监听已启动\n")
 
-                        print("Step 1.5️⃣  获取Semantic Scholar元数据...")
-                        print("=" * 80)
-                        s2_data = fetch_semanticscholar(doi)
-                        print()
-
                         result = await process_with_handler(
                             headless_page,
                             headless_context,
                             handler,
                             headless_publisher,
                             captured_data,
-                            s2_data,
                             force_headed,
                         )
                         await cleanup_context_pages(headless_context)
@@ -1064,18 +1098,12 @@ async def complete_extraction_workflow(
                 doi=doi,
             )
 
-            print("\nStep 1.5️⃣  获取Semantic Scholar元数据...")
-            print("=" * 80)
-            s2_data = fetch_semanticscholar(doi)
-            print()
-
             return await process_with_handler(
                 None,
                 None,
                 handler,
                 fallback_publisher,
                 None,
-                s2_data,
                 False,
             )
 
@@ -1147,12 +1175,6 @@ async def complete_extraction_workflow(
 
             print(f"✓ 检测出版商: {publisher.upper()}\n")
 
-            # Get Semantic Scholar metadata early
-            print("Step 1.5️⃣  获取Semantic Scholar元数据...")
-            print("=" * 80)
-            s2_data = fetch_semanticscholar(doi)
-            print()
-
             # Step 2: Use handler's extract_all for complete extraction
             #
             # handler.extract_all() 返回一个统一的字典结构（所有出版商通用）：
@@ -1193,13 +1215,13 @@ async def complete_extraction_workflow(
             #     'journal_prefix' / 'journal_name': str, # 可选的出版商扩展字段
             # }
             if callable(getattr(handler, 'extract_all', None)):
-                result = await process_with_handler(page, context, handler, publisher, captured_data, s2_data, True)
+                result = await process_with_handler(page, context, handler, publisher, captured_data, True)
             else:
-                # Other publishers - use Semantic Scholar metadata only
-                print("Step 2️⃣  使用Semantic Scholar元数据...")
+                # Other publishers - use Crossref metadata only
+                print("Step 2️⃣  使用Crossref元数据...")
                 print("=" * 80)
 
-                metadata = s2_data or {
+                metadata = crossref_data or {
                     'title': 'Unknown Paper',
                     'authors': [],
                     'journal': 'Unknown Journal',

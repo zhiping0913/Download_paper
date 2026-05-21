@@ -13,6 +13,12 @@ from datetime import datetime
 # Semantic Scholar API Configuration
 # ============================================================================
 S2_API_URL = "https://api.semanticscholar.org/graph/v1/paper/DOI:"
+
+# ============================================================================
+# Crossref API Configuration
+# ============================================================================
+CROSSREF_API_URL = "https://api.crossref.org/works"
+
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'Accept': 'application/json'
@@ -41,6 +47,86 @@ def fetch_semanticscholar(doi: str) -> dict:
     except Exception as e:
         print(f"  ⚠️  Semantic Scholar exception {doi}: {e}")
     return {}
+
+
+def fetch_crossref(doi: str) -> dict:
+    """Fetch paper metadata from Crossref API
+
+    Extracts: publisher, publication date (year/month/day), authors, ISBN, references
+
+    Returns dict with keys:
+        - title
+        - authors (list of dicts with 'name', 'given', 'family')
+        - publisher
+        - year (publication year)
+        - date_parts ([year, month, day])
+        - isbn (list)
+        - references (list of reference objects)
+        - volume, issue, pages
+        - journal (container-title)
+    """
+    try:
+        url = f"{CROSSREF_API_URL}/{doi}"
+        response = requests.get(url, headers=HEADERS, timeout=15)
+
+        if response.status_code == 200:
+            data = response.json()
+            work = data.get('message', {})
+
+            if not work:
+                return {}
+
+            # Extract key information
+            result = {
+                'title': work.get('title', [''])[0] if work.get('title') else '',
+                'type': work.get('type', ''),
+                'publisher': work.get('publisher', ''),
+                'authors': [],
+                'year': None,
+                'date_parts': None,
+                'isbn': work.get('ISBN', []),
+                'references': work.get('reference', []),
+                'volume': work.get('volume'),
+                'issue': work.get('issue'),
+                'pages': work.get('page'),
+                'journal': work.get('container-title', [''])[0] if work.get('container-title') else '',
+                'doi': work.get('DOI', doi),
+            }
+
+            # Extract authors
+            if work.get('author'):
+                for author in work['author']:
+                    result['authors'].append({
+                        'name': f"{author.get('given', '')} {author.get('family', '')}".strip(),
+                        'given': author.get('given', ''),
+                        'family': author.get('family', ''),
+                    })
+
+            # Extract publication date
+            if work.get('published-online'):
+                date_parts = work['published-online'].get('date-parts', [])
+                if date_parts and date_parts[0]:
+                    result['date_parts'] = date_parts[0]
+                    result['year'] = date_parts[0][0] if date_parts[0] else None
+
+            # Fallback to issued date if published-online not available
+            if not result['year'] and work.get('issued'):
+                date_parts = work['issued'].get('date-parts', [])
+                if date_parts and date_parts[0]:
+                    result['date_parts'] = date_parts[0]
+                    result['year'] = date_parts[0][0] if date_parts[0] else None
+
+            if result['title']:
+                print(f"  ✓ Crossref: {result['title'][:50]}... ({result['year'] or 'N/A'})")
+
+            return result
+        else:
+            print(f"  ⚠️  Crossref API error {response.status_code} for DOI {doi}")
+            return {}
+
+    except Exception as e:
+        print(f"  ⚠️  Crossref exception {doi}: {e}")
+        return {}
 
 
 # ============================================================================
@@ -200,6 +286,57 @@ def _build_bibtex_from_s2(s2_data: dict, doi: str) -> str:
     if venue:
         # venue from S2 might be journal name or conference
         lines.append(f"  journal = {{{venue}}},")
+    if year:
+        lines.append(f"  year = {{{year}}},")
+    if doi:
+        lines.append(f"  doi = {{{doi}}}")
+    lines.append("}")
+
+    return "\n".join(lines)
+
+
+def _build_bibtex_from_crossref(crossref_data: dict, doi: str) -> str:
+    """Build a BibTeX entry from Crossref API response."""
+    from publisher.wildcard import generate_bibtex_key
+
+    title = crossref_data.get('title', '')
+    year = crossref_data.get('year')
+    journal = crossref_data.get('journal', '')
+    publisher = crossref_data.get('publisher', '')
+    volume = crossref_data.get('volume')
+    issue = crossref_data.get('issue')
+    pages = crossref_data.get('pages')
+
+    authors = crossref_data.get('authors', [])
+    author_names = [a.get('name', '') for a in authors if a.get('name')]
+
+    # Generate key
+    key = generate_bibtex_key(author_names, str(year) if year else '', title)
+
+    # Format authors as "Last, First"
+    formatted_authors = []
+    for author in authors:
+        family = author.get('family', '')
+        given = author.get('given', '')
+        if family:
+            name = f"{family}, {given}" if given else family
+            formatted_authors.append(name)
+
+    lines = ["@article{" + key + ","]
+    if formatted_authors:
+        lines.append(f"  author = {{{' and '.join(formatted_authors)}}},")
+    if title:
+        lines.append(f"  title = {{{title}}},")
+    if journal:
+        lines.append(f"  journal = {{{journal}}},")
+    elif publisher:
+        lines.append(f"  publisher = {{{publisher}}},")
+    if volume:
+        lines.append(f"  volume = {{{volume}}},")
+    if issue:
+        lines.append(f"  issue = {{{issue}}},")
+    if pages:
+        lines.append(f"  pages = {{{pages}}},")
     if year:
         lines.append(f"  year = {{{year}}},")
     if doi:

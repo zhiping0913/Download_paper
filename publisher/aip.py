@@ -17,7 +17,12 @@ from html_to_md_converter import (
     mathml_to_latex_pandoc,
     remove_newlines_in_paragraph,
 )
-from core.utilities import fetch_semanticscholar, _build_bibtex_from_s2
+from core.utilities import (
+    fetch_crossref,
+    fetch_semanticscholar,
+    _build_bibtex_from_s2,
+    _build_bibtex_from_crossref,
+)
 from publisher.base import PublisherHandler
 
 
@@ -657,12 +662,17 @@ class AIPHandler(PublisherHandler):
                 ref_bibtex = []
                 for doi in ref_dois:
                     if doi:
-                        s2_data = fetch_semanticscholar(doi)
-                        if s2_data:
-                            bib = _build_bibtex_from_s2(s2_data, doi)
-                            ref_bibtex.append(bib if bib else '')
+                        # Try Crossref first, then fallback to Semantic Scholar
+                        crossref_data = fetch_crossref(doi)
+                        if crossref_data and crossref_data.get('title'):
+                            bib = _build_bibtex_from_crossref(crossref_data, doi)
                         else:
-                            ref_bibtex.append('')
+                            s2_data = fetch_semanticscholar(doi)
+                            if s2_data:
+                                bib = _build_bibtex_from_s2(s2_data, doi)
+                            else:
+                                bib = None
+                        ref_bibtex.append(bib if bib else '')
                     else:
                         ref_bibtex.append('')
                 metadata['_refs_bibtex'] = ref_bibtex
