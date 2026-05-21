@@ -487,11 +487,12 @@ class SpringerBookHandler(PublisherHandler):
             md_content += metadata['_about'] + "\n\n"
 
         # ===== Table of Contents =====
+        chapters_info = metadata.get('_chapters_info', [])
         chapters_content = metadata.get('_chapters_content', [])
-        if chapters_content:
+
+        if chapters_info:
             md_content += "## Table of Contents\n\n"
-            for idx, chapter in enumerate(chapters_content, 1):
-                chapter_info = chapter.get('_chapter_info', {})
+            for idx, chapter_info in enumerate(chapters_info, 1):
                 chapter_title = chapter_info.get('title', f'Chapter {idx}')
                 chapter_doi = chapter_info.get('doi', '')
                 md_content += f"{idx}. {chapter_title}"
@@ -501,11 +502,18 @@ class SpringerBookHandler(PublisherHandler):
             md_content += "\n"
 
         # ===== Chapters =====
-        if chapters_content:
+        # Create a mapping of chapter DOIs to their extracted content
+        content_by_doi = {}
+        for chapter in chapters_content:
+            chapter_info = chapter.get('_chapter_info', {})
+            chapter_doi = chapter_info.get('doi', '')
+            if chapter_doi:
+                content_by_doi[chapter_doi] = chapter
+
+        if chapters_info:
             md_content += "## Chapters\n\n"
 
-            for idx, chapter in enumerate(chapters_content, 1):
-                chapter_info = chapter.get('_chapter_info', {})
+            for idx, chapter_info in enumerate(chapters_info, 1):
                 chapter_title = chapter_info.get('title', f'Chapter {idx}')
                 chapter_doi = chapter_info.get('doi', '')
 
@@ -515,58 +523,65 @@ class SpringerBookHandler(PublisherHandler):
                     md_content += f"**DOI**: {chapter_doi}\n"
                 md_content += "\n"
 
-                # Chapter metadata
-                chapter_metadata = chapter.get('metadata', {})
+                # Check if this chapter has extracted content
+                if chapter_doi and chapter_doi in content_by_doi:
+                    chapter = content_by_doi[chapter_doi]
 
-                # Chapter abstract
-                if chapter_metadata.get('abstract'):
-                    md_content += "#### Abstract\n\n"
-                    md_content += chapter_metadata['abstract'] + "\n\n"
+                    # Chapter metadata
+                    chapter_metadata = chapter.get('metadata', {})
 
-                # Chapter body (from fulltext_data extraction)
-                if chapter.get('fulltext_data'):
-                    md_content += "#### Content\n\n"
-                    chapter_html = chapter['fulltext_data']
-                    # Use NatureHandler's method to extract main content only
-                    nature_handler = NatureHandler()
-                    # Set actual_base_url for convert_paragraph to work
-                    nature_handler.actual_base_url = self.actual_base_url
-                    chapter_md = nature_handler.convert_main_content_by_paragraph(chapter_html)
-                    if chapter_md:
-                        md_content += chapter_md + "\n\n"
+                    # Chapter abstract
+                    if chapter_metadata.get('abstract'):
+                        md_content += "#### Abstract\n\n"
+                        md_content += chapter_metadata['abstract'] + "\n\n"
 
-                # Chapter figures
-                chapter_figures = chapter.get('links', {}).get('figure_urls', {})
-                figure_mapping = chapter.get('_figure_mapping', {})
-                if chapter_figures:
-                    md_content += "#### Figures\n\n"
-                    for fig_key, fig_url in chapter_figures.items():
-                        mapped_key = figure_mapping.get(fig_key, fig_key)
-                        if figure_filenames and mapped_key in figure_filenames:
-                            md_content += f"- **{fig_key}**: ![{fig_key}]({figure_filenames[mapped_key]})\n"
-                        else:
-                            md_content += f"- **{fig_key}**: {fig_url}\n"
+                    # Chapter body (from fulltext_data extraction)
+                    if chapter.get('fulltext_data'):
+                        md_content += "#### Content\n\n"
+                        chapter_html = chapter['fulltext_data']
+                        # Use NatureHandler's method to extract main content only
+                        nature_handler = NatureHandler()
+                        # Set actual_base_url for convert_paragraph to work
+                        nature_handler.actual_base_url = self.actual_base_url
+                        chapter_md = nature_handler.convert_main_content_by_paragraph(chapter_html)
+                        if chapter_md:
+                            md_content += chapter_md + "\n\n"
+
+                    # Chapter figures
+                    chapter_figures = chapter.get('links', {}).get('figure_urls', {})
+                    figure_mapping = chapter.get('_figure_mapping', {})
+                    if chapter_figures:
+                        md_content += "#### Figures\n\n"
+                        for fig_key, fig_url in chapter_figures.items():
+                            mapped_key = figure_mapping.get(fig_key, fig_key)
+                            if figure_filenames and mapped_key in figure_filenames:
+                                md_content += f"- **{fig_key}**: ![{fig_key}]({figure_filenames[mapped_key]})\n"
+                            else:
+                                md_content += f"- **{fig_key}**: {fig_url}\n"
+                        md_content += "\n"
+
+                    # Chapter references
+                    if chapter.get('fulltext_data'):
+                        refs = self._extract_references_from_html(chapter['fulltext_data'])
+                        if refs:
+                            md_content += "#### References\n\n"
+                            for ref_idx, ref in enumerate(refs, 1):
+                                md_content += f"[{ref_idx}] {ref}\n\n"
+                                # Try to generate BibTeX from DOI in reference
+                                doi_match = re.search(r'(10\.\d{4,}/[^\s"\'\]]+)', ref)
+                                if doi_match:
+                                    doi_ref = doi_match.group(1).rstrip('.')
+                                    try:
+                                        crossref_data = fetch_crossref(doi_ref)
+                                        if crossref_data and crossref_data.get('title'):
+                                            bibtex = _build_bibtex_from_crossref(crossref_data, doi_ref)
+                                            if bibtex:
+                                                md_content += f"```bibtex\n{bibtex}\n```\n\n"
+                                    except Exception:
+                                        pass
+                else:
+                    # Chapter has no extracted content (e.g., Front Matter, Back Matter)
                     md_content += "\n"
-
-                # Chapter references
-                if chapter.get('fulltext_data'):
-                    refs = self._extract_references_from_html(chapter['fulltext_data'])
-                    if refs:
-                        md_content += "#### References\n\n"
-                        for idx, ref in enumerate(refs, 1):
-                            md_content += f"[{idx}] {ref}\n\n"
-                            # Try to generate BibTeX from DOI in reference
-                            doi_match = re.search(r'(10\.\d{4,}/[^\s"\'\]]+)', ref)
-                            if doi_match:
-                                doi_ref = doi_match.group(1).rstrip('.')
-                                try:
-                                    crossref_data = fetch_crossref(doi_ref)
-                                    if crossref_data and crossref_data.get('title'):
-                                        bibtex = _build_bibtex_from_crossref(crossref_data, doi_ref)
-                                        if bibtex:
-                                            md_content += f"```bibtex\n{bibtex}\n```\n\n"
-                                except Exception:
-                                    pass
 
                 md_content += "---\n\n"
 
