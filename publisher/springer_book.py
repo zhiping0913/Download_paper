@@ -77,14 +77,17 @@ class SpringerBookHandler(PublisherHandler):
             # Extract PDF download link
             pdf_url = self._extract_pdf_url(fulltext_html)
 
+            # Extract chapter PDFs from Table of Contents
+            supplemental_urls, supplemental_descriptions = self._extract_toc_chapter_pdfs(fulltext_html)
+
             # Return extraction results
             return {
                 'metadata': metadata,
                 'links': {
                     'pdf_url': pdf_url,
                     'figure_urls': {},
-                    'supplemental_urls': [],
-                    'supplemental_descriptions': {},
+                    'supplemental_urls': supplemental_urls,
+                    'supplemental_descriptions': supplemental_descriptions,
                 },
                 'fulltext_data': fulltext_html,
                 'journal_name': 'springer_book',
@@ -139,7 +142,68 @@ class SpringerBookHandler(PublisherHandler):
 
         return '\n\n'.join(paragraphs)
 
-    def _extract_pdf_url(self, html_content: str) -> Optional[str]:
+    def _extract_toc_chapter_pdfs(self, html_content: str) -> tuple:
+        """Extract all chapter PDF links from Table of Contents section.
+
+        Finds <section data-title="Table of contents">, then extracts each chapter's
+        PDF link from <li data-test="chapter"> elements.
+
+        Returns:
+            tuple: (supplemental_urls, supplemental_descriptions)
+                - supplemental_urls: List of chapter PDF URLs
+                - supplemental_descriptions: Dict mapping filenames to chapter titles
+        """
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        supplemental_urls = []
+        supplemental_descriptions = {}
+
+        # Find Table of contents section
+        toc_section = soup.find('section', {'data-title': 'Table of contents'})
+        if not toc_section:
+            return [], {}
+
+        # Find all chapter list items
+        chapters = toc_section.find_all('li', {'data-test': 'chapter'})
+        if not chapters:
+            return [], {}
+
+        for chapter in chapters:
+            # Extract chapter title from heading
+            heading = chapter.find('h3', class_='app-card-open__heading')
+            if not heading:
+                continue
+
+            # Get chapter title (could be text or within an <a> tag)
+            chapter_title = heading.get_text(' ', strip=True)
+            if not chapter_title:
+                continue
+
+            # Find PDF download link in the chapter
+            pdf_link = chapter.find('a', class_='c-pdf-chapter-download__link')
+            if not pdf_link:
+                continue
+
+            href = pdf_link.get('href', '')
+            if not href:
+                continue
+
+            # Convert relative URL to absolute
+            if href.startswith('//'):
+                url = 'https:' + href
+            elif not href.startswith('http'):
+                url = self.actual_base_url + href
+            else:
+                url = href
+
+            # Extract filename from URL for description mapping
+            from pathlib import Path
+            filename = Path(href).name or f"chapter_{len(supplemental_urls) + 1}.pdf"
+
+            supplemental_urls.append(url)
+            supplemental_descriptions[filename] = chapter_title
+
+        return supplemental_urls, supplemental_descriptions
         """Extract PDF download URL from page.
 
         Looks for <div class="c-pdf-download u-clear-both"> containing the PDF link.
