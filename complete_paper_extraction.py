@@ -470,7 +470,7 @@ async def download_supplemental_materials(
         supplemental_links: 补充材料链接列表
         output_dir: 输出目录
         context: Playwright browser context（已enable downloads）
-        descriptions: 补充材料的描述字典 {filename: description}
+        descriptions: 补充材料的描述字典 {chapter_title: description}
 
     Returns:
         tuple: (成功下载的文件数量, 下载文件的描述字典 {filename: description})
@@ -493,18 +493,30 @@ async def download_supplemental_materials(
             if not url:
                 continue
 
-            # 从URL中提取文件名
-            parsed_url = urllib.parse.urlparse(url)
-            filename = urllib.parse.unquote(parsed_url.path.split('/')[-1])
+            # 优先使用descriptions中的标题作为文件名（对于Springer书籍）
+            chapter_title = None
+            desc_value = None
 
-            if not filename:
-                filename = f"supplemental_{i}"
+            # 从descriptions中找到对应的chapter标题
+            if descriptions:
+                # 获取descriptions中的第i个条目的key和value
+                desc_items = list(descriptions.items())
+                if i - 1 < len(desc_items):
+                    chapter_title, desc_value = desc_items[i - 1]
 
-            # 生成输出文件名
-            output_filename = f"supplemental--{filename}"
+            # 如果没有找到chapter标题，从URL中提取文件名
+            if not chapter_title:
+                parsed_url = urllib.parse.urlparse(url)
+                filename = urllib.parse.unquote(parsed_url.path.split('/')[-1])
+                if not filename:
+                    filename = f"supplemental_{i}"
+                chapter_title = filename
+
+            # 生成输出文件名：supplemental--{chapter_title}
+            output_filename = f"supplemental--{chapter_title}"
             output_path = output_dir / output_filename
 
-            print(f"  📥 下载补充材料 ({i}/{len(supplemental_links)}): {filename}")
+            print(f"  📥 下载补充材料 ({i}/{len(supplemental_links)}): {chapter_title}")
             print(f"     URL: {url}")
 
             # force-headed mode avoids navigating the article tab.
@@ -540,12 +552,12 @@ async def download_supplemental_materials(
                     print(f"    ✓ 已保存: {output_path.name} ({file_size_mb:.2f} MB)")
                     downloaded_count += 1
 
-                    # 记录该文件的描述（如果有）
+                    # 记录该文件的描述
                     saved_name = output_path.name
-                    if filename in descriptions:
-                        downloaded_descriptions[filename] = descriptions[filename]
-                    elif saved_name in descriptions:
-                        downloaded_descriptions[saved_name] = descriptions[saved_name]
+                    if desc_value:
+                        downloaded_descriptions[saved_name] = desc_value
+                    else:
+                        downloaded_descriptions[saved_name] = chapter_title
 
                 except Exception as e:
                     print(f"    ⚠️  复制文件失败: {str(e)[:100]}")
@@ -561,16 +573,16 @@ async def download_supplemental_materials(
                         downloaded_count += 1
 
                         saved_name = output_path.name
-                        if filename in descriptions:
-                            downloaded_descriptions[filename] = descriptions[filename]
-                        elif saved_name in descriptions:
-                            downloaded_descriptions[saved_name] = descriptions[saved_name]
+                        if desc_value:
+                            downloaded_descriptions[saved_name] = desc_value
+                        else:
+                            downloaded_descriptions[saved_name] = chapter_title
                     else:
-                        print(f"    ⚠️  未捕获到下载事件: {filename}")
+                        print(f"    ⚠️  未捕获到下载事件: {chapter_title}")
                 except Exception as e:
                     print(f"    ⚠️  直接保存响应失败: {str(e)[:100]}")
             else:
-                print(f"    ⚠️  未捕获到下载事件: {filename}")
+                print(f"    ⚠️  未捕获到下载事件: {chapter_title}")
 
             if download_page is not page:
                 await download_page.close()
