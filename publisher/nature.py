@@ -28,6 +28,8 @@ from publisher.wildcard import (
     parse_citation_reference_string,
     prepare_mathjax_html_fragment,
     set_actual_base_url,
+    format_crossref_references_to_bibtex,
+    generate_reference_text_from_crossref,
 )
 
 
@@ -1285,7 +1287,31 @@ class NatureHandler(PublisherHandler):
         md_content += "\n---\n\n"
 
         # ===== References =====
-        if metadata.get('references'):
+        # Prefer Crossref references if available (unified BibTeX generation)
+        crossref_refs = metadata.get('_crossref_references', [])
+        if crossref_refs:
+            md_content += "## References\n\n"
+            for idx, ref in enumerate(crossref_refs, 1):
+                # Generate readable text from Crossref data
+                ref_text = generate_reference_text_from_crossref(ref, index=idx)
+                md_content += ref_text + "\n\n"
+                # Generate BibTeX from Crossref data
+                ref_key = ref.get('key', f'ref{idx}')
+                parts = {
+                    'author': ref.get('author', ''),
+                    'title': ref.get('article-title', ''),
+                    'journal': ref.get('journal-title', ''),
+                    'volume': ref.get('volume', ''),
+                    'firstpage': ref.get('first-page', ''),
+                    'lastpage': ref.get('last-page', ''),
+                    'year': str(ref.get('year', '')),
+                    'doi': ref.get('DOI', ''),
+                }
+                parts = {k: v for k, v in parts.items() if v}
+                if parts:
+                    bibtex = format_as_bibtex(parts, key=ref_key)
+                    md_content += f"```bibtex\n{bibtex}\n```\n\n"
+        elif metadata.get('references'):
             md_content += "## References\n\n"
             refs_raw = metadata.get('_refs_raw', [])
             references = metadata['references']

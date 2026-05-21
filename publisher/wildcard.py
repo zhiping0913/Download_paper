@@ -405,9 +405,102 @@ def parse_citation_reference_string(ref_str: str, *, bibtex_key: str = None) -> 
     return format_as_bibtex(parts, key=bibtex_key)
 
 
-# ------------------------------------------------------------------
-# URL resolution helpers
-# ------------------------------------------------------------------
+def format_crossref_references_to_bibtex(crossref_data: dict) -> dict:
+    """Convert Crossref API reference data to BibTeX entries.
+
+    Args:
+        crossref_data: Dict from fetch_crossref() containing 'reference' key with list of references
+
+    Returns:
+        Dict mapping Crossref reference key (e.g., '1311_CR1') to BibTeX string
+    """
+    bibtex_dict = {}
+    references = crossref_data.get('reference', [])
+
+    if not references:
+        return bibtex_dict
+
+    for ref in references:
+        if not isinstance(ref, dict):
+            continue
+
+        ref_key = ref.get('key', '')
+        if not ref_key:
+            continue
+
+        # Extract BibTeX fields from Crossref reference
+        parts = {
+            'author': ref.get('author', ''),
+            'title': ref.get('article-title', ''),
+            'journal': ref.get('journal-title', ''),
+            'volume': ref.get('volume', ''),
+            'firstpage': ref.get('first-page', ''),
+            'lastpage': ref.get('last-page', ''),
+            'year': str(ref.get('year', '')),
+            'doi': ref.get('DOI', ''),
+        }
+
+        # Filter out empty values
+        parts = {k: v for k, v in parts.items() if v}
+
+        if parts:
+            # Generate BibTeX key from Crossref key
+            bibtex = format_as_bibtex(parts, key=ref_key)
+            bibtex_dict[ref_key] = bibtex
+
+    return bibtex_dict
+
+
+def generate_reference_text_from_crossref(ref: dict, *, index: int = None) -> str:
+    """Generate readable reference text from Crossref reference dict.
+
+    Args:
+        ref: Single reference entry from Crossref API
+        index: Optional index for numbered output (e.g., [1])
+
+    Returns:
+        Formatted reference text
+    """
+    author = ref.get('author', '')
+    title = ref.get('article-title', '')
+    journal = ref.get('journal-title', '')
+    volume = ref.get('volume', '')
+    first_page = ref.get('first-page', '')
+    last_page = ref.get('last-page', '')
+    year = ref.get('year', '')
+    doi = ref.get('DOI', '')
+
+    # Use unstructured if available as fallback
+    if not all([author, title, journal]):
+        unstructured = ref.get('unstructured', '')
+        if unstructured:
+            prefix = f"[{index}] " if index is not None else ""
+            return prefix + unstructured
+
+    # Build formatted text
+    parts = []
+    if author:
+        parts.append(author)
+    if title:
+        parts.append(title.rstrip('.'))
+    if journal:
+        jpart = journal
+        if volume:
+            jpart += f" {volume}"
+        if first_page:
+            if last_page:
+                jpart += f", {first_page}--{last_page}"
+            else:
+                jpart += f", {first_page}"
+        if year:
+            jpart += f" ({year})"
+        parts.append(jpart)
+    if doi:
+        parts.append(f"https://doi.org/{doi}")
+
+    ref_text = ". ".join(parts)
+    prefix = f"[{index}] " if index is not None else ""
+    return prefix + ref_text
 
 def set_actual_base_url(handler, page) -> None:
     """Extract and set actual base_url from page.url for correct domain resolution.
