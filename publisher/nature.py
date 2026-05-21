@@ -37,14 +37,10 @@ class NatureHandler(PublisherHandler):
         Initialize Nature handler
 
         Args:
-            journal_name: Journal name (nature, nature_physics, nature_materials, iop, etc.)
+            journal_name: Journal name (nature, nature_physics, nature_materials, etc.)
         """
         super().__init__(page=page, captured_data_dir=captured_data_dir, doi=doi)
         self.journal_name = journal_name
-        if journal_name == 'iop':
-            self.base_url = "https://iopscience.iop.org"
-        else:
-            self.base_url = "https://www.nature.com"
 
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
         """Execute complete extraction flow for Nature articles
@@ -422,7 +418,7 @@ class NatureHandler(PublisherHandler):
 
         # Get the actual page URL for correct base_url resolution
         page_url = page.url if hasattr(page, 'url') else str(page)
-        actual_base_url = self.base_url
+        actual_base_url = ''
         if page_url and not page_url.startswith('about:'):
             from urllib.parse import urlparse
             parsed = urlparse(page_url)
@@ -464,7 +460,7 @@ class NatureHandler(PublisherHandler):
 
         # Get the actual page URL for correct base_url resolution
         page_url = page.url if hasattr(page, 'url') else str(page)
-        actual_base_url = self.base_url
+        actual_base_url = ''
         if page_url and not page_url.startswith('about:'):
             from urllib.parse import urlparse
             parsed = urlparse(page_url)
