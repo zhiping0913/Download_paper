@@ -82,6 +82,13 @@ class NatureHandler(PublisherHandler):
         else:
             self.configure(page=page, doi=doi)
 
+        # Get the actual page URL for correct base_url resolution
+        page_url = page.url if hasattr(page, 'url') else str(page)
+        self.actual_base_url = ''
+        if page_url and not page_url.startswith('about:'):
+            parsed = urlparse(page_url)
+            self.actual_base_url = f"{parsed.scheme}://{parsed.netloc}"
+
         try:
             # 1. Extract metadata
             metadata = await self.extract_metadata(page)
@@ -416,13 +423,7 @@ class NatureHandler(PublisherHandler):
         """
         print("  🔍 Looking for PDF download link...")
 
-        # Get the actual page URL for correct base_url resolution
-        page_url = page.url if hasattr(page, 'url') else str(page)
-        actual_base_url = ''
-        if page_url and not page_url.startswith('about:'):
-            from urllib.parse import urlparse
-            parsed = urlparse(page_url)
-            actual_base_url = f"{parsed.scheme}://{parsed.netloc}"
+        actual_base_url = self.actual_base_url
 
         # Look for PDF download link - try multiple selectors
         selectors = [
@@ -458,13 +459,7 @@ class NatureHandler(PublisherHandler):
         """
         print("  🔍 Looking for supplementary materials...")
 
-        # Get the actual page URL for correct base_url resolution
-        page_url = page.url if hasattr(page, 'url') else str(page)
-        actual_base_url = ''
-        if page_url and not page_url.startswith('about:'):
-            from urllib.parse import urlparse
-            parsed = urlparse(page_url)
-            actual_base_url = f"{parsed.scheme}://{parsed.netloc}"
+        actual_base_url = self.actual_base_url
 
         candidates = await page.evaluate("""() => {
             const links = [];
