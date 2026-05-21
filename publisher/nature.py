@@ -420,6 +420,14 @@ class NatureHandler(PublisherHandler):
         """
         print("  🔍 Looking for PDF download link...")
 
+        # Get the actual page URL for correct base_url resolution
+        page_url = page.url if hasattr(page, 'url') else str(page)
+        actual_base_url = self.base_url
+        if page_url and not page_url.startswith('about:'):
+            from urllib.parse import urlparse
+            parsed = urlparse(page_url)
+            actual_base_url = f"{parsed.scheme}://{parsed.netloc}"
+
         # Look for PDF download link - try multiple selectors
         selectors = [
             'a[href*=".pdf"]',
@@ -437,7 +445,7 @@ class NatureHandler(PublisherHandler):
                     href = await pdf_link.get_attribute('href')
                     if href:
                         if not href.startswith('http'):
-                            href = urljoin(self.base_url, href)
+                            href = urljoin(actual_base_url, href)
                         print(f"  ✅ Found PDF: {href[:80]}...")
                         return href
             except:
@@ -453,6 +461,14 @@ class NatureHandler(PublisherHandler):
         supplemental, extended (case-insensitive). Returns links from all matching sections.
         """
         print("  🔍 Looking for supplementary materials...")
+
+        # Get the actual page URL for correct base_url resolution
+        page_url = page.url if hasattr(page, 'url') else str(page)
+        actual_base_url = self.base_url
+        if page_url and not page_url.startswith('about:'):
+            from urllib.parse import urlparse
+            parsed = urlparse(page_url)
+            actual_base_url = f"{parsed.scheme}://{parsed.netloc}"
 
         candidates = await page.evaluate("""() => {
             const links = [];
@@ -503,7 +519,7 @@ class NatureHandler(PublisherHandler):
             if not href:
                 continue
 
-            url = urljoin(self.base_url, href)
+            url = urljoin(actual_base_url, href)
             url_lower = url.lower()
             if 'support.nature.com' in url_lower:
                 continue
