@@ -6,6 +6,7 @@ For chapter DOIs (e.g., 10.1007/978-981-15-2381-6_2), normalizes to book DOI.
 """
 
 from typing import Optional, Dict, List
+from bs4 import BeautifulSoup
 from publisher.base import PublisherHandler
 from publisher.wildcard import init_extract_all_page, set_actual_base_url
 
@@ -53,22 +54,39 @@ class SpringerBookHandler(PublisherHandler):
         set_actual_base_url(self, page)
 
         try:
-            # TODO: Implement full extraction flow
-            # - Extract metadata (title, authors, publisher info, etc.)
-            # - Extract TOC and chapter information
-            # - Extract figures from the main chapter or representative section
-            # - Extract references
-            # - Generate markdown content
+            # Extract page HTML content
+            try:
+                fulltext_html = await page.content()
+            except Exception:
+                fulltext_html = ''
 
+            # Extract key sections
+            metadata = await self.extract_metadata(page)
+            metadata['doi'] = doi
+
+            # Extract Overview section
+            overview_text = self._extract_section_paragraphs(fulltext_html, 'Overview')
+            if overview_text:
+                metadata['_overview'] = overview_text
+
+            # Extract About this book section
+            about_text = self._extract_section_paragraphs(fulltext_html, 'About this book')
+            if about_text:
+                metadata['_about'] = about_text
+
+            # Extract PDF download link
+            pdf_url = self._extract_pdf_url(fulltext_html)
+
+            # Return extraction results
             return {
-                'metadata': {},
+                'metadata': metadata,
                 'links': {
-                    'pdf_url': None,
+                    'pdf_url': pdf_url,
                     'figure_urls': {},
                     'supplemental_urls': [],
                     'supplemental_descriptions': {},
                 },
-                'fulltext_data': None,
+                'fulltext_data': fulltext_html,
                 'journal_name': 'springer_book',
             }
         finally:
@@ -94,6 +112,61 @@ class SpringerBookHandler(PublisherHandler):
         """Extract metadata from Springer book page"""
         # TODO: Implement metadata extraction
         return {}
+
+    def _extract_section_paragraphs(self, html_content: str, section_title: str) -> str:
+        """Extract paragraphs from a specific section by data-title attribute.
+
+        Args:
+            html_content: HTML page content
+            section_title: Value of data-title attribute to search for (e.g., "Overview", "About this book")
+
+        Returns:
+            Concatenated text from all <p> tags in the section
+        """
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        # Find section by data-title attribute
+        section = soup.find('section', {'data-title': section_title})
+        if not section:
+            return ""
+
+        # Extract all paragraphs within the section
+        paragraphs = []
+        for p in section.find_all('p'):
+            text = p.get_text(' ', strip=True)
+            if text:
+                paragraphs.append(text)
+
+        return '\n\n'.join(paragraphs)
+
+    def _extract_pdf_url(self, html_content: str) -> Optional[str]:
+        """Extract PDF download URL from page.
+
+        Looks for <div class="c-pdf-download u-clear-both"> containing the PDF link.
+        """
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        # Find PDF download section
+        pdf_div = soup.find('div', class_='c-pdf-download')
+        if not pdf_div:
+            return None
+
+        # Find the link within
+        link = pdf_div.find('a')
+        if not link:
+            return None
+
+        href = link.get('href', '')
+        if not href:
+            return None
+
+        # Convert relative URLs to absolute
+        if href.startswith('//'):
+            href = 'https:' + href
+        elif not href.startswith('http'):
+            href = self.actual_base_url + href
+
+        return href
 
     def convert_to_markdown(self, metadata: dict, fulltext_data=None,
                           add_figure_refs: bool = False,
