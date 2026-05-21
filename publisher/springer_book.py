@@ -69,6 +69,7 @@ class SpringerBookHandler(PublisherHandler):
                         pass
                 except Exception as e:
                     print(f"  ⚠️  导航到书籍页面失败: {e}")
+                print(f"  ✓ 页面已导航到书籍DOI")
 
         # Get the actual page URL for correct base_url resolution
         set_actual_base_url(self, page)
@@ -82,6 +83,7 @@ class SpringerBookHandler(PublisherHandler):
 
             # Extract key sections (after navigating to correct page)
             metadata = await self.extract_metadata(page)
+            print(f"  ℹ️  提取的元数据标题: {metadata.get('title', 'N/A')[:60]}")
             metadata['doi'] = doi
 
             # Extract Overview section
@@ -183,8 +185,45 @@ class SpringerBookHandler(PublisherHandler):
 
     async def extract_metadata(self, page) -> dict:
         """Extract metadata from Springer book page"""
-        # TODO: Implement metadata extraction
-        return {}
+        metadata = {
+            'title': None,
+            'authors': [],
+            'abstract': None,
+            'year': None,
+            'journal': None,
+        }
+
+        try:
+            html = await page.content()
+            soup = BeautifulSoup(html, 'html.parser')
+
+            # Extract book title - look for h1.app-card-open__heading or similar
+            title_elem = soup.find('h1', class_='app-card-open__heading')
+            if title_elem:
+                metadata['title'] = title_elem.get_text(' ', strip=True)
+
+            # If not found, try meta tags
+            if not metadata['title']:
+                og_title = soup.find('meta', property='og:title')
+                if og_title:
+                    metadata['title'] = og_title.get('content', '').strip()
+
+            # Extract publication year from meta tags
+            if soup.find('meta', property='article:published_time'):
+                pub_time = soup.find('meta', property='article:published_time')
+                year_str = pub_time.get('content', '')[:4]
+                if year_str.isdigit():
+                    metadata['year'] = year_str
+
+            # Extract publisher from page
+            pub_elem = soup.find('span', class_='app-card-open__publishers')
+            if pub_elem:
+                metadata['journal'] = pub_elem.get_text(' ', strip=True)
+
+        except Exception as e:
+            print(f"  ⚠️  Error extracting Springer metadata: {e}")
+
+        return metadata
 
     async def get_fulltext_url(self, page) -> str:
         """Get URL for full article text (not applicable for Springer books)"""
