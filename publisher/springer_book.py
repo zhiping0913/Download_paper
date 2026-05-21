@@ -8,7 +8,7 @@ For chapter DOIs (e.g., 10.1007/978-981-15-2381-6_2), normalizes to book DOI.
 from typing import Optional, Dict, List
 from bs4 import BeautifulSoup
 from publisher.base import PublisherHandler
-from publisher.wildcard import init_extract_all_page, set_actual_base_url, convert_html_fragment_to_markdown
+from publisher.wildcard import init_extract_all_page, set_actual_base_url
 from publisher.nature import NatureHandler
 
 
@@ -498,7 +498,9 @@ class SpringerBookHandler(PublisherHandler):
                 if chapter.get('fulltext_data'):
                     md_content += "#### Content\n\n"
                     chapter_html = chapter['fulltext_data']
-                    chapter_md = convert_html_fragment_to_markdown(chapter_html)
+                    # Use NatureHandler's method to extract main content only
+                    nature_handler = NatureHandler()
+                    chapter_md = nature_handler.convert_main_content_by_paragraph(chapter_html)
                     if chapter_md:
                         md_content += chapter_md + "\n\n"
 
