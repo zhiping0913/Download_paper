@@ -1053,12 +1053,13 @@ class NatureHandler(PublisherHandler):
         }
 
     async def get_figures(self, page, metadata: dict = None) -> Dict[str, dict]:
-        """Extract figure URLs from JSON-LD mainEntity.image."""
+        """Extract figure URLs from JSON-LD mainEntity.image or HTML structure."""
         print("  🔍 Extracting figures...")
 
         figures = {}
         json_ld_images = (metadata or {}).get('image') or []
 
+        # Try JSON-LD images first
         for idx, image_url in enumerate(json_ld_images, 1):
             figures[f'fig_{idx}'] = {
                 'caption': '',
@@ -1068,7 +1069,65 @@ class NatureHandler(PublisherHandler):
         if figures:
             print(f"  ✅ Figures found from JSON-LD images: {len(figures)}")
         else:
-            print("  ⚠️  No JSON-LD mainEntity.image figures found")
+            print("  ⚠️  No JSON-LD mainEntity.image figures found, trying HTML structure...")
+            # Fallback: extract from HTML structure
+            try:
+                fulltext_html = await page.content()
+                figures = self._extract_figures_from_html(fulltext_html)
+                if figures:
+                    print(f"  ✅ Figures found from HTML structure: {len(figures)}")
+            except Exception as e:
+                print(f"  ⚠️  Failed to extract figures from HTML: {e}")
+
+        return figures
+
+    def _extract_figures_from_html(self, html_content: str) -> Dict[str, dict]:
+        """Extract figures from HTML structure with class='c-article-section__figure-link'."""
+        figures = {}
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        fig_idx = 1
+        for figure_div in soup.find_all('div', class_='c-article-section__figure'):
+            # Get caption
+            caption_elem = figure_div.find('figcaption')
+            caption = caption_elem.get_text(' ', strip=True) if caption_elem else f'Figure {fig_idx}'
+            caption = re.sub(r'\s+', ' ', caption).strip()
+
+            # Try to get image URL from picture/source or img tag
+            image_url = None
+            figure_link = figure_div.find('a', class_='c-article-section__figure-link')
+
+            if figure_link:
+                # Try to find picture > source with srcset
+                picture = figure_link.find('picture')
+                if picture:
+                    source = picture.find('source')
+                    if source:
+                        srcset = source.get('srcset', '')
+                        if srcset:
+                            # Extract first URL from srcset (format: "url size, url size, ...")
+                            urls = srcset.split(',')
+                            if urls:
+                                image_url = urls[0].strip().split()[0]
+
+                # Fallback: try img src
+                if not image_url:
+                    img = figure_link.find('img')
+                    if img:
+                        image_url = img.get('src')
+
+            # Ensure URL is absolute
+            if image_url:
+                if image_url.startswith('//'):
+                    image_url = 'https:' + image_url
+                elif not image_url.startswith('http'):
+                    image_url = self.actual_base_url + image_url
+
+                figures[f'fig_{fig_idx}'] = {
+                    'caption': caption,
+                    'url': image_url,
+                }
+                fig_idx += 1
 
         return figures
 
