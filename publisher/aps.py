@@ -12,7 +12,12 @@ from html import unescape
 
 from publisher.base import PublisherHandler
 from core.network_capture import setup_response_capture
-from core.utilities import fetch_semanticscholar, _build_bibtex_from_s2
+from core.utilities import (
+    fetch_crossref,
+    fetch_semanticscholar,
+    _build_bibtex_from_s2,
+    _build_bibtex_from_crossref,
+)
 from html_to_md_converter import cleanup_markdown, convert_html_to_markdown, mathml_to_latex_pandoc, remove_newlines_in_paragraph
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
@@ -671,18 +676,24 @@ class APSHandler(PublisherHandler):
                 if references:
                     metadata['references'] = references
                     print(f"  ✓ 参考文献: {len(references)} 条")
-                    # Generate BibTeX entries via Semantic Scholar
+                    # Generate BibTeX entries via Crossref (primary) → Semantic Scholar (fallback)
                     bibtex_refs = []
                     for ref_text in references:
                         doi_match = re.search(r'(10\.\d{4,}/[^\s"\'\]]+)', ref_text)
                         if doi_match:
                             doi_ref = doi_match.group(1).rstrip('.')
                             try:
-                                s2_data = fetch_semanticscholar(doi_ref)
-                                if s2_data and s2_data.get('title'):
-                                    bibtex_refs.append(_build_bibtex_from_s2(s2_data, doi_ref))
+                                # Try Crossref first
+                                crossref_data = fetch_crossref(doi_ref)
+                                if crossref_data and crossref_data.get('title'):
+                                    bibtex_refs.append(_build_bibtex_from_crossref(crossref_data, doi_ref))
                                 else:
-                                    bibtex_refs.append(None)
+                                    # Fallback to Semantic Scholar
+                                    s2_data = fetch_semanticscholar(doi_ref)
+                                    if s2_data and s2_data.get('title'):
+                                        bibtex_refs.append(_build_bibtex_from_s2(s2_data, doi_ref))
+                                    else:
+                                        bibtex_refs.append(None)
                             except Exception:
                                 bibtex_refs.append(None)
                         else:
