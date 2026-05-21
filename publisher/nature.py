@@ -1053,13 +1053,23 @@ class NatureHandler(PublisherHandler):
         }
 
     async def get_figures(self, page, metadata: dict = None) -> Dict[str, dict]:
-        """Extract figure URLs from JSON-LD mainEntity.image or HTML structure."""
+        """Extract figure URLs from HTML structure first, then fallback to JSON-LD metadata."""
         print("  🔍 Extracting figures...")
 
         figures = {}
-        json_ld_images = (metadata or {}).get('image') or []
 
-        # Try JSON-LD images first
+        # Try HTML structure first (more reliable for Springer books/chapters)
+        try:
+            fulltext_html = await page.content()
+            figures = self._extract_figures_from_html(fulltext_html)
+            if figures:
+                print(f"  ✅ Figures found from HTML structure: {len(figures)}")
+                return figures
+        except Exception as e:
+            print(f"  ⚠️  Failed to extract figures from HTML: {e}")
+
+        # Fallback: use JSON-LD mainEntity.image
+        json_ld_images = (metadata or {}).get('image') or []
         for idx, image_url in enumerate(json_ld_images, 1):
             figures[f'fig_{idx}'] = {
                 'caption': '',
@@ -1069,15 +1079,7 @@ class NatureHandler(PublisherHandler):
         if figures:
             print(f"  ✅ Figures found from JSON-LD images: {len(figures)}")
         else:
-            print("  ⚠️  No JSON-LD mainEntity.image figures found, trying HTML structure...")
-            # Fallback: extract from HTML structure
-            try:
-                fulltext_html = await page.content()
-                figures = self._extract_figures_from_html(fulltext_html)
-                if figures:
-                    print(f"  ✅ Figures found from HTML structure: {len(figures)}")
-            except Exception as e:
-                print(f"  ⚠️  Failed to extract figures from HTML: {e}")
+            print("  ⚠️  No figures found")
 
         return figures
 
