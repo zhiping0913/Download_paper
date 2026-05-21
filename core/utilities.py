@@ -52,7 +52,7 @@ def fetch_semanticscholar(doi: str) -> dict:
 def fetch_crossref(doi: str) -> dict:
     """Fetch paper metadata from Crossref API
 
-    Extracts: publisher, publication date (year/month/day), authors, ISBN, references
+    Extracts: publisher, publication date (year/month/day), authors, ISBN, ISSN, references
 
     Returns dict with keys:
         - title
@@ -61,6 +61,7 @@ def fetch_crossref(doi: str) -> dict:
         - year (publication year)
         - date_parts ([year, month, day])
         - isbn (list)
+        - issn (list)
         - references (list of reference objects)
         - volume, issue, pages
         - journal (container-title)
@@ -85,6 +86,7 @@ def fetch_crossref(doi: str) -> dict:
                 'year': None,
                 'date_parts': None,
                 'isbn': work.get('ISBN', []),
+                'issn': work.get('ISSN', []),
                 'references': work.get('reference', []),
                 'volume': work.get('volume'),
                 'issue': work.get('issue'),
@@ -184,6 +186,14 @@ def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
         # Add additional_doi field for books with multiple chapters
         if metadata.get('additional_doi'):
             metadata_json['additional_doi'] = metadata['additional_doi']
+
+        # Add ISBN field if present
+        if metadata.get('ISBN'):
+            metadata_json['ISBN'] = metadata['ISBN']
+
+        # Add ISSN field if present
+        if metadata.get('ISSN'):
+            metadata_json['ISSN'] = metadata['ISSN']
 
         # Save as metadata.json (canonical filename)
         json_file = paper_dir / "metadata.json"
