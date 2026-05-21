@@ -1139,10 +1139,13 @@ class NatureHandler(PublisherHandler):
 
         Handles both JSON-LD images and HTML-extracted images.
         """
-        if not markdown or not figure_filenames:
+        if not markdown:
             return markdown
 
         figure_filenames = figure_filenames or {}
+        if not figure_filenames:
+            print("    ℹ️  No figure filenames provided for replacement")
+            return markdown
 
         def replace_match(match):
             alt_text = match.group(1)
@@ -1161,7 +1164,10 @@ class NatureHandler(PublisherHandler):
                 local_filename = figure_filenames.get(str(int(fig_num)))
 
             if local_filename:
+                print(f"      ✓ Replacing fig {fig_num} with {local_filename}")
                 return f"![{alt_text}]({local_filename})"
+            else:
+                print(f"      ℹ️  No local filename for fig {fig_num} (available: {list(figure_filenames.keys())})")
             return match.group(0)
 
         # Replace both Springer and other remote image URLs
