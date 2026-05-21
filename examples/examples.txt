@@ -8,7 +8,7 @@ nature, springer
 10.1038/s41598-019-57119-x   #scientific reports, section-title, figure, supplementary
 10.1038/s42005-024-01811-6   #Communications Physics, section-title, article-equation, figure, table, Code availability, supplementary
 10.1038/s41586-026-10400-2   #nature, figure, Formula, supplementary, Extended data figures and tables
-10.1007/978-981-15-2381-6   #springer book
+10.1007/978-981-15-2381-6   #springer book, chapter, Formula, article-equation, figure, table
 
 
 

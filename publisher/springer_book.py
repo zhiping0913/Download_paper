@@ -80,7 +80,7 @@ class SpringerBookHandler(PublisherHandler):
             except Exception:
                 fulltext_html = ''
 
-            # Extract key sections
+            # Extract key sections (after navigating to correct page)
             metadata = await self.extract_metadata(page)
             metadata['doi'] = doi
 

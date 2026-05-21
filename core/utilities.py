@@ -140,10 +140,14 @@ def organize_paper_output(output_dir: Path, metadata: dict, s2_data: dict) -> Pa
     Create organized paper directory structure
     Format: {year}--{title}/
     Returns the new output directory
+
+    Priority: metadata (from handler) > s2_data (from Semantic Scholar)
+    This ensures that for books/chapters, we use the correct extracted title, not cached S2 data
     """
     try:
-        year = s2_data.get('year') or metadata.get('year') or '0000'
-        title = s2_data.get('title') or metadata.get('title') or 'paper'
+        # Prioritize metadata from handler over s2_data
+        year = metadata.get('year') or s2_data.get('year') or '0000'
+        title = metadata.get('title') or s2_data.get('title') or 'paper'
 
         # Clean title of special characters
         title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:150].strip()
