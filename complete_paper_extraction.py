@@ -1055,6 +1055,7 @@ async def complete_extraction_workflow(
                             captured_data_dir=captured_data_dir,
                             doi=doi,
                         )
+                        handler.crossref_data = crossref_data
 
                         captured_data = None
                         if hasattr(handler, 'setup_network_capture'):
@@ -1125,6 +1126,7 @@ async def complete_extraction_workflow(
                 captured_data_dir=captured_data_dir,
                 doi=doi,
             )
+            handler.crossref_data = crossref_data
 
             return await process_with_handler(
                 None,
@@ -1172,6 +1174,7 @@ async def complete_extraction_workflow(
                 captured_data_dir=captured_data_dir,
                 doi=doi,
             )
+            handler.crossref_data = crossref_data
             captured_data = None
             if hasattr(handler, 'setup_network_capture'):
                 captured_data = handler.setup_network_capture()
@@ -1194,6 +1197,7 @@ async def complete_extraction_workflow(
                     captured_data_dir=captured_data_dir,
                     doi=doi,
                 )
+                handler.crossref_data = crossref_data
                 captured_data = None
                 if hasattr(handler, 'setup_network_capture'):
                     captured_data = handler.setup_network_capture()

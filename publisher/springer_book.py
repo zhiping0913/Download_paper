@@ -88,6 +88,13 @@ class SpringerBookHandler(PublisherHandler):
             chapters_info = self._extract_chapters_info(fulltext_html)
             metadata['_chapters_info'] = chapters_info
 
+            # Extract ISBN and ISSN from Crossref data
+            if hasattr(self, 'crossref_data') and self.crossref_data:
+                if self.crossref_data.get('isbn'):
+                    metadata['ISBN'] = self.crossref_data['isbn']
+                if self.crossref_data.get('issn'):
+                    metadata['ISSN'] = self.crossref_data['issn']
+
             # Extract content from each chapter with a DOI
             chapters_content = []
             all_chapter_figures = {}
