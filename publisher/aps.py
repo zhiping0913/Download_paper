@@ -720,31 +720,34 @@ class APSHandler(PublisherHandler):
         # 5. Update journal_prefix from captured data (detected from URL) or DOI
         detected_prefix = captured.get('journal_prefix')
         if not detected_prefix:
-            # Fallback: extract from DOI: 10.1103/PhysRevApplied.18.024026
-            doi_match = re.search(r'10\.1103/([A-Za-z]+)', doi or '')
-            if doi_match:
-                journal_name = doi_match.group(1)
-                APS_JOURNAL_PREFIXES = {
-                    'PhysRevLett': 'prl',
-                    'PhysRevApplied': 'prapplied',
-                    'PhysReviewX': 'prx',
-                    'PhysRevA': 'pra',
-                    'PhysRevB': 'prb',
-                    'PhysRevC': 'prc',
-                    'PhysRevD': 'prd',
-                    'PhysRevE': 'pre',
-                    'PhysRevResearch': 'prresearch',
-                    'PhysRevFluids': 'prfluids',
-                    'PhysRevMaterials': 'prmaterials',
-                    'PhysRevAccelBeams': 'prab',
-                    'PhysRevPhysEducRes': 'prper',
-                    'PhysRevSTAB': 'prstab',
-                    'PhysRevSTPER': 'prstper',
-                    'RevModPhys': 'rmp',
-                }
-                mapped = APS_JOURNAL_PREFIXES.get(journal_name)
-                if mapped:
-                    detected_prefix = mapped
+            # Fallback: extract from DOI: 10.1103/PhysRevApplied.18.024026 or 10.1103/physrevlett.124.185004
+            actual_doi = self.doi or doi
+            if actual_doi:
+                doi_match = re.search(r'10\.1103/([A-Za-z]+)', actual_doi)
+                if doi_match:
+                    journal_name = doi_match.group(1)
+                    APS_JOURNAL_PREFIXES = {
+                        'physrevlett': 'prl',
+                        'physrevapplied': 'prapplied',
+                        'physreviewx': 'prx',
+                        'physreva': 'pra',
+                        'physrevb': 'prb',
+                        'physrevc': 'prc',
+                        'physrevd': 'prd',
+                        'physreve': 'pre',
+                        'physrevresearch': 'prresearch',
+                        'physrevfluids': 'prfluids',
+                        'physrevmaterials': 'prmaterials',
+                        'physrevaccelbeams': 'prab',
+                        'physrevphysedures': 'prper',
+                        'physrevstab': 'prstab',
+                        'physrevstper': 'prstper',
+                        'revmodphys': 'rmp',
+                    }
+                    # Case-insensitive lookup
+                    mapped = APS_JOURNAL_PREFIXES.get(journal_name.lower())
+                    if mapped:
+                        detected_prefix = mapped
         if detected_prefix:
             self.journal_prefix = detected_prefix
             print(f"  ✓ 期刊前缀: {self.journal_prefix}")
