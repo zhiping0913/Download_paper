@@ -755,7 +755,13 @@ async def complete_extraction_workflow(
         print(f"Step 2️⃣  使用{publisher.upper()}Handler完整提取...")
         print("=" * 80)
 
-        extraction_result = await handler.extract_all(captured=captured_data)
+        try:
+            extraction_result = await handler.extract_all(captured=captured_data)
+        except Exception as e:
+            print(f"  ⚠️  extract_all 失败: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
         metadata = extraction_result['metadata']
         links = extraction_result['links']
@@ -835,16 +841,22 @@ async def complete_extraction_workflow(
         # Step 3.5: Generate markdown with figures
         print("\nStep 3.5️⃣  生成Markdown...")
         print("=" * 80)
-        md = handler.convert_to_markdown(
-            metadata,
-            fulltext_data,
-            add_figure_refs=bool(downloads['figures']),
-            figure_filenames=downloads['figures'],
-            supplemental_urls=links.get('supplemental_urls', []),
-            supplemental_descriptions=links.get('supplemental_descriptions', {}),
-            supplemental_downloads=downloads.get('supplemental', []),
-            table_data=links.get('table_data', {}),
-        )
+        try:
+            md = handler.convert_to_markdown(
+                metadata,
+                fulltext_data,
+                add_figure_refs=bool(downloads['figures']),
+                figure_filenames=downloads['figures'],
+                supplemental_urls=links.get('supplemental_urls', []),
+                supplemental_descriptions=links.get('supplemental_descriptions', {}),
+                supplemental_downloads=downloads.get('supplemental', []),
+                table_data=links.get('table_data', {}),
+            )
+        except Exception as e:
+            print(f"  ⚠️  convert_to_markdown 失败: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
         with open(markdown_file, 'w', encoding='utf-8') as f:
             f.write(md)
         print(f"  ✓ Markdown已保存: {markdown_filename}")

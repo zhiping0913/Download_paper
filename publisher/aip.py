@@ -781,6 +781,13 @@ class AIPHandler(PublisherHandler):
             "",
         ])
 
+        # Add DOI in Publication section if available
+        if metadata.get('doi'):
+            md_parts.extend([f"**DOI:** {metadata['doi']}", ""])
+
+        if metadata.get('year'):
+            md_parts.extend([f"**Year:** {metadata['year']}", ""])
+
         abstract_from_body = ''
         body_md = ''
 
