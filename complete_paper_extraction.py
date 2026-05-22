@@ -280,8 +280,26 @@ def original_image_filename(image_url: str, fig_num: int, default_ext: str = '.p
 
 
 # ============================================================================
-# Phase 4: Unified Download Manager
+# Phase 4: Unified Download Manager with Retry Logic
 # ============================================================================
+
+async def retry_download(download_func, *args, max_retries=5, retry_delay=1.0, **kwargs):
+    """Retry a download function with automatic retries on network failures."""
+    for attempt in range(max_retries):
+        try:
+            result = await download_func(*args, **kwargs)
+            if result is not None:
+                if attempt > 0:
+                    print(f"    ✓ 重试成功 (第 {attempt + 1} 次尝试)")
+                return result
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"    ⚠️  下载失败，{retry_delay}秒后重试... (尝试 {attempt + 1}/{max_retries})")
+                await asyncio.sleep(retry_delay)
+            else:
+                print(f"    ❌ 已达最大重试次数 ({max_retries}): {str(e)[:100]}")
+    return None
+
 
 async def _download_all_resources(
     page,
@@ -332,13 +350,10 @@ async def _download_all_resources(
             try:
                 pdf_filename = "paper.pdf"
 
-                pdf_result = await download_pdf(
-                    download_page,
-                    pdf_url,
-                    output_dir,
-                    pdf_filename,
-                    download_context,
-                    force_headed,
+                pdf_result = await retry_download(
+                    download_pdf,
+                    download_page, pdf_url, output_dir, pdf_filename, download_context, force_headed,
+                    max_retries=5, retry_delay=1.0
                 )
                 downloads['pdf'] = pdf_result
             except Exception as e:
@@ -355,13 +370,10 @@ async def _download_all_resources(
                     fig_match = re.search(r'(\d+)$', str(fig_id))
                     fig_num = fig_match.group(1) if fig_match else str(fig_id)
 
-                    img_filename = await download_figure(
-                        download_page,
-                        fig_url,
-                        int(fig_num),
-                        output_dir,
-                        download_context,
-                        force_headed,
+                    img_filename = await retry_download(
+                        download_figure,
+                        download_page, fig_url, int(fig_num), output_dir, download_context, force_headed,
+                        max_retries=5, retry_delay=1.0
                     )
                     if img_filename:
                         downloads['figures'][fig_num] = img_filename
@@ -542,139 +554,162 @@ async def download_supplemental_materials(
     downloaded_descriptions = {}
 
     for i, link in enumerate(supplemental_links, 1):
-        try:
-            url = link if isinstance(link, str) else link.get('url', link.get('href', ''))
-            if not url:
-                continue
+        # 为每个补充材料添加重试逻辑
+        max_retries_supp = 5
+        retry_delay_supp = 1.0
 
-            # 优先使用descriptions中的标题作为文件名（对于Springer书籍）
-            chapter_title = None
-            desc_value = None
-
-            # 从descriptions中找到对应的chapter标题
-            if descriptions:
-                # 获取descriptions中的第i个条目的key和value
-                desc_items = list(descriptions.items())
-                if i - 1 < len(desc_items):
-                    chapter_title, desc_value = desc_items[i - 1]
-
-            # 如果没有找到chapter标题，从URL中提取文件名
-            if not chapter_title:
-                parsed_url = urllib.parse.urlparse(url)
-                # 处理URL以斜杠结尾的情况
-                path_parts = [p for p in parsed_url.path.split('/') if p]
-                filename = urllib.parse.unquote(path_parts[-1]) if path_parts else ''
-                if not filename:
-                    filename = f"supplemental_{i}"
-                chapter_title = filename
-
-            # 清理文件名中的非法字符（保留基本的文件名安全字符）
-            safe_title = re.sub(r'[<>:"/\\|?*]', '_', chapter_title)
-            safe_title = re.sub(r'_+', '_', safe_title).strip('_')  # 去重下划线并去除边界
-
-            # 生成输出文件名：supplemental--{chapter_title}
-            output_filename = f"supplemental--{safe_title}"
-            output_path = output_dir / output_filename
-
-            # 确保输出目录存在
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-            print(f"  📥 下载补充材料 ({i}/{len(supplemental_links)}): {chapter_title}")
-            print(f"     URL: {url}")
-
-            # force-headed mode avoids navigating the article tab.
-            download_page = await context.new_page() if force_headed or page is None else page
-
-            # 设置下载事件处理
-            downloaded_file = None
-
-            async def on_download(download):
-                nonlocal downloaded_file
-                # 获取下载路径（默认是临时目录）
-                downloaded_file = await download.path()
-
-            download_page.on("download", on_download)
-
-            # 导航到链接（会自动触发下载）
-            response = None
+        for retry_attempt in range(max_retries_supp):
+            success = False
             try:
-                response = await download_page.goto(url, timeout=30000, wait_until='commit')
-            except:
-                # 下载开始时页面加载会中断，这是正常的
-                pass
+                url = link if isinstance(link, str) else link.get('url', link.get('href', ''))
+                if not url:
+                    continue
 
-            # 等待下载事件或超时
-            try:
-                # 尝试等待download事件（对于直接文件链接更可靠）
-                if not downloaded_file:
-                    download_event = await asyncio.wait_for(
-                        asyncio.create_task(download_page.wait_for_event("download", timeout=5000)),
-                        timeout=6
-                    )
-                    if download_event:
-                        downloaded_file = await download_event.path()
-            except asyncio.TimeoutError:
-                # 如果等待超时，继续使用response方法
-                pass
-            except Exception:
-                pass
+                # 优先使用descriptions中的标题作为文件名（对于Springer书籍）
+                chapter_title = None
+                desc_value = None
 
-            await asyncio.sleep(1)
+                # 从descriptions中找到对应的chapter标题
+                if descriptions:
+                    # 获取descriptions中的第i个条目的key和value
+                    desc_items = list(descriptions.items())
+                    if i - 1 < len(desc_items):
+                        chapter_title, desc_value = desc_items[i - 1]
 
-            # 如果捕获到下载，复制文件
-            if downloaded_file and Path(downloaded_file).exists():
+                # 如果没有找到chapter标题，从URL中提取文件名
+                if not chapter_title:
+                    parsed_url = urllib.parse.urlparse(url)
+                    # 处理URL以斜杠结尾的情况
+                    path_parts = [p for p in parsed_url.path.split('/') if p]
+                    filename = urllib.parse.unquote(path_parts[-1]) if path_parts else ''
+                    if not filename:
+                        filename = f"supplemental_{i}"
+                    chapter_title = filename
+
+                # 清理文件名中的非法字符（保留基本的文件名安全字符）
+                safe_title = re.sub(r'[<>:"/\\|?*]', '_', chapter_title)
+                safe_title = re.sub(r'_+', '_', safe_title).strip('_')  # 去重下划线并去除边界
+
+                # 生成输出文件名：supplemental--{chapter_title}
+                output_filename = f"supplemental--{safe_title}"
+                output_path = output_dir / output_filename
+
+                # 确保输出目录存在
+                output_dir.mkdir(parents=True, exist_ok=True)
+
+                print(f"  📥 下载补充材料 ({i}/{len(supplemental_links)}): {chapter_title}")
+                print(f"     URL: {url}")
+
+                # force-headed mode avoids navigating the article tab.
+                download_page = await context.new_page() if force_headed or page is None else page
+
+                # 设置下载事件处理
+                downloaded_file = None
+
+                async def on_download(download):
+                    nonlocal downloaded_file
+                    # 获取下载路径（默认是临时目录）
+                    downloaded_file = await download.path()
+
+                download_page.on("download", on_download)
+
+                # 导航到链接（会自动触发下载）
+                response = None
                 try:
-                    file_size = Path(downloaded_file).stat().st_size
-                    if file_size > 0:
-                        shutil.copy(str(downloaded_file), str(output_path))
-                        output_path = _detect_and_rename(output_path)
-                        file_size_mb = output_path.stat().st_size / (1024 * 1024)
-                        print(f"    ✓ 已保存: {output_path.name} ({file_size_mb:.2f} MB)")
-                        downloaded_count += 1
+                    response = await download_page.goto(url, timeout=30000, wait_until='commit')
+                except:
+                    # 下载开始时页面加载会中断，这是正常的
+                    pass
 
-                        # 记录该文件的描述
-                        saved_name = output_path.name
-                        if desc_value:
-                            downloaded_descriptions[saved_name] = desc_value
-                        else:
-                            downloaded_descriptions[saved_name] = chapter_title
-                    else:
-                        print(f"    ⚠️  下载文件为空: {chapter_title}")
-                except Exception as e:
-                    print(f"    ⚠️  复制文件失败: {str(e)[:100]}")
-            elif response:
+                # 等待下载事件或超时
                 try:
-                    status = response.status if response else 'unknown'
-                    content_type = response.headers.get('content-type', '').lower() if response else ''
+                    # 尝试等待download事件（对于直接文件链接更可靠）
+                    if not downloaded_file:
+                        download_event = await asyncio.wait_for(
+                            asyncio.create_task(download_page.wait_for_event("download", timeout=5000)),
+                            timeout=6
+                        )
+                        if download_event:
+                            downloaded_file = await download_event.path()
+                except asyncio.TimeoutError:
+                    # 如果等待超时，继续使用response方法
+                    pass
+                except Exception:
+                    pass
 
-                    if response.ok and 'text/html' not in content_type and content_type:
-                        body = await response.body()
-                        if len(body) > 0:
-                            output_path.write_bytes(body)
+                await asyncio.sleep(1)
+
+                # 如果捕获到下载，复制文件
+                if downloaded_file and Path(downloaded_file).exists():
+                    try:
+                        file_size = Path(downloaded_file).stat().st_size
+                        if file_size > 0:
+                            shutil.copy(str(downloaded_file), str(output_path))
                             output_path = _detect_and_rename(output_path)
                             file_size_mb = output_path.stat().st_size / (1024 * 1024)
                             print(f"    ✓ 已保存: {output_path.name} ({file_size_mb:.2f} MB)")
                             downloaded_count += 1
 
+                            # 记录该文件的描述
                             saved_name = output_path.name
                             if desc_value:
                                 downloaded_descriptions[saved_name] = desc_value
                             else:
                                 downloaded_descriptions[saved_name] = chapter_title
                         else:
-                            print(f"    ⚠️  响应体为空 (status={status}, type={content_type}): {chapter_title}")
-                    else:
-                        print(f"    ⚠️  响应不是文件内容 (status={status}, type={content_type}): {chapter_title}")
-                except Exception as e:
-                    print(f"    ⚠️  直接保存响应失败: {str(e)[:100]}")
-            else:
-                print(f"    ⚠️  未捕获到下载事件: {chapter_title}")
+                            print(f"    ⚠️  下载文件为空: {chapter_title}")
+                    except Exception as e:
+                        print(f"    ⚠️  复制文件失败: {str(e)[:100]}")
+                elif response:
+                    try:
+                        status = response.status if response else 'unknown'
+                        content_type = response.headers.get('content-type', '').lower() if response else ''
 
-            if download_page is not page:
-                await download_page.close()
+                        if response.ok and 'text/html' not in content_type and content_type:
+                            body = await response.body()
+                            if len(body) > 0:
+                                output_path.write_bytes(body)
+                                output_path = _detect_and_rename(output_path)
+                                file_size_mb = output_path.stat().st_size / (1024 * 1024)
+                                print(f"    ✓ 已保存: {output_path.name} ({file_size_mb:.2f} MB)")
+                                downloaded_count += 1
 
-        except Exception as e:
-            print(f"    ⚠️  处理链接失败: {str(e)[:100]}")
+                                saved_name = output_path.name
+                                if desc_value:
+                                    downloaded_descriptions[saved_name] = desc_value
+                                else:
+                                    downloaded_descriptions[saved_name] = chapter_title
+                            else:
+                                print(f"    ⚠️  响应体为空 (status={status}, type={content_type}): {chapter_title}")
+                        else:
+                            print(f"    ⚠️  响应不是文件内容 (status={status}, type={content_type}): {chapter_title}")
+                    except Exception as e:
+                        print(f"    ⚠️  直接保存响应失败: {str(e)[:100]}")
+                else:
+                    print(f"    ⚠️  未捕获到下载事件: {chapter_title}")
+
+                if download_page is not page:
+                    await download_page.close()
+
+                success = True  # 标记成功
+                break  # 跳出重试循环
+
+            except Exception as e:
+                if retry_attempt < max_retries_supp - 1:
+                    print(f"    ⚠️  下载失败，{retry_delay_supp}秒后重试... (尝试 {retry_attempt + 1}/{max_retries_supp})")
+                    if download_page is not page:
+                        try:
+                            await download_page.close()
+                        except:
+                            pass
+                    await asyncio.sleep(retry_delay_supp)
+                else:
+                    print(f"    ❌ 已达最大重试次数 ({max_retries_supp}): {str(e)[:100]}")
+                    if download_page is not page:
+                        try:
+                            await download_page.close()
+                        except:
+                            pass
 
     if downloaded_count > 0:
         print(f"\n  ✓ 成功下载 {downloaded_count} 个补充材料")
