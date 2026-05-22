@@ -454,6 +454,8 @@ def detect_publisher_from_url(url: str) -> str:
         return 'aip'
     elif 'aip.scitation.org' in url_lower:
         return 'aip'
+    elif 'physicstoday.aip.org' in url_lower:
+        return 'aip'
     elif '10.1063' in url_lower:
         return 'aip'
     elif 'journals.aps.org' in url_lower:
