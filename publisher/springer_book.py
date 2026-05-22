@@ -480,7 +480,8 @@ class SpringerBookHandler(PublisherHandler):
         if href.startswith('//'):
             href = 'https:' + href
         elif not href.startswith('http'):
-            href = self.actual_base_url + href
+            if self.actual_base_url:
+                href = self.actual_base_url + href
 
         return href
 
@@ -594,13 +595,16 @@ class SpringerBookHandler(PublisherHandler):
                     if chapter.get('fulltext_data'):
                         md_content += "#### Content\n\n"
                         chapter_html = chapter['fulltext_data']
-                        # Use NatureHandler's method to extract main content only
-                        nature_handler = NatureHandler()
-                        # Set actual_base_url for convert_paragraph to work
-                        nature_handler.actual_base_url = self.actual_base_url
-                        chapter_md = nature_handler.convert_main_content_by_paragraph(chapter_html)
-                        if chapter_md:
-                            md_content += chapter_md + "\n\n"
+                        if chapter_html:  # Ensure chapter_html is not None
+                            nature_handler = NatureHandler()
+                            # Only set actual_base_url if it exists and is not None
+                            if hasattr(self, 'actual_base_url') and self.actual_base_url:
+                                nature_handler.actual_base_url = self.actual_base_url
+                            else:
+                                nature_handler.actual_base_url = ""
+                            chapter_md = nature_handler.convert_main_content_by_paragraph(chapter_html)
+                            if chapter_md:
+                                md_content += chapter_md + "\n\n"
 
                     # Chapter figures
                     chapter_figures = chapter.get('links', {}).get('figure_urls', {})

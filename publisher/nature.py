@@ -762,6 +762,10 @@ class NatureHandler(PublisherHandler):
     def convert_paragraph(self, paragraph_html: str) -> str:
         """Convert one HTML paragraph/equation/heading block to cleaned Markdown."""
         try:
+            # Ensure paragraph_html is not None
+            if not paragraph_html:
+                return ""
+
             stripped = paragraph_html.strip()
 
             # Handle headings: extract text and format as markdown heading
@@ -784,7 +788,9 @@ class NatureHandler(PublisherHandler):
                 table_link = table_soup.find('a', href=re.compile(r'/tables?/\d+'))
                 link_href = table_link.get('href', '') if table_link else ''
                 if link_href and not link_href.startswith('http'):
-                    link_href = self.actual_base_url + link_href
+                    # Only append actual_base_url if it exists and is not None
+                    if hasattr(self, 'actual_base_url') and self.actual_base_url:
+                        link_href = self.actual_base_url + link_href
                 lines = [f"\n**{caption}**"]
                 if link_href:
                     lines.append(f"[View full table]({link_href})")
