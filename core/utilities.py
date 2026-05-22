@@ -135,6 +135,76 @@ def fetch_crossref(doi: str) -> dict:
 # File Organization Functions
 # ============================================================================
 
+def _clean_title_for_directory(title: str) -> str:
+    """Clean title for use as directory name, handling formulas and HTML tags."""
+    if not title:
+        return 'paper'
+
+    # Remove HTML/XML tags (including MathML and other markup)
+    # This regex removes anything between < and >
+    title = re.sub(r'<[^>]+>', '', title)
+
+    # Replace common mathematical symbols with text representations
+    replacements = {
+        '−': '-',           # minus sign (U+2212) -> ASCII hyphen-minus
+        '±': 'pm',          # plus-minus
+        '×': 'x',           # multiplication
+        '÷': 'div',         # division
+        '≈': 'approx',      # approximately equal
+        '≠': 'ne',          # not equal
+        '≤': 'le',          # less than or equal
+        '≥': 'ge',          # greater than or equal
+        '→': 'to',          # arrow
+        '←': 'from',        # left arrow
+        '↔': 'iff',         # bidirectional arrow
+        'α': 'alpha',
+        'β': 'beta',
+        'γ': 'gamma',
+        'δ': 'delta',
+        'ε': 'epsilon',
+        'ζ': 'zeta',
+        'η': 'eta',
+        'θ': 'theta',
+        'λ': 'lambda',
+        'μ': 'mu',
+        'ν': 'nu',
+        'π': 'pi',
+        'ρ': 'rho',
+        'σ': 'sigma',
+        'τ': 'tau',
+        'φ': 'phi',
+        'χ': 'chi',
+        'ψ': 'psi',
+        'ω': 'omega',
+        'Ω': 'Omega',
+        'Σ': 'Sigma',
+        '∫': 'integral',
+        '∂': 'partial',
+        '∇': 'nabla',
+        '∞': 'infinity',
+    }
+
+    for symbol, name in replacements.items():
+        title = title.replace(symbol, f' {name} ')
+
+    # Remove remaining problematic characters for filenames
+    # Keep only alphanumeric, spaces, hyphens, underscores, and parentheses
+    title = re.sub(r'[/\\:*?"<>|]', '', title)
+
+    # Collapse multiple spaces and trim
+    title = re.sub(r'\s+', ' ', title).strip()
+
+    # Limit length but keep it readable
+    title = title[:150].strip()
+
+    # If title becomes empty after cleaning, use placeholder
+    if not title:
+        title = 'paper'
+
+    return title
+
+
+
 def organize_paper_output(output_dir: Path, metadata: dict, s2_data: dict) -> Path:
     """
     Create organized paper directory structure
@@ -143,6 +213,7 @@ def organize_paper_output(output_dir: Path, metadata: dict, s2_data: dict) -> Pa
 
     Priority: metadata (from handler) > s2_data (from Semantic Scholar)
     This ensures that for books/chapters, we use the correct extracted title, not cached S2 data
+    Handles mathematical formulas and HTML tags in titles gracefully.
     """
     try:
         # Prioritize metadata from handler over s2_data
@@ -155,8 +226,8 @@ def organize_paper_output(output_dir: Path, metadata: dict, s2_data: dict) -> Pa
         if not isinstance(title, str):
             title = str(title) if title else 'paper'
 
-        # Clean title of special characters
-        title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:150].strip()
+        # Clean title: remove HTML tags and convert math symbols
+        title_clean = _clean_title_for_directory(title)
 
         # Create directory: {year}--{title}
         dir_name = f"{year}--{title_clean}"
