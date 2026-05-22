@@ -149,6 +149,12 @@ def organize_paper_output(output_dir: Path, metadata: dict, s2_data: dict) -> Pa
         year = metadata.get('year') or s2_data.get('year') or '0000'
         title = metadata.get('title') or s2_data.get('title') or 'paper'
 
+        # Safety check: ensure year and title are strings
+        if not isinstance(year, str):
+            year = str(year) if year else '0000'
+        if not isinstance(title, str):
+            title = str(title) if title else 'paper'
+
         # Clean title of special characters
         title_clean = re.sub(r'[/\\:*?"<>|]', '-', title)[:150].strip()
 
@@ -161,6 +167,8 @@ def organize_paper_output(output_dir: Path, metadata: dict, s2_data: dict) -> Pa
         return paper_dir
     except Exception as e:
         print(f"  ⚠️  Failed to create directory: {e}")
+        import traceback
+        traceback.print_exc()
         return output_dir
 
 
