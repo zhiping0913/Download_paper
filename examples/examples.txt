@@ -16,6 +16,7 @@ aip
 10.1063/5.0331671   #Applied Physics Letters, figure, supplementary
 10.1063/5.0326077   #Physics of Plasmas, section-title, figure, table, mathFormula
 10.1063/5.0321661   #Physics of Fluids, section-title, figure, mathFormula, supplementary (mp4)
+10.1063/1.5005077   #Physics of Plasmas, section-title, figure, supplementary (mp4)
 
 iop
 10.1088/1361-6463/ae36b8   #Journal of Physics D: Applied Physics, figure, mathFormula, table, supplementary
