@@ -74,6 +74,53 @@ def _extract_aps_references_from_html(html_content: str) -> list:
     return references
 
 
+def _extract_abstract_from_abstract_html(html_content: str) -> str:
+    """从APS abstract页面HTML中提取Abstract文本
+
+    Abstract位于 <section id="abstract-section"> 或类似的容器中
+    """
+    if not html_content:
+        return None
+
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        # 查找abstract section
+        abstract_section = soup.find('section', id='abstract-section')
+        if not abstract_section:
+            abstract_section = soup.find('div', id='abstract-section')
+        if not abstract_section:
+            # 尝试查找class包含abstract的section
+            abstract_section = soup.find('section', {'data-magellan-destination': 'abstract'})
+
+        if abstract_section:
+            # 查找content容器
+            content_div = abstract_section.find('div', id='abstract-section-content')
+            if not content_div:
+                content_div = abstract_section.find('div', class_='content')
+
+            if content_div:
+                # 提取第一个段落作为Abstract
+                # Abstract通常是在第一个<p>标签中，其他<p>可能是figure band
+                paragraphs = content_div.find_all('p', recursive=False)
+                if paragraphs:
+                    # 获取第一个真正的段落（跳过figure-band等非文本内容）
+                    for p in paragraphs:
+                        text = p.get_text(' ', strip=True)
+                        if text and len(text) > 50:  # 有意义的长度
+                            # 转换为HTML（包含MathML等）以便后续处理
+                            return str(p)
+
+                # 如果没有段落，尝试获取整个content的文本
+                text = content_div.get_text(' ', strip=True)
+                if text and len(text) > 50:
+                    return text
+    except Exception as e:
+        print(f"  ⚠️  从abstract HTML提取摘要失败: {str(e)[:50]}")
+
+    return None
+
+
 async def extract_metadata_from_page(page) -> dict:
     """从页面meta标签提取完整元数据（作者、单位、摘要等）
 
@@ -685,6 +732,23 @@ class APSHandler(PublisherHandler):
             # Network capture is already running, just wait for additional requests
             await asyncio.sleep(3)
 
+        # 2.5 Extract abstract from abstract page HTML (if meta tag abstract is incomplete)
+        if captured.get('abstract_html') and not metadata.get('abstract'):
+            html_abstract = _extract_abstract_from_abstract_html(captured['abstract_html'])
+            if html_abstract:
+                metadata['abstract'] = html_abstract
+                print(f"  ✓ 从abstract页面提取摘要: {len(html_abstract)} 字符")
+        elif captured.get('abstract_html') and metadata.get('abstract'):
+            # 如果meta tag中的abstract太短（可能只是简要描述），尝试从HTML中获取更完整的
+            meta_abstract = metadata['abstract']
+            if len(meta_abstract) < 200:  # 如果太短，尝试从HTML获取
+                html_abstract = _extract_abstract_from_abstract_html(captured['abstract_html'])
+                if html_abstract:
+                    # 检查HTML abstract是否明显更长/更完整
+                    if len(html_abstract) > len(meta_abstract) * 1.5:
+                        metadata['abstract'] = html_abstract
+                        print(f"  ✓ 使用abstract页面的摘要(更完整): {len(html_abstract)} 字符")
+
         # 3. Extract references from the headed APS abstract page.
         if not metadata.get('references'):
             reference_html_candidates = []
@@ -878,51 +942,14 @@ class APSHandler(PublisherHandler):
         md_content += "---\n\n"
 
         # ===== 摘要 =====
-        # 优先从fulltext_json中提取完整摘要，其次使用metadata中的摘要
-        abstract_text = None
-
-        if fulltext_json:
-            # 尝试从fulltext_json中的components中找到abstract
-            def extract_abstract_from_json(obj):
-                if isinstance(obj, dict):
-                    # 检查是否是abstract组件
-                    if 'components' in obj:
-                        for comp in obj['components']:
-                            if isinstance(comp, dict):
-                                klass = comp.get('klass', '')
-                                if 'abstract' in klass.lower():
-                                    # 递归提取这个abstract组件中的所有文本
-                                    if 'body' in comp:
-                                        return comp['body']
-                                    elif 'components' in comp:
-                                        for sub_comp in comp['components']:
-                                            if isinstance(sub_comp, dict) and 'body' in sub_comp:
-                                                return sub_comp['body']
-                    # 继续递归
-                    for key, value in obj.items():
-                        if isinstance(value, (dict, list)):
-                            result = extract_abstract_from_json(value)
-                            if result:
-                                return result
-                elif isinstance(obj, list):
-                    for item in obj:
-                        result = extract_abstract_from_json(item)
-                        if result:
-                            return result
-                return None
-
-            abstract_text = extract_abstract_from_json(fulltext_json)
-
-        # 如果fulltext_json中没有找到，使用metadata中的
-        if not abstract_text:
-            abstract_text = metadata.get('abstract')
+        # 使用metadata中的abstract（已从abstract页面HTML优先提取）
+        abstract_text = metadata.get('abstract')
 
         if abstract_text:
             md_content += "## Abstract\n\n"
             # 如果是HTML，需要转换为markdown
             if isinstance(abstract_text, str) and '<' in abstract_text:
                 try:
-                    from html_to_md_converter import convert_html_to_markdown
                     abstract_text = convert_html_to_markdown(abstract_text)
                 except:
                     pass
