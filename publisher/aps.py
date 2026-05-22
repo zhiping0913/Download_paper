@@ -308,12 +308,16 @@ async def get_supplemental_links(page, doi: str, journal_prefix: str = None,
 
     Args:
         page: Playwright page object
-        doi: Paper DOI
+        doi: Paper DOI (required)
         journal_prefix: APS journal prefix (e.g., 'prl', 'pre')
         captured_data_dir: If set, save supplemental page HTML to this directory
 
     Returns: (supplemental_links, descriptions_dict)
     """
+    if not doi:
+        print(f"  ⚠️  跳过补充材料提取: DOI为None")
+        return [], {}
+
     try:
         if not journal_prefix:
             journal_prefix = 'prl'  # 默认值
@@ -771,14 +775,18 @@ class APSHandler(PublisherHandler):
         }
 
         # 6. Get supplemental links if available
-        try:
-            supp_links, supp_descriptions = await get_supplemental_links(
-                page, doi, self.journal_prefix, captured_data_dir=self.captured_data_dir
-            )
-            links['supplemental_urls'] = supp_links
-            links['supplemental_descriptions'] = supp_descriptions
-        except:
-            pass
+        actual_doi = self.doi or doi
+        if actual_doi:
+            try:
+                supp_links, supp_descriptions = await get_supplemental_links(
+                    page, actual_doi, self.journal_prefix, captured_data_dir=self.captured_data_dir
+                )
+                links['supplemental_urls'] = supp_links
+                links['supplemental_descriptions'] = supp_descriptions
+            except Exception as e:
+                print(f"  ⚠️  获取补充材料链接失败: {str(e)[:100]}")
+        else:
+            print(f"  ⚠️  无法获取补充材料: DOI为None")
 
         return {
             'metadata': metadata,
