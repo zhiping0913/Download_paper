@@ -582,45 +582,68 @@ async def download_supplemental_materials(
                 # 下载开始时页面加载会中断，这是正常的
                 pass
 
-            # 等待下载完成
-            await asyncio.sleep(2)
+            # 等待下载事件或超时
+            try:
+                # 尝试等待download事件（对于直接文件链接更可靠）
+                if not downloaded_file:
+                    download_event = await asyncio.wait_for(
+                        asyncio.create_task(download_page.wait_for_event("download", timeout=5000)),
+                        timeout=6
+                    )
+                    if download_event:
+                        downloaded_file = await download_event.path()
+            except asyncio.TimeoutError:
+                # 如果等待超时，继续使用response方法
+                pass
+            except Exception:
+                pass
+
+            await asyncio.sleep(1)
 
             # 如果捕获到下载，复制文件
             if downloaded_file and Path(downloaded_file).exists():
                 try:
-                    shutil.copy(str(downloaded_file), str(output_path))
-                    output_path = _detect_and_rename(output_path)
-                    file_size_mb = output_path.stat().st_size / (1024 * 1024)
-                    print(f"    ✓ 已保存: {output_path.name} ({file_size_mb:.2f} MB)")
-                    downloaded_count += 1
-
-                    # 记录该文件的描述
-                    saved_name = output_path.name
-                    if desc_value:
-                        downloaded_descriptions[saved_name] = desc_value
-                    else:
-                        downloaded_descriptions[saved_name] = chapter_title
-
-                except Exception as e:
-                    print(f"    ⚠️  复制文件失败: {str(e)[:100]}")
-            elif response:
-                try:
-                    content_type = response.headers.get('content-type', '').lower()
-
-                    if response.ok and 'text/html' not in content_type:
-                        output_path.write_bytes(await response.body())
+                    file_size = Path(downloaded_file).stat().st_size
+                    if file_size > 0:
+                        shutil.copy(str(downloaded_file), str(output_path))
                         output_path = _detect_and_rename(output_path)
                         file_size_mb = output_path.stat().st_size / (1024 * 1024)
                         print(f"    ✓ 已保存: {output_path.name} ({file_size_mb:.2f} MB)")
                         downloaded_count += 1
 
+                        # 记录该文件的描述
                         saved_name = output_path.name
                         if desc_value:
                             downloaded_descriptions[saved_name] = desc_value
                         else:
                             downloaded_descriptions[saved_name] = chapter_title
                     else:
-                        print(f"    ⚠️  未捕获到下载事件: {chapter_title}")
+                        print(f"    ⚠️  下载文件为空: {chapter_title}")
+                except Exception as e:
+                    print(f"    ⚠️  复制文件失败: {str(e)[:100]}")
+            elif response:
+                try:
+                    status = response.status if response else 'unknown'
+                    content_type = response.headers.get('content-type', '').lower() if response else ''
+
+                    if response.ok and 'text/html' not in content_type and content_type:
+                        body = await response.body()
+                        if len(body) > 0:
+                            output_path.write_bytes(body)
+                            output_path = _detect_and_rename(output_path)
+                            file_size_mb = output_path.stat().st_size / (1024 * 1024)
+                            print(f"    ✓ 已保存: {output_path.name} ({file_size_mb:.2f} MB)")
+                            downloaded_count += 1
+
+                            saved_name = output_path.name
+                            if desc_value:
+                                downloaded_descriptions[saved_name] = desc_value
+                            else:
+                                downloaded_descriptions[saved_name] = chapter_title
+                        else:
+                            print(f"    ⚠️  响应体为空 (status={status}, type={content_type}): {chapter_title}")
+                    else:
+                        print(f"    ⚠️  响应不是文件内容 (status={status}, type={content_type}): {chapter_title}")
                 except Exception as e:
                     print(f"    ⚠️  直接保存响应失败: {str(e)[:100]}")
             else:
