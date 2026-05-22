@@ -878,9 +878,55 @@ class APSHandler(PublisherHandler):
         md_content += "---\n\n"
 
         # ===== 摘要 =====
-        if metadata.get('abstract'):
+        # 优先从fulltext_json中提取完整摘要，其次使用metadata中的摘要
+        abstract_text = None
+
+        if fulltext_json:
+            # 尝试从fulltext_json中的components中找到abstract
+            def extract_abstract_from_json(obj):
+                if isinstance(obj, dict):
+                    # 检查是否是abstract组件
+                    if 'components' in obj:
+                        for comp in obj['components']:
+                            if isinstance(comp, dict):
+                                klass = comp.get('klass', '')
+                                if 'abstract' in klass.lower():
+                                    # 递归提取这个abstract组件中的所有文本
+                                    if 'body' in comp:
+                                        return comp['body']
+                                    elif 'components' in comp:
+                                        for sub_comp in comp['components']:
+                                            if isinstance(sub_comp, dict) and 'body' in sub_comp:
+                                                return sub_comp['body']
+                    # 继续递归
+                    for key, value in obj.items():
+                        if isinstance(value, (dict, list)):
+                            result = extract_abstract_from_json(value)
+                            if result:
+                                return result
+                elif isinstance(obj, list):
+                    for item in obj:
+                        result = extract_abstract_from_json(item)
+                        if result:
+                            return result
+                return None
+
+            abstract_text = extract_abstract_from_json(fulltext_json)
+
+        # 如果fulltext_json中没有找到，使用metadata中的
+        if not abstract_text:
+            abstract_text = metadata.get('abstract')
+
+        if abstract_text:
             md_content += "## Abstract\n\n"
-            md_content += f"{metadata['abstract']}\n\n"
+            # 如果是HTML，需要转换为markdown
+            if isinstance(abstract_text, str) and '<' in abstract_text:
+                try:
+                    from html_to_md_converter import convert_html_to_markdown
+                    abstract_text = convert_html_to_markdown(abstract_text)
+                except:
+                    pass
+            md_content += f"{abstract_text}\n\n"
             md_content += "---\n\n"
 
         # ===== 正文 - 使用JSON递归转换 =====
