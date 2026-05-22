@@ -1,8 +1,8 @@
 aps
 10.1103/PhysRevLett.124.185004   #PhysRevLett, supplemental
 10.1103/RevModPhys.79.1267
-10.1103/PhysRevX.7.041003   #Physical Review X, table, Popular Summary, figure, formula, supplemental (mp4)
-10.1103/PhysRevAccelBeams.20.043401   #Physical Review Accelerators and Beams, figure, formula, supplemental (wmv)
+10.1103/PhysRevX.7.041003   #Physical Review X, table, Popular Summary, figure, formula, supplemental (mp4, description)
+10.1103/PhysRevAccelBeams.20.043401   #Physical Review Accelerators and Beams, figure, formula, supplemental (wmv, description)
 
 
 
