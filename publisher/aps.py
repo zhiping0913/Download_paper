@@ -1109,8 +1109,23 @@ class APSHandler(PublisherHandler):
             for i, ref in enumerate(metadata['references']):
                 idx = i + 1
                 md_content += f"[{idx}] {ref}\n\n"
+
+                # Try to get bibtex from pre-generated list
                 if i < len(bibtex_refs) and bibtex_refs[i]:
                     md_content += f"```bibtex\n{bibtex_refs[i]}\n```\n\n"
+                else:
+                    # If no pre-generated bibtex, try to extract DOI and fetch from Crossref on-the-fly
+                    doi_match = re.search(r'(10\.\d{4,}/[^\s"\'\]]+)', ref)
+                    if doi_match:
+                        doi_str = doi_match.group(1).rstrip('.')
+                        try:
+                            crossref_data = fetch_crossref(doi_str)
+                            if crossref_data:
+                                bibtex = _build_bibtex_from_crossref(crossref_data, doi_str)
+                                if bibtex:
+                                    md_content += f"```bibtex\n{bibtex}\n```\n\n"
+                        except Exception:
+                            pass
 
         # 跨发布商通用的清理 (移到 html_to_md_converter.cleanup_markdown)
         md_content = cleanup_markdown(md_content)
