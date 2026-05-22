@@ -19,6 +19,8 @@ import random
 import re
 import requests
 import sys
+import signal
+import subprocess
 from pathlib import Path
 from datetime import datetime
 from urllib.parse import unquote, urljoin, urlparse
@@ -142,6 +144,37 @@ HEADLESS_AUTH_STATE_FILE = Path(
     )
 ).expanduser()
 
+# 全局变量：跟踪chrome_launcher子进程
+_chrome_launcher_process = None
+
+def _cleanup_chrome_launcher():
+    """清理chrome_launcher子进程"""
+    global _chrome_launcher_process
+
+    # 清理记录的subprocess
+    if _chrome_launcher_process and _chrome_launcher_process.poll() is None:
+        try:
+            _chrome_launcher_process.terminate()
+            _chrome_launcher_process.wait(timeout=5)
+        except:
+            try:
+                _chrome_launcher_process.kill()
+            except:
+                pass
+        _chrome_launcher_process = None
+
+    # 直接杀死任何残留的chrome_launcher进程
+    import subprocess as sp
+    try:
+        sp.run(['pkill', '-f', 'chrome_launcher.py'], timeout=2)
+    except:
+        pass
+
+def _signal_handler(signum, frame):
+    """SIGINT信号处理器 - 清理子进程然后退出"""
+    print("\n\n⚠️  收到中断信号，正在清理子进程...")
+    _cleanup_chrome_launcher()
+    sys.exit(130)  # 标准SIGINT退出码
 
 # ============================================================================
 # Publisher Detection and Handler Factory
@@ -865,17 +898,22 @@ async def complete_extraction_workflow(
 
     async def ensure_headed_chrome_ready() -> bool:
         """Start the real headed Chrome profile if the CDP endpoint is not ready."""
+        global _chrome_launcher_process
         if check_chrome_ready():
             return True
 
         print("⚠️  Chrome 未运行，正在启动...")
-        import subprocess
         chrome_launcher = Path(__file__).parent / "chrome_launcher.py"
         if not chrome_launcher.exists():
             print("⚠️  chrome_launcher.py 未找到\n")
             return False
 
-        subprocess.Popen([sys.executable, str(chrome_launcher)])
+        try:
+            _chrome_launcher_process = subprocess.Popen([sys.executable, str(chrome_launcher)])
+        except Exception as e:
+            print(f"⚠️  启动Chrome失败: {e}\n")
+            return False
+
         for _ in range(30):
             await asyncio.sleep(1)
             if check_chrome_ready():
@@ -1347,12 +1385,13 @@ async def main():
         # DOI列表 + 强制有头
         python complete_paper_extraction.py --file doi_list.txt --force-headed
     """
-    import argparse
+    try:
+        import argparse
 
-    parser = argparse.ArgumentParser(
-        description="完整论文提取工作流 - 从DOI到完整Markdown的端到端解决方案",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        parser = argparse.ArgumentParser(
+            description="完整论文提取工作流 - 从DOI到完整Markdown的端到端解决方案",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog="""
 示例：
   单个DOI:
     python %(prog)s --doi 10.1103/PhysRevLett.109.245005
@@ -1366,123 +1405,136 @@ async def main():
   强制使用有头浏览器（跳过无头预检）:
     python %(prog)s --doi 10.1103/PhysRevLett.109.245005 --force-headed
         """
-    )
+        )
 
-    # 创建互斥组用于--doi和--file
-    input_group = parser.add_mutually_exclusive_group(required=True)
-    input_group.add_argument(
-        '--doi',
-        type=str,
-        help='单个DOI (例如: 10.1103/PhysRevLett.109.245005)'
-    )
-    input_group.add_argument(
-        '--file',
-        type=str,
-        metavar='FILE',
-        help='包含DOI列表的文件 (每行一个DOI)'
-    )
+        # 创建互斥组用于--doi和--file
+        input_group = parser.add_mutually_exclusive_group(required=True)
+        input_group.add_argument(
+            '--doi',
+            type=str,
+            help='单个DOI (例如: 10.1103/PhysRevLett.109.245005)'
+        )
+        input_group.add_argument(
+            '--file',
+            type=str,
+            metavar='FILE',
+            help='包含DOI列表的文件 (每行一个DOI)'
+        )
 
-    parser.add_argument(
-        '--output',
-        type=str,
-        default=OUTPUT_DIR,
-        help=f'输出目录路径 (默认: {OUTPUT_DIR})'
-    )
+        parser.add_argument(
+            '--output',
+            type=str,
+            default=OUTPUT_DIR,
+            help=f'输出目录路径 (默认: {OUTPUT_DIR})'
+        )
 
-    parser.add_argument(
-        '--force-headed',
-        action='store_true',
-        default=False,
-        help='强制使用有头浏览器，跳过无头预检阶段 (默认: False，使用智能检测)'
-    )
+        parser.add_argument(
+            '--force-headed',
+            action='store_true',
+            default=False,
+            help='强制使用有头浏览器，跳过无头预检阶段 (默认: False，使用智能检测)'
+        )
 
-    parser.add_argument(
-        '--refresh-headless-auth',
-        action='store_true',
-        default=False,
-        help='通过本机Chrome CDP导出登录态到 .auth/headless_storage_state.json，供后续无头预检使用'
-    )
+        parser.add_argument(
+            '--refresh-headless-auth',
+            action='store_true',
+            default=False,
+            help='通过本机Chrome CDP导出登录态到 .auth/headless_storage_state.json，供后续无头预检使用'
+        )
 
-    args = parser.parse_args()
+        args = parser.parse_args()
 
-    # 构建DOI列表
-    dois = []
-    if args.doi:
-        dois = [args.doi]
-        print(f"📌 单个DOI: {args.doi}\n")
-    elif args.file:
-        try:
-            with open(args.file, 'r', encoding='utf-8') as f:
-                dois = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
-            print(f"📌 从文件读取 {len(dois)} 个DOI: {args.file}\n")
-        except FileNotFoundError:
-            print(f"❌ 文件不存在: {args.file}")
+        # 构建DOI列表
+        dois = []
+        if args.doi:
+            dois = [args.doi]
+            print(f"📌 单个DOI: {args.doi}\n")
+        elif args.file:
+            try:
+                with open(args.file, 'r', encoding='utf-8') as f:
+                    dois = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
+                print(f"📌 从文件读取 {len(dois)} 个DOI: {args.file}\n")
+            except FileNotFoundError:
+                print(f"❌ 文件不存在: {args.file}")
+                sys.exit(1)
+            except Exception as e:
+                print(f"❌ 读取文件时出错: {e}")
+                sys.exit(1)
+
+        if not dois:
+            print("❌ 没有有效的DOI")
             sys.exit(1)
-        except Exception as e:
-            print(f"❌ 读取文件时出错: {e}")
-            sys.exit(1)
 
-    if not dois:
-        print("❌ 没有有效的DOI")
-        sys.exit(1)
+        # 处理force_headed参数
+        force_headed_mode = args.force_headed
+        if force_headed_mode:
+            print(f"🔧 强制有头浏览器模式启用 - 将跳过无头浏览器预检\n")
+        if args.refresh_headless_auth:
+            print(f"🔄 将刷新无头浏览器登录态缓存: {HEADLESS_AUTH_STATE_FILE}\n")
 
-    # 处理force_headed参数
-    force_headed_mode = args.force_headed
-    if force_headed_mode:
-        print(f"🔧 强制有头浏览器模式启用 - 将跳过无头浏览器预检\n")
-    if args.refresh_headless_auth:
-        print(f"🔄 将刷新无头浏览器登录态缓存: {HEADLESS_AUTH_STATE_FILE}\n")
+        # 处理输出路径
+        output_dir = str(Path(args.output).expanduser().resolve())
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        print(f"📁 输出目录: {output_path}\n")
 
-    # 处理输出路径
-    output_dir = str(Path(args.output).expanduser().resolve())
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-    print(f"📁 输出目录: {output_path}\n")
+        # 处理多个DOI
+        success_count = 0
+        fail_count = 0
 
-    # 处理多个DOI
-    success_count = 0
-    fail_count = 0
+        for i, doi in enumerate(dois, 1):
+            print(f"\n{'='*80}")
+            print(f"处理论文 {i}/{len(dois)}: {doi}")
+            print(f"{'='*80}\n")
 
-    for i, doi in enumerate(dois, 1):
-        print(f"\n{'='*80}")
-        print(f"处理论文 {i}/{len(dois)}: {doi}")
-        print(f"{'='*80}\n")
-
-        try:
-            md_path = await complete_extraction_workflow(
-                doi,
-                output_file=output_dir,
-                force_headed=force_headed_mode,
-                refresh_headless_auth=args.refresh_headless_auth,
-            )
-            if md_path:
-                success_count += 1
-                print(f"✅ 成功: {md_path}")
-            else:
+            try:
+                md_path = await complete_extraction_workflow(
+                    doi,
+                    output_file=output_dir,
+                    force_headed=force_headed_mode,
+                    refresh_headless_auth=args.refresh_headless_auth,
+                )
+                if md_path:
+                    success_count += 1
+                    print(f"✅ 成功: {md_path}")
+                else:
+                    fail_count += 1
+            except Exception as e:
+                print(f"❌ 处理失败: {e}")
                 fail_count += 1
-        except Exception as e:
-            print(f"❌ 处理失败: {e}")
-            fail_count += 1
 
-        # 批量处理防拉黑：随机睡眠 (最后一条不需要)
-        if BATCH_SLEEP_ENABLED and i < len(dois):
-            sleep_seconds = random.randint(BATCH_SLEEP_MIN, BATCH_SLEEP_MAX)
-            sleep_minutes = sleep_seconds / 60
-            print(f"\n😴 防拉黑休眠 {sleep_seconds}s ({sleep_minutes:.1f} min)...")
-            await asyncio.sleep(sleep_seconds)
-            print("🚀 继续下一篇文章...\n")
+            # 批量处理防拉黑：随机睡眠 (最后一条不需要)
+            if BATCH_SLEEP_ENABLED and i < len(dois):
+                sleep_seconds = random.randint(BATCH_SLEEP_MIN, BATCH_SLEEP_MAX)
+                sleep_minutes = sleep_seconds / 60
+                print(f"\n😴 防拉黑休眠 {sleep_seconds}s ({sleep_minutes:.1f} min)...")
+                await asyncio.sleep(sleep_seconds)
+                print("🚀 继续下一篇文章...\n")
 
-    # 显示统计信息
-    if len(dois) > 1:
-        print(f"\n{'='*80}")
-        print(f"📊 处理完成")
-        print(f"{'='*80}")
-        print(f"✓ 成功: {success_count}/{len(dois)}")
-        print(f"✗ 失败: {fail_count}/{len(dois)}")
+        # 显示统计信息
+        if len(dois) > 1:
+            print(f"\n{'='*80}")
+            print(f"📊 处理完成")
+            print(f"{'='*80}")
+            print(f"✓ 成功: {success_count}/{len(dois)}")
+            print(f"✗ 失败: {fail_count}/{len(dois)}")
 
-    sys.exit(0 if fail_count == 0 else 1)
+        sys.exit(0 if fail_count == 0 else 1)
+
+    except KeyboardInterrupt:
+        print("\n\n⚠️  收到中断信号 (Ctrl+C)，正在清理...")
+        _cleanup_chrome_launcher()
+        sys.exit(130)
+    finally:
+        # 确保在任何情况下都清理子进程
+        _cleanup_chrome_launcher()
 
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n\n⚠️  收到中断信号 (Ctrl+C)，正在清理...")
+        _cleanup_chrome_launcher()
+        sys.exit(130)
