@@ -100,16 +100,16 @@ def _extract_abstract_from_abstract_html(html_content: str) -> str:
                 content_div = abstract_section.find('div', class_='content')
 
             if content_div:
-                # 提取第一个段落作为Abstract
-                # Abstract通常是在第一个<p>标签中，其他<p>可能是figure band
+                # 提取所有段落
                 paragraphs = content_div.find_all('p', recursive=False)
                 if paragraphs:
                     # 获取第一个真正的段落（跳过figure-band等非文本内容）
                     for p in paragraphs:
                         text = p.get_text(' ', strip=True)
-                        if text and len(text) > 50:  # 有意义的长度
+                        if text and len(text) > 50 and 'Figure' not in text:  # 有意义的长度
                             # 转换为HTML（包含MathML等）以便后续处理
-                            return str(p)
+                            result = str(p)
+                            return result
 
                 # 如果没有段落，尝试获取整个content的文本
                 text = content_div.get_text(' ', strip=True)
@@ -732,22 +732,21 @@ class APSHandler(PublisherHandler):
             # Network capture is already running, just wait for additional requests
             await asyncio.sleep(3)
 
-        # 2.5 Extract abstract from abstract page HTML (if meta tag abstract is incomplete)
-        if captured.get('abstract_html') and not metadata.get('abstract'):
+        # 2.5 Extract abstract from abstract page HTML (优先于meta tag)
+        if captured.get('abstract_html'):
             html_abstract = _extract_abstract_from_abstract_html(captured['abstract_html'])
             if html_abstract:
+                # 如果成功从HTML提取到abstract，用它替换meta tag的abstract
+                old_abstract = metadata.get('abstract', '')
                 metadata['abstract'] = html_abstract
-                print(f"  ✓ 从abstract页面提取摘要: {len(html_abstract)} 字符")
-        elif captured.get('abstract_html') and metadata.get('abstract'):
-            # 如果meta tag中的abstract太短（可能只是简要描述），尝试从HTML中获取更完整的
-            meta_abstract = metadata['abstract']
-            if len(meta_abstract) < 200:  # 如果太短，尝试从HTML获取
-                html_abstract = _extract_abstract_from_abstract_html(captured['abstract_html'])
-                if html_abstract:
-                    # 检查HTML abstract是否明显更长/更完整
-                    if len(html_abstract) > len(meta_abstract) * 1.5:
-                        metadata['abstract'] = html_abstract
-                        print(f"  ✓ 使用abstract页面的摘要(更完整): {len(html_abstract)} 字符")
+                if len(old_abstract) < len(html_abstract):
+                    print(f"  ✓ 从abstract页面提取更完整的摘要: {len(html_abstract)} 字符 (原meta: {len(old_abstract)} 字符)")
+                else:
+                    print(f"  ✓ 使用abstract页面的摘要: {len(html_abstract)} 字符")
+            else:
+                print(f"  ⚠️  abstract HTML页面中未找到摘要内容")
+        else:
+            print(f"  ⚠️  无abstract_html可用，使用meta tag摘要")
 
         # 3. Extract references from the headed APS abstract page.
         if not metadata.get('references'):
