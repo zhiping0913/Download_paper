@@ -1301,7 +1301,6 @@ class NatureHandler(PublisherHandler):
             for idx, ref in enumerate(crossref_refs, 1):
                 # Get original reference text if available
                 ref_key = ref.get('key', f'ref{idx}')
-                # Try to find matching original reference by unstructured field or use key
                 unstructured = ref.get('unstructured', '')
 
                 if unstructured:
@@ -1313,6 +1312,8 @@ class NatureHandler(PublisherHandler):
 
                 # Generate BibTeX from Crossref data
                 ref_key = ref.get('key', f'ref{idx}')
+
+                # Check for structured fields first
                 parts = {
                     'author': ref.get('author', ''),
                     'title': ref.get('article-title', ''),
@@ -1325,7 +1326,13 @@ class NatureHandler(PublisherHandler):
                 }
                 # Filter empty values but preserve DOI even if empty
                 parts = {k: v for k, v in parts.items() if v or k == 'doi'}
-                if any(parts.get(k) for k in ['author', 'title', 'journal']):
+
+                # If no structured fields but have unstructured text, generate BibTeX from unstructured
+                if not any(parts.get(k) for k in ['author', 'title', 'journal']) and unstructured:
+                    bibtex = generate_bibtex_from_unstructured(unstructured, key=ref_key)
+                    if bibtex:
+                        md_content += f"```bibtex\n{bibtex}\n```\n\n"
+                elif any(parts.get(k) for k in ['author', 'title', 'journal']):
                     bibtex = format_as_bibtex(parts, key=ref_key)
                     md_content += f"```bibtex\n{bibtex}\n```\n\n"
         elif metadata.get('references'):
@@ -1412,3 +1419,35 @@ def detect_nature_journal(url: str) -> Optional[str]:
         else:
             return 'nature'  # default
     return None
+
+
+def generate_bibtex_from_unstructured(unstructured: str, key: str = 'ref') -> str:
+    """Generate a basic BibTeX entry from unstructured reference text.
+
+    Attempts to extract author, year, and other info from plain text citation.
+    """
+    import re
+
+    # Try to extract year (4 digits in parentheses or standalone)
+    year_match = re.search(r'\((\d{4})\)|\b(\d{4})\b', unstructured)
+    year = year_match.group(1) or year_match.group(2) if year_match else ''
+
+    # Extract first author (text before comma or "et al")
+    author_match = re.match(r'^([A-Z][a-z\s\.]+?)(?:,|et\sal\.)', unstructured)
+    author = author_match.group(1).strip() if author_match else 'Unknown'
+
+    # Use the unstructured text as the title/note
+    # Clean up the reference text
+    title = re.sub(r'\s+', ' ', unstructured).strip()
+    if len(title) > 200:
+        title = title[:200] + '...'
+
+    # Generate basic BibTeX entry
+    bibtex = f"""@article{{{key},
+  author = "{{{author}}}",
+  title = "{{{title}}}",
+  year = "{{{year}}}"
+}}"""
+
+    return bibtex
+
