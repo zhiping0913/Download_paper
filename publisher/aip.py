@@ -450,42 +450,53 @@ class AIPHandler(PublisherHandler):
                 body_parts.extend([figure_md, ""])
                 continue
 
-            # block-child-p contains paragraph text possibly mixed with
-            # embedded display formulas — convert as a single unit.
-            block_p = node.select_one('div.block-child-p')
-            if block_p:
-                block_md = cls._convert_aip_block_child_p(block_p)
-                if block_md:
-                    body_parts.extend([block_md, ""])
-                continue
+            # Process all direct children of the wrapper in order (not using continue/skip pattern)
+            # This preserves the order of paragraphs, figures, formulas, etc.
+            for child in node.children:
+                if isinstance(child, NavigableString):
+                    continue
 
-            # disp-formula contains multiple formulas and surrounding text
-            disp_formula = node.select_one('div.disp-formula')
-            if disp_formula:
-                formula_block_md = cls._convert_aip_disp_formula_block(disp_formula)
-                if formula_block_md:
-                    body_parts.extend([formula_block_md, ""])
-                continue
+                if child.name == 'p':
+                    paragraph_md = cls._convert_aip_html_fragment_to_markdown(str(child))
+                    if paragraph_md:
+                        body_parts.extend([paragraph_md, ""])
+                    continue
 
-            formula = node.select_one('div.formula-wrap')
-            if formula:
-                formula_md = cls._convert_aip_display_formula(formula)
-                if formula_md:
-                    body_parts.extend([formula_md, ""])
-                continue
+                if child.name == 'div':
+                    # Handle figure
+                    if child.select_one('div.fig-section'):
+                        figure_md = cls._convert_aip_figure(child)
+                        if figure_md:
+                            body_parts.extend([figure_md, ""])
+                        continue
 
-            table = node.select_one('div.table-wrap')
-            if table:
-                table_md = cls._convert_aip_table_to_md(table)
-                if table_md:
-                    body_parts.extend([table_md, ""])
-                continue
+                    # Handle block-child-p (paragraph with embedded formulas)
+                    if 'block-child-p' in (child.get('class') or []):
+                        block_md = cls._convert_aip_block_child_p(child)
+                        if block_md:
+                            body_parts.extend([block_md, ""])
+                        continue
 
-            paragraphs = node.find_all('p', recursive=False)
-            for paragraph in paragraphs:
-                paragraph_md = cls._convert_aip_html_fragment_to_markdown(str(paragraph))
-                if paragraph_md:
-                    body_parts.extend([paragraph_md, ""])
+                    # Handle disp-formula (multiple formulas + text)
+                    if 'disp-formula' in (child.get('class') or []):
+                        formula_block_md = cls._convert_aip_disp_formula_block(child)
+                        if formula_block_md:
+                            body_parts.extend([formula_block_md, ""])
+                        continue
+
+                    # Handle single formula-wrap
+                    if 'formula-wrap' in (child.get('class') or []):
+                        formula_md = cls._convert_aip_display_formula(child)
+                        if formula_md:
+                            body_parts.extend([formula_md, ""])
+                        continue
+
+                    # Handle table
+                    if 'table-wrap' in (child.get('class') or []):
+                        table_md = cls._convert_aip_table_to_md(child)
+                        if table_md:
+                            body_parts.extend([table_md, ""])
+                        continue
 
         abstract_md = "\n\n".join(abstract_parts).strip()
         body_md = "\n".join(body_parts).strip()
