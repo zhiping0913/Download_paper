@@ -778,6 +778,12 @@ class APSHandler(PublisherHandler):
         else:
             # Network capture is already running, just wait for additional requests
             await asyncio.sleep(3)
+            # Supplement with saved HTML files if abstract_html is missing
+            # (setup_network_capture was called after page.goto, so it missed the initial load)
+            if not captured.get('abstract_html'):
+                saved_data = self.load_captured_data()
+                if saved_data.get('abstract_html'):
+                    captured['abstract_html'] = saved_data['abstract_html']
 
         # 2.5 Extract abstract from abstract page HTML (优先于meta tag)
         if captured.get('abstract_html'):
@@ -1072,38 +1078,9 @@ class APSHandler(PublisherHandler):
         md_content += "\n---\n\n"
 
         # ===== 参考文献 =====
-        # Prefer Crossref references if available (unified BibTeX generation)
-        crossref_refs = metadata.get('_crossref_references', [])
-        if crossref_refs:
-            md_content += "## References\n\n"
-            for idx, ref in enumerate(crossref_refs, 1):
-                # Get original unstructured reference if available
-                unstructured = ref.get('unstructured', '')
-                if unstructured:
-                    md_content += f"[{idx}] {unstructured}\n\n"
-                else:
-                    # Generate readable text from Crossref data
-                    ref_text = generate_reference_text_from_crossref(ref, index=idx)
-                    md_content += ref_text + "\n\n"
-
-                # Generate BibTeX from Crossref data
-                ref_key = ref.get('key', f'ref{idx}')
-                parts = {
-                    'author': ref.get('author', ''),
-                    'title': ref.get('article-title', ''),
-                    'journal': ref.get('journal-title', ''),
-                    'volume': ref.get('volume', ''),
-                    'firstpage': ref.get('first-page', ''),
-                    'lastpage': ref.get('last-page', ''),
-                    'year': str(ref.get('year', '')),
-                    'doi': ref.get('DOI', ''),
-                }
-                # Filter empty values but preserve DOI even if empty
-                parts = {k: v for k, v in parts.items() if v or k == 'doi'}
-                if any(parts.get(k) for k in ['author', 'title', 'journal']):
-                    bibtex = format_as_bibtex(parts, key=ref_key)
-                    md_content += f"```bibtex\n{bibtex}\n```\n\n"
-        elif metadata.get('references'):
+        # Prefer complete extracted references with pre-generated BibTeX over Crossref metadata-only references
+        # (Crossref API returns only DOI info, not full bibliographic data)
+        if metadata.get('references'):
             md_content += "## References\n\n"
             bibtex_refs = metadata.get('_refs_bibtex', [])
             for i, ref in enumerate(metadata['references']):
