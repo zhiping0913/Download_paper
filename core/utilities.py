@@ -141,8 +141,8 @@ def _clean_title_for_directory(title: str) -> str:
         return 'paper'
 
     # Remove HTML/XML tags (including MathML and other markup)
-    # This regex removes anything between < and >
-    title = re.sub(r'<[^>]+>', '', title)
+    # Add space before removing tag to preserve word boundaries
+    title = re.sub(r'<[^>]+>', ' ', title)
 
     # Replace common mathematical symbols with text representations
     replacements = {
