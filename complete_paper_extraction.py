@@ -844,8 +844,8 @@ async def complete_extraction_workflow(
         # Step 3.5: Check if paper has meaningful content before saving
         # Skip save only if there's no title (truly empty paper)
         # References are optional - some publishers don't provide them
-        title = metadata.get('title', '').strip()
-        abstract = metadata.get('abstract', '').strip()
+        title = (metadata.get('title') or '').strip()
+        abstract = (metadata.get('abstract') or '').strip()
         has_content = bool(title) or bool(abstract)
 
         if not has_content:
@@ -1171,6 +1171,8 @@ async def complete_extraction_workflow(
                 except Exception as e:
                     print(f"  ⚠️  无头浏览器访问失败: {type(e).__name__}: {str(e)[:100]}")
                     print(f"  → 这对某些需要认证或完整JavaScript渲染的出版商是正常的")
+                    import traceback
+                    traceback.print_exc()
                 finally:
                     try:
                         await headless_page.close()
@@ -1536,6 +1538,8 @@ async def main():
                     fail_count += 1
             except Exception as e:
                 print(f"❌ 处理失败: {e}")
+                import traceback
+                traceback.print_exc()
                 fail_count += 1
 
             # 批量处理防拉黑：随机睡眠 (最后一条不需要)
