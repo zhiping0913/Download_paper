@@ -490,9 +490,26 @@ async def get_supplemental_links(page, doi: str = None, journal_prefix: str = No
         descriptions_js = """
         () => {
             const descriptions = {};
+
+            // Get all text content and look for "The file X... " patterns
+            const pageText = document.body.innerText;
+            const filePattern = /The file ([^.]+(?:\.[^\\s]+)?)[\\s:]*([^]*?)(?=The file|$)/gi;
+
+            let match;
+            while ((match = filePattern.exec(pageText)) !== null) {
+                const filename = match[1].trim();
+                let desc = match[2].trim();
+                // Remove leading/trailing punctuation and extra whitespace
+                desc = desc.replace(/^[\\s,:;.]+|[\\s,:;.]+$/g, '').trim();
+                if (desc.length > 5 && filename.length > 0) {
+                    descriptions[filename] = `The file ${filename}. ${desc}`;
+                }
+            }
+
+            // Also try the old method: find descriptions within item containers
             document.querySelectorAll('a[data-id]').forEach(a => {
                 const filename = a.getAttribute('data-id');
-                if (!filename) return;
+                if (!filename || descriptions[filename]) return; // Skip if already found
 
                 // 查找文件项容器中的描述文本
                 let item = a.closest('[class*="supplemental"]') || a.closest('li') || a.parentElement;
@@ -505,6 +522,7 @@ async def get_supplemental_links(page, doi: str = None, journal_prefix: str = No
                     }
                 }
             });
+
             return descriptions;
         }
         """
