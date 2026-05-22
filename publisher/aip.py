@@ -514,17 +514,66 @@ class AIPHandler(PublisherHandler):
         return figures
 
     @staticmethod
-    def _extract_supplemental_links_from_html(html_content: str) -> tuple:
-        """Extract supplemental material download links from the figshare widget.
+    def _extract_direct_supplemental_links(html_content: str) -> tuple:
+        """Extract supplemental material links directly from class="supplementary-material-link".
 
-        The figshare widget renders dynamically and only shows 1/N in the HTML.
-        This method uses the figshare API to discover all files in a collection.
+        AIP embeds supplemental links directly in the HTML with class="supplementary-material-link".
+        Returns (urls, descriptions) where descriptions maps URL -> text content.
+        """
+        if not html_content:
+            return [], {}
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        seen_urls = set()
+        links = []
+        descriptions = {}
+
+        # Find all links with class="supplementary-material-link"
+        supp_links = soup.find_all('a', class_='supplementary-material-link')
+
+        for link in supp_links:
+            href = link.get('href', '').strip()
+            if not href:
+                continue
+
+            # Build full URL if relative
+            if href.startswith('/'):
+                href = f"https://pubs.aip.org{href}"
+            elif not href.startswith('http'):
+                href = f"https://pubs.aip.org/{href}"
+
+            # Deduplicate
+            if href in seen_urls:
+                continue
+            seen_urls.add(href)
+            links.append(href)
+
+            # Extract link text as description
+            link_text = link.get_text(' ', strip=True)
+            if link_text:
+                descriptions[href] = link_text
+
+        return links, descriptions
+
+    @staticmethod
+    def _extract_supplemental_links_from_html(html_content: str) -> tuple:
+        """Extract supplemental material download links from the figshare widget or direct links.
+
+        First tries to extract from class="supplementary-material-link" (direct AIP links).
+        If none found, uses figshare API to discover all files in a collection.
 
         Returns (urls, descriptions) where descriptions maps URL -> filename.
         """
         if not html_content:
             return [], {}
 
+        # Method 1: Try direct supplementary-material-link extraction
+        direct_links, direct_descriptions = AIPHandler._extract_direct_supplemental_links(html_content)
+        if direct_links:
+            print(f"  ✓ 找到 {len(direct_links)} 个直接补充材料链接")
+            return direct_links, direct_descriptions
+
+        # Method 2: Fallback to figshare
         soup = BeautifulSoup(html_content, 'html.parser')
         links = []
         descriptions = {}
