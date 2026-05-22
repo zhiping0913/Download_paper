@@ -74,6 +74,53 @@ def _extract_aps_references_from_html(html_content: str) -> list:
     return references
 
 
+def _extract_popular_summary_from_abstract_html(html_content: str) -> tuple:
+    """从APS abstract页面HTML中提取Popular Summary文本和key image URL
+
+    Popular Summary位于 <div id="popular-summary-section-content"> 中
+    需要转换为markdown（包含段落分隔）
+    返回: (summary_html, key_image_url)
+    """
+    if not html_content:
+        return None, None
+
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        # 提取key image URL从meta标签
+        key_image_url = None
+        og_image = soup.find('meta', property='og:image')
+        if og_image and og_image.get('content'):
+            url = og_image.get('content')
+            if 'key_images' in url:  # 确保是key_images而不是其他图片
+                key_image_url = url
+
+        # 查找popular-summary section
+        summary_section = soup.find('div', id='popular-summary-section-content')
+        if not summary_section:
+            return None, key_image_url
+
+        # 提取所有段落，转换为markdown
+        paragraphs = summary_section.find_all('p')
+        if not paragraphs:
+            return None, key_image_url
+
+        md_parts = []
+        for p in paragraphs:
+            # 转换为HTML以便后续用convert_html_to_markdown处理（保留格式和链接）
+            p_html = str(p)
+            md_parts.append(p_html)
+
+        if md_parts:
+            full_html = ''.join(md_parts)
+            return full_html, key_image_url
+
+    except Exception as e:
+        print(f"  ⚠️  从abstract HTML提取Popular Summary失败: {str(e)[:50]}")
+
+    return None, None
+
+
 def _extract_abstract_from_abstract_html(html_content: str) -> str:
     """从APS abstract页面HTML中提取Abstract文本
 
@@ -745,6 +792,16 @@ class APSHandler(PublisherHandler):
                     print(f"  ✓ 使用abstract页面的摘要: {len(html_abstract)} 字符")
             else:
                 print(f"  ⚠️  abstract HTML页面中未找到摘要内容")
+
+            # 2.6 Extract Popular Summary if available
+            popular_summary, key_image_url = _extract_popular_summary_from_abstract_html(captured['abstract_html'])
+            if popular_summary:
+                metadata['popular_summary'] = popular_summary
+                if key_image_url:
+                    metadata['key_image_url'] = key_image_url
+                    print(f"  ✓ 提取Popular Summary: {len(popular_summary)} 字符 + key image")
+                else:
+                    print(f"  ✓ 提取Popular Summary: {len(popular_summary)} 字符")
         else:
             print(f"  ⚠️  无abstract_html可用，使用meta tag摘要")
 
@@ -953,6 +1010,28 @@ class APSHandler(PublisherHandler):
                 except:
                     pass
             md_content += f"{abstract_text}\n\n"
+            md_content += "---\n\n"
+
+        # ===== Popular Summary (如果存在) =====
+        popular_summary = metadata.get('popular_summary')
+        key_image_url = metadata.get('key_image_url')
+
+        if popular_summary:
+            md_content += "## Popular Summary\n\n"
+
+            # 如果有key image URL，添加图片
+            if key_image_url:
+                # 提取图片文件名并创建本地引用
+                key_image_filename = "key_image.png"
+                md_content += f"![Key Image]({key_image_filename})\n\n"
+
+            # 转换HTML为markdown
+            if isinstance(popular_summary, str) and '<' in popular_summary:
+                try:
+                    popular_summary = convert_html_to_markdown(popular_summary)
+                except:
+                    pass
+            md_content += f"{popular_summary}\n\n"
             md_content += "---\n\n"
 
         # ===== 正文 - 使用JSON递归转换 =====

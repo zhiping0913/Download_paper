@@ -370,6 +370,27 @@ async def _download_all_resources(
         else:
             print("\n⚠️  未找到图片链接")
 
+        # Download key image (Popular Summary cover image)
+        key_image_url = metadata.get('key_image_url')
+        if key_image_url:
+            print("\n🔑 下载Key Image...")
+            try:
+                img_filename = await download_figure(
+                    download_page,
+                    key_image_url,
+                    0,  # Use 0 as fig_num for key image
+                    output_dir,
+                    download_context,
+                    force_headed,
+                )
+                if img_filename:
+                    # Rename to key_image.png
+                    key_image_path = output_dir / "key_image.png"
+                    (output_dir / img_filename).rename(key_image_path)
+                    print(f"  ✓ Key image已保存: key_image.png")
+            except Exception as e:
+                print(f"  ⚠️  Key image下载失败: {e}")
+
         # Download supplemental materials
         supp_urls = links.get('supplemental_urls', [])
         if supp_urls:
