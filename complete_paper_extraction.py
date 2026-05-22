@@ -507,14 +507,23 @@ async def download_supplemental_materials(
             # 如果没有找到chapter标题，从URL中提取文件名
             if not chapter_title:
                 parsed_url = urllib.parse.urlparse(url)
-                filename = urllib.parse.unquote(parsed_url.path.split('/')[-1])
+                # 处理URL以斜杠结尾的情况
+                path_parts = [p for p in parsed_url.path.split('/') if p]
+                filename = urllib.parse.unquote(path_parts[-1]) if path_parts else ''
                 if not filename:
                     filename = f"supplemental_{i}"
                 chapter_title = filename
 
+            # 清理文件名中的非法字符（保留基本的文件名安全字符）
+            safe_title = re.sub(r'[<>:"/\\|?*]', '_', chapter_title)
+            safe_title = re.sub(r'_+', '_', safe_title).strip('_')  # 去重下划线并去除边界
+
             # 生成输出文件名：supplemental--{chapter_title}
-            output_filename = f"supplemental--{chapter_title}"
+            output_filename = f"supplemental--{safe_title}"
             output_path = output_dir / output_filename
+
+            # 确保输出目录存在
+            output_dir.mkdir(parents=True, exist_ok=True)
 
             print(f"  📥 下载补充材料 ({i}/{len(supplemental_links)}): {chapter_title}")
             print(f"     URL: {url}")
