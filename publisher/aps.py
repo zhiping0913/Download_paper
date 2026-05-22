@@ -506,16 +506,60 @@ async def get_supplemental_links(page, doi: str = None, journal_prefix: str = No
                 }
             }
 
-            // Also try the old method: find descriptions within item containers
+            // Look for descriptions in the supplemental-files section parent
+            const suppSection = document.querySelector('.supplemental-files');
+            if (suppSection) {
+                const parent = suppSection.parentElement;
+                if (parent) {
+                    // Collect all text before the supplemental-files div
+                    let sectionText = '';
+                    for (let node of parent.childNodes) {
+                        if (node === suppSection) break; // Stop at supplemental-files
+                        if (node.nodeType === 3) { // Text node
+                            sectionText += node.textContent;
+                        } else if (node.nodeType === 1) { // Element node
+                            const text = node.innerText || node.textContent;
+                            sectionText += text;
+                        }
+                    }
+
+                    // Get all filenames
+                    let files = [];
+                    suppSection.querySelectorAll('a[data-id]').forEach(a => {
+                        files.push(a.getAttribute('data-id'));
+                    });
+
+                    // Extract description text, removing headers and filenames
+                    if (files.length > 0 && sectionText.length > 20) {
+                        let desc = sectionText.trim();
+                        // Remove common headers
+                        desc = desc.replace(/^Supplemental\\s+Material\\s*/i, '').trim();
+                        // Remove any file names
+                        files.forEach(f => {
+                            desc = desc.replace(new RegExp(f, 'g'), '');
+                        });
+                        desc = desc.replace(/^[\\s,:;.]+|[\\s,:;.]+$/g, '').trim();
+
+                        // If we found description text, assign it to all files
+                        if (desc.length > 10) {
+                            files.forEach(f => {
+                                if (!descriptions[f]) {
+                                    descriptions[f] = desc;
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Also try finding descriptions within individual file containers
             document.querySelectorAll('a[data-id]').forEach(a => {
                 const filename = a.getAttribute('data-id');
                 if (!filename || descriptions[filename]) return; // Skip if already found
 
-                // 查找文件项容器中的描述文本
                 let item = a.closest('[class*="supplemental"]') || a.closest('li') || a.parentElement;
                 if (item) {
                     const text = item.innerText || item.textContent;
-                    // 去除文件名自身，剩余部分作为描述
                     let desc = text.replace(filename, '').trim();
                     if (desc.length > 5) {
                         descriptions[filename] = desc;
