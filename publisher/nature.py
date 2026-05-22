@@ -249,7 +249,8 @@ class NatureHandler(PublisherHandler):
         # Map meta tags to metadata fields
         metadata['title'] = meta_data.get('citation_title') or meta_data.get('dc.title')
         metadata['journal'] = meta_data.get('citation_journal_title', 'Nature')
-        metadata['doi'] = (meta_data.get('citation_doi') or meta_data.get('prism.doi', '').replace('doi:', ''))
+        extracted_doi = (meta_data.get('citation_doi') or meta_data.get('prism.doi', '').replace('doi:', ''))
+        metadata['doi'] = extracted_doi or metadata.get('doi')  # Fallback to passed-in DOI
 
         # Parse publication date (format: 2026/04/22 or 2026-04-22)
         pub_date = meta_data.get('citation_online_date', '')

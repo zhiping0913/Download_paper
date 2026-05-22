@@ -836,6 +836,10 @@ async def complete_extraction_workflow(
             else:
                 print(f"  ⚠️  Crossref中没有参考文献数据")
 
+        # Ensure DOI is set in metadata for markdown generation
+        if not metadata.get('doi') and doi:
+            metadata['doi'] = doi
+
         print(f"  ✓ 标题: {metadata.get('title', 'N/A')[:60]}...")
         print(f"  ✓ 作者: {len(metadata.get('authors', []))} 位")
         print(f"  ✓ 期刊: {metadata.get('journal', 'N/A')}")

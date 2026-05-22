@@ -320,69 +320,6 @@ class AIPHandler(PublisherHandler):
         return text_md.strip()
 
     @classmethod
-    def _convert_aip_disp_formula_block(cls, disp_formula_div) -> str:
-        """Convert AIP disp-formula block containing multiple formulas and surrounding text.
-
-        A disp-formula block can contain multiple formula-wrap divs plus explanatory text
-        before and after. This extracts all formulas, combines them, and includes any
-        surrounding text including text nodes and inline elements that follow the formula block.
-        """
-        # Make a copy to avoid modifying original
-        import copy
-        block_copy = copy.deepcopy(disp_formula_div)
-
-        # Extract all formula-wrap divs and replace with placeholders
-        display_formulas = []
-        for fw in block_copy.find_all('div', class_='formula-wrap'):
-            formula_md = cls._convert_aip_display_formula(fw)
-            if formula_md:
-                placeholder = f"AIPDISPF{len(display_formulas):03d}MATHEND"
-                display_formulas.append((placeholder, formula_md))
-                fw.replace_with(placeholder)
-
-        # Convert remaining content inside the disp-formula to markdown
-        text_md = cls._convert_aip_html_fragment_to_markdown(str(block_copy))
-
-        # Restore display formulas (each on its own line)
-        for placeholder, formula_md in display_formulas:
-            text_md = text_md.replace(placeholder, f"\n\n{formula_md}\n")
-
-        # Capture text and elements that immediately follow the disp-formula div
-        # These often contain explanatory content about the equations
-        text_md = text_md.rstrip()
-        next_node = disp_formula_div.next_sibling
-        content_after = []
-
-        while next_node:
-            if isinstance(next_node, NavigableString):
-                text = str(next_node).strip()
-                if text:
-                    content_after.append(text)
-                next_node = next_node.next_sibling
-            elif hasattr(next_node, 'name'):
-                # If we encounter a structural element (p, div with special class), stop
-                if next_node.name in ('p', 'div') and (
-                    next_node.name == 'p' or
-                    'article-section' in (next_node.get('class') or []) or
-                    'block-child-p' in (next_node.get('class') or [])
-                ):
-                    break
-                # Otherwise, capture inline elements like span with formulas
-                content_after.append(str(next_node))
-                next_node = next_node.next_sibling
-            else:
-                next_node = next_node.next_sibling
-
-        # Convert the captured content and append
-        if content_after:
-            after_html = "".join(content_after)
-            after_md = cls._convert_aip_html_fragment_to_markdown(f"<p>{after_html}</p>")
-            if after_md:
-                text_md = text_md + " " + after_md.strip()
-
-        return text_md.strip()
-
-    @classmethod
     def extract_article_text_from_html(cls, html_content: str):
         """Extract AIP article text, returning (abstract_md, body_md).
 
@@ -450,53 +387,34 @@ class AIPHandler(PublisherHandler):
                 body_parts.extend([figure_md, ""])
                 continue
 
-            # Process all direct children of the wrapper in order (not using continue/skip pattern)
-            # This preserves the order of paragraphs, figures, formulas, etc.
-            for child in node.children:
-                if isinstance(child, NavigableString):
-                    continue
+            # block-child-p contains paragraph text possibly mixed with
+            # embedded display formulas — convert as a single unit.
+            block_p = node.select_one('div.block-child-p')
+            if block_p:
+                block_md = cls._convert_aip_block_child_p(block_p)
+                if block_md:
+                    body_parts.extend([block_md, ""])
+                continue
 
-                if child.name == 'p':
-                    paragraph_md = cls._convert_aip_html_fragment_to_markdown(str(child))
-                    if paragraph_md:
-                        body_parts.extend([paragraph_md, ""])
-                    continue
+            formula = node.select_one('div.formula-wrap')
+            if formula:
+                formula_md = cls._convert_aip_display_formula(formula)
+                if formula_md:
+                    body_parts.extend([formula_md, ""])
+                continue
 
-                if child.name == 'div':
-                    # Handle figure
-                    if child.select_one('div.fig-section'):
-                        figure_md = cls._convert_aip_figure(child)
-                        if figure_md:
-                            body_parts.extend([figure_md, ""])
-                        continue
+            table = node.select_one('div.table-wrap')
+            if table:
+                table_md = cls._convert_aip_table_to_md(table)
+                if table_md:
+                    body_parts.extend([table_md, ""])
+                continue
 
-                    # Handle block-child-p (paragraph with embedded formulas)
-                    if 'block-child-p' in (child.get('class') or []):
-                        block_md = cls._convert_aip_block_child_p(child)
-                        if block_md:
-                            body_parts.extend([block_md, ""])
-                        continue
-
-                    # Handle disp-formula (multiple formulas + text)
-                    if 'disp-formula' in (child.get('class') or []):
-                        formula_block_md = cls._convert_aip_disp_formula_block(child)
-                        if formula_block_md:
-                            body_parts.extend([formula_block_md, ""])
-                        continue
-
-                    # Handle single formula-wrap
-                    if 'formula-wrap' in (child.get('class') or []):
-                        formula_md = cls._convert_aip_display_formula(child)
-                        if formula_md:
-                            body_parts.extend([formula_md, ""])
-                        continue
-
-                    # Handle table
-                    if 'table-wrap' in (child.get('class') or []):
-                        table_md = cls._convert_aip_table_to_md(child)
-                        if table_md:
-                            body_parts.extend([table_md, ""])
-                        continue
+            paragraphs = node.find_all('p', recursive=False)
+            for paragraph in paragraphs:
+                paragraph_md = cls._convert_aip_html_fragment_to_markdown(str(paragraph))
+                if paragraph_md:
+                    body_parts.extend([paragraph_md, ""])
 
         abstract_md = "\n\n".join(abstract_parts).strip()
         body_md = "\n".join(body_parts).strip()
