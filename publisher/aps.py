@@ -302,27 +302,47 @@ async def extract_metadata_from_page(page) -> dict:
     return metadata
 
 
-async def get_supplemental_links(page, doi: str, journal_prefix: str = None,
+async def get_supplemental_links(page, doi: str = None, journal_prefix: str = None,
                                  captured_data_dir: Path = None) -> tuple:
     """获取补充材料的所有下载链接和描述信息
 
+    构造补充材料URL的方法：
+    1. 首先尝试从当前页面URL获取真实路径（保留APS的大小写格式）
+    2. 将URL中的 "abstract" 替换为 "supplemental"
+    3. 如果失败，则降级使用DOI和journal_prefix手动构造URL
+
     Args:
         page: Playwright page object
-        doi: Paper DOI (required)
-        journal_prefix: APS journal prefix (e.g., 'prl', 'pre')
+        doi: Paper DOI (用于降级）
+        journal_prefix: APS journal prefix (e.g., 'prl', 'pre', 用于降级）
         captured_data_dir: If set, save supplemental page HTML to this directory
 
     Returns: (supplemental_links, descriptions_dict)
     """
-    if not doi:
-        print(f"  ⚠️  跳过补充材料提取: DOI为None")
-        return [], {}
+    supplemental_url = None
 
+    # 方法1：从当前页面URL生成（保留APS的大小写格式）
     try:
+        current_url = page.url if hasattr(page, 'url') else None
+        if current_url and 'journals.aps.org' in current_url and '/abstract/' in current_url:
+            # 例如：https://journals.aps.org/prl/abstract/10.1103/PhysRevLett.124.185004
+            supplemental_url = current_url.replace('/abstract/', '/supplemental/')
+            print(f"  🔗 从当前页面URL生成补充材料链接: {supplemental_url}")
+    except Exception as e:
+        print(f"  ⚠️  从页面URL生成补充材料链接失败: {str(e)[:50]}")
+
+    # 方法2：降级使用DOI和journal_prefix手动构造（如果方法1失败）
+    if not supplemental_url:
+        if not doi:
+            print(f"  ⚠️  跳过补充材料提取: 无法从页面URL或DOI获取补充材料链接")
+            return [], {}
+
         if not journal_prefix:
             journal_prefix = 'prl'  # 默认值
         supplemental_url = f"https://journals.aps.org/{journal_prefix}/supplemental/{doi}"
-        print(f"  🔗 获取补充材料链接: {supplemental_url}")
+        print(f"  🔗 使用DOI构造补充材料链接（可能大小写不匹配）: {supplemental_url}")
+
+    try:
 
         # 监听网络响应来获取描述
         supplemental_data = None
