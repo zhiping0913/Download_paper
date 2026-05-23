@@ -9,6 +9,7 @@ from publisher import APSHandler, AIPHandler, CambridgeHandler
 from publisher.nature import NatureHandler
 from publisher.iop import IOPHandler
 from publisher.springer_book import SpringerBookHandler
+from publisher.optica import OpticaHandler
 
 
 def detect_publisher_from_url(url: str) -> str:
@@ -41,6 +42,12 @@ def detect_publisher_from_url(url: str) -> str:
         return 'iop'
     elif '10.1088' in url_lower:
         return 'iop'
+
+    # Optica Publishing detection
+    elif 'opg.optica.org' in url_lower or 'opticapublishing' in url_lower:
+        return 'optica'
+    elif '10.1364' in url_lower:
+        return 'optica'
 
     # AIP Publishing detection (BEFORE APS loose matching!)
     # Must check specific URLs and DOI prefix before APS patterns
@@ -107,6 +114,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return SpringerBookHandler(**kwargs)
     elif publisher == 'iop':
         return IOPHandler(**kwargs)
+    elif publisher == 'optica':
+        return OpticaHandler(**kwargs)
     elif publisher == 'aip':
         return AIPHandler(**kwargs)
     elif publisher == 'cambridge':

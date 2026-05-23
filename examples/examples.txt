@@ -23,9 +23,15 @@ aip
 10.1063/5.0321661   #Physics of Fluids, section-title, figure, mathFormula, supplementary (mp4)
 10.1063/1.5005077   #Physics of Plasmas, section-title, figure, supplementary (mp4)
 10.1063/1.2844352   #Physics of Plasmas, section-title, figure, mathFormula (multiple lines, formula description)
+10.1063/PT.3.2945   #Physics Today, figure, 
 
 iop
 10.1088/1361-6463/ae36b8   #Journal of Physics D: Applied Physics, figure, mathFormula, table, supplementary
 10.1016/j.medengphy.2020.07.010   #Medical Engineering & Physics, figure, mathFormula, table, supplementary
 10.1209/0295-5075/122/14004   #A Letters journal serving all areas of physics, figure, mathFormula, footnotes, supplementary
 10.1088/1402-4896/ad640f   #Physica Scripta, figure, mathFormula,
+
+optica
+10.1364/OE.444043   #Optics Express, Formula, figure, Supplemental (figshare)
+
+
