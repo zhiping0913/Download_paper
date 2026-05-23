@@ -108,6 +108,17 @@ class OpticaHandler(PublisherHandler):
             lp = meta.pop('last_page', '')
             meta['pages'] = f"{fp}-{lp}".strip('-')
 
+        # Fallback: extract PDF URL from <li class="pdf-download"><a href="...">
+        if not meta.get('pdf_url'):
+            pdf_li = soup.find('li', class_='pdf-download')
+            if pdf_li:
+                a = pdf_li.find('a', href=True)
+                if a:
+                    href = a['href'].strip()
+                    if not href.startswith('http'):
+                        href = cls.OPTICA_BASE + ('/' if not href.startswith('/') else '') + href
+                    meta['pdf_url'] = href
+
         return meta
 
     # ------------------------------------------------------------------
