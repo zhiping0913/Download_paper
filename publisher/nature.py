@@ -1442,8 +1442,12 @@ def generate_bibtex_from_unstructured(unstructured: str, key: str = 'ref') -> st
     if len(title) > 200:
         title = title[:200] + '...'
 
+    # Try to extract DOI from unstructured text
+    doi_match = re.search(r'(10\.\d{4,}/[^\s"\'\]]+)', unstructured)
+    doi = doi_match.group(1).rstrip('.') if doi_match else ''
+
     # Generate basic BibTeX entry — only title, year, doi
-    doi_field = f"\n  doi = {{{doi}}}" if doi else ""
+    doi_field = f",\n  doi = {{{doi}}}" if doi else ""
     bibtex = f"@misc{{{key},\n  title = {{{title}}},\n  year = {{{year}}}{doi_field}\n}}"
 
     return bibtex
