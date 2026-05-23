@@ -2,16 +2,17 @@
 Optica Publishing handler.
 
 Extracts metadata, body, figures, tables, references, and supplemental materials
-from Optica Publishing articles (opg.optica.org).
+from Optica Publishing Group articles (opg.optica.org).
 
 Optica stores LaTeX equations directly in HTML with $ and $$ delimiters,
-so no preprocessing is needed. References and supplemental materials are
-extracted from the article page.
+so no MathML preprocessing is needed. The article body is structured under
+<h2 class="article-heading"> sections. Figures, references, and supplemental
+links are extracted from the article page.
+
+Requires headed browser (Chrome CDP) due to JavaScript-heavy rendering.
 """
 
 import re
-import urllib.request
-import json
 
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
@@ -19,22 +20,19 @@ from playwright.async_api import async_playwright
 from publisher.base import PublisherHandler
 from publisher.wildcard import (
     convert_html_fragment_to_markdown,
-    extract_abstract_with_fallbacks,
-    find_generic_article_body,
     format_as_bibtex,
     format_citation_as_text,
     generate_bibtex_key,
-    init_extract_all_page,
-    parse_citation_reference_string,
-    prepare_mathjax_html_fragment,
-    set_actual_base_url,
     generate_reference_text_from_crossref,
+    init_extract_all_page,
+    set_actual_base_url,
 )
-from core.utilities import fetch_crossref
 
 
 class OpticaHandler(PublisherHandler):
     """Handler for Optica Publishing articles (opg.optica.org)."""
+
+    OPTICA_BASE = 'https://opg.optica.org'
 
     def __init__(self, page=None, captured_data_dir=None, doi: str = None):
         super().__init__(page=page, captured_data_dir=captured_data_dir, doi=doi)
@@ -81,21 +79,34 @@ class OpticaHandler(PublisherHandler):
                 if date_str and '/' in date_str:
                     meta['year'] = date_str.split('/')[0]
                 elif date_str:
-                    year_match = re.search(r'(\d{4})', date_str)
-                    if year_match:
-                        meta['year'] = year_match.group(1)
+                    m = re.search(r'(\d{4})', date_str)
+                    if m:
+                        meta['year'] = m.group(1)
             elif name == 'citation_online_date':
                 if not meta.get('publication_date'):
                     meta['publication_date'] = content.strip()
             elif name == 'citation_pdf_url':
                 meta['pdf_url'] = content.strip()
             elif name == 'citation_abstract':
-                meta['abstract'] = content.strip()
+                if not meta.get('abstract'):
+                    meta['abstract'] = content.strip()
             elif name == 'citation_keywords':
                 meta['keywords'] = [k.strip() for k in content.split(';') if k.strip()]
 
         if authors:
-            meta['authors'] = authors
+            # Optica sometimes duplicates authors (multi-affiliation)
+            seen = set()
+            unique_authors = []
+            for a in authors:
+                if a not in seen:
+                    seen.add(a)
+                    unique_authors.append(a)
+            meta['authors'] = unique_authors
+
+        if meta.get('first_page') or meta.get('last_page'):
+            fp = meta.pop('first_page', '')
+            lp = meta.pop('last_page', '')
+            meta['pages'] = f"{fp}-{lp}".strip('-')
 
         return meta
 
@@ -107,149 +118,221 @@ class OpticaHandler(PublisherHandler):
     def extract_article_text_from_html(cls, html_content: str):
         """Extract article body, returning (abstract_md, body_md).
 
-        Optica stores LaTeX directly in HTML with $ and $$ delimiters.
-        Traverse each h2 section (Abstract, numbered sections, Supplemental document)
-        and extract paragraphs with formula handling.
+        Traverses <h2 class="article-heading"> sections inside the article body div.
+        Paragraphs use <p> tags; inline formulas are $...$; display formulas are
+        in <div class="article-math-block"> with $$...$$.
         """
         if not html_content:
             return '', ''
 
         soup = BeautifulSoup(html_content, 'html.parser')
 
-        # Find article body marker
-        article_body_marker = soup.find(string=re.compile(r'Article Body', re.IGNORECASE))
-        if not article_body_marker:
-            return '', ''
+        # Find the article body container
+        article_body = soup.find('div', id='articleBody')
+        if not article_body:
+            # Fallback: find after the <!-- Article Body --> comment
+            marker = soup.find(string=re.compile(r'Article Body', re.IGNORECASE))
+            if marker:
+                article_body = marker.find_next('div', class_=re.compile(r'main-content'))
 
-        # Find the main content div after the marker
-        main_content = article_body_marker.find_next('div', class_='main-content')
-        if not main_content:
-            main_content = article_body_marker.find_next('div')
-
-        if not main_content:
+        if not article_body:
             return '', ''
 
         abstract_md = ''
         body_parts = []
 
-        # Traverse h2 sections
-        for h2 in main_content.find_all('h2', class_='article-heading'):
-            h2_id = h2.get('id', '')
+        def is_section_h2(el):
+            return (hasattr(el, 'name') and el.name == 'h2'
+                    and 'article-heading' in (el.get('class') or []))
+
+        def is_block_element(el):
+            return hasattr(el, 'name') and el.name in (
+                'p', 'div', 'h2', 'h3', 'h4', 'ul', 'ol', 'table', 'blockquote')
+
+        # Traverse all h2 headings
+        for h2 in article_body.find_all('h2', class_='article-heading'):
+            h2_id = h2.get('id', '').lower()
             h2_text = h2.get_text(' ', strip=True)
 
-            # Handle Abstract separately
-            if 'abstract' in h2_id.lower():
-                # Extract abstract content following this h2
-                abstract_div = h2.find_next('div')
-                if abstract_div:
-                    abstract_md = cls._extract_section_to_md(abstract_div)
+            if h2_id == 'abstract':
+                abs_parts = []
+                cur = h2.find_next_sibling()
+                while cur and not is_section_h2(cur):
+                    if hasattr(cur, 'name') and cur.name == 'p':
+                        p_md = cls._convert_paragraph_to_md(str(cur))
+                        if p_md:
+                            abs_parts.append(p_md)
+                    elif hasattr(cur, 'name') and cur.name == 'div':
+                        for p in cur.find_all('p', recursive=False):
+                            p_md = cls._convert_paragraph_to_md(str(p))
+                            if p_md:
+                                abs_parts.append(p_md)
+                    cur = cur.find_next_sibling()
+                abstract_md = '\n\n'.join(abs_parts).strip()
                 continue
 
-            # Handle Supplemental document (don't include in body)
-            if 'supplemental' in h2_id.lower() or 'supplement' in h2_id.lower():
+            if re.search(r'supplemental|supplement', h2_id):
+                continue
+            if h2_id == 'references':
                 continue
 
-            # Handle References separately
-            if 'references' in h2_id.lower():
-                continue
-
-            # Regular section: add heading and process paragraphs
             if h2_text:
                 body_parts.append(f"## {h2_text}")
                 body_parts.append("")
 
-            # Process all content between this h2 and the next h2
-            current = h2.find_next_sibling()
-            while current and current.name != 'h2':
-                if current.name == 'p':
-                    p_md = cls._convert_optica_paragraph_to_md(str(current))
-                    if p_md:
-                        body_parts.append(p_md)
-                        body_parts.append("")
+            # Walk siblings, grouping orphaned inline elements (text + spans)
+            # that appear after display equation divs in browser-rendered HTML.
+            cur = h2.find_next_sibling()
+            inline_buffer = []
 
-                elif current.name == 'div':
-                    classes = (current.get('class') or [])
-                    # Display equations
-                    if 'article-math-block' in classes:
-                        # Extract LaTeX from $$...$$ or equation notation
-                        math_content = current.get_text(strip=True)
-                        if math_content:
-                            body_parts.append(f"\n$$\n{math_content}\n$$\n")
-                            body_parts.append("")
-                    # Figure content
-                    elif 'figure-image' in classes:
-                        # Figures are extracted separately, skip here
-                        pass
+            def flush_inline_buffer():
+                if not inline_buffer:
+                    return
+                combined_html = ''.join(inline_buffer)
+                p_md = cls._convert_paragraph_to_md(combined_html)
+                if p_md:
+                    body_parts.append(p_md)
+                    body_parts.append("")
+                inline_buffer.clear()
 
-                elif current.name == 'h3':
-                    h3_text = current.get_text(' ', strip=True)
-                    if h3_text:
-                        body_parts.append(f"### {h3_text}")
-                        body_parts.append("")
-
-                current = current.find_next_sibling()
+            from bs4 import NavigableString as _NS
+            while cur and not is_section_h2(cur):
+                if isinstance(cur, _NS):
+                    text = str(cur)
+                    if text.strip():
+                        inline_buffer.append(text)
+                elif hasattr(cur, 'name'):
+                    if cur.name in ('span', 'a', 'em', 'strong', 'sub', 'sup', 'b', 'i'):
+                        inline_buffer.append(str(cur))
+                    else:
+                        flush_inline_buffer()
+                        cls._walk_optica_element(cur, body_parts)
+                cur = cur.find_next_sibling()
+            flush_inline_buffer()
 
         body_md = "\n".join(body_parts).strip()
-        if body_md:
-            body_md = re.sub(r'\n{3,}', '\n\n', body_md)
-
+        body_md = re.sub(r'\n{3,}', '\n\n', body_md)
         return abstract_md, body_md
 
     @classmethod
-    def _extract_section_to_md(cls, section_div) -> str:
-        """Extract text from a section div, processing paragraphs."""
-        parts = []
-        for p in section_div.find_all('p', recursive=False):
-            p_md = cls._convert_optica_paragraph_to_md(str(p))
+    def _walk_optica_element(cls, element, parts: list):
+        """Process a single element and append markdown lines to parts."""
+        if element.name == 'p':
+            p_md = cls._convert_paragraph_to_md(str(element))
             if p_md:
                 parts.append(p_md)
-        return "\n\n".join(parts) if parts else section_div.get_text(' ', strip=True)
+                parts.append("")
+
+        elif element.name == 'h3':
+            h3_text = element.get_text(' ', strip=True)
+            h3_text = re.sub(r'\s+', ' ', h3_text).strip()
+            if h3_text:
+                parts.append(f"### {h3_text}")
+                parts.append("")
+
+        elif element.name == 'h4':
+            h4_text = element.get_text(' ', strip=True)
+            if h4_text:
+                parts.append(f"#### {h4_text}")
+                parts.append("")
+
+        elif element.name == 'div':
+            classes = element.get('class') or []
+            if 'article-math-block' in classes:
+                # Display equation: convert via HTML→Markdown pipeline (handles
+                # both raw $$...$$ source and MathJax-rendered mjx-container).
+                eq_md = cls._convert_paragraph_to_md(str(element)).strip()
+                # Remove equation label prefix like "[]{#e1} (1) " or "(1) "
+                eq_md = re.sub(r'^\[\]\{#\S+\}\s*\(\d+\)\s*', '', eq_md)
+                eq_md = re.sub(r'^\(\d+\)\s*', '', eq_md)
+                if eq_md:
+                    # Already has $$...$$ from MathML conversion; just ensure blank lines
+                    parts.append(f"\n{eq_md}\n")
+                    parts.append("")
+            elif 'figure-image' in classes:
+                # Figures are handled by extract_figures_from_html; insert caption placeholder
+                fig_id = element.get('id', '')
+                title_span = element.find('span', class_='figure-title')
+                caption_span = element.find('span', class_='figure-caption')
+                if title_span:
+                    title_text = title_span.get_text(' ', strip=True)
+                    caption_text = ''
+                    if caption_span:
+                        caption_text = cls._convert_paragraph_to_md(str(caption_span))
+                    label = re.sub(r'\s+', ' ', title_text).strip().rstrip('.')
+                    if caption_text:
+                        parts.append(f"**{label}.** {caption_text}")
+                    else:
+                        parts.append(f"**{label}.**")
+                    parts.append("")
+            else:
+                # Recurse into nested divs
+                for child in element.find_all(['p', 'h3', 'h4', 'div'], recursive=False):
+                    cls._walk_optica_element(child, parts)
 
     @staticmethod
-    def _convert_optica_paragraph_to_md(html_fragment: str) -> str:
+    def _convert_paragraph_to_md(html_fragment: str) -> str:
         """Convert Optica HTML paragraph to Markdown.
 
-        Optica uses $...$ for inline math and $$...$$ for display math,
-        which are already in LaTeX format. Convert HTML tags while preserving
-        math delimiters.
+        Optica uses $...$ for inline math and $$...$$ for display math.
+        Protect math from HTML conversion, then restore.
         """
         if not html_fragment:
             return ''
 
-        # Protect LaTeX math from HTML conversion
-        math_placeholders = {}
-
-        # Extract display math $$...$$
-        def replace_display_math(m):
-            key = f"<<<OPTICA_DISPLAY_MATH_{len(math_placeholders)}>>>"
-            math_placeholders[key] = m.group(0)
-            return key
-
-        html_fragment = re.sub(
-            r'\$\$[^$]*\$\$',
-            replace_display_math,
+        # Pre-clean: unwrap article-math-block divs so that $$...$$ equations
+        # become inline text inside the <p>, preventing pandoc from splitting the
+        # paragraph at the nested <div> boundary.
+        # 1. Remove equation label anchors (produces "[]{#e1} (1)" noise).
+        fragment = re.sub(
+            r'<a\s[^>]*class=["\'][^"\']*math-controls[^"\']*["\'][^>]*>.*?</a>',
+            '',
             html_fragment,
-            flags=re.DOTALL
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        # 2. Remove named anchors like <a name="e1">...</a>
+        fragment = re.sub(
+            r'<a\s+name=["\'][^"\']*["\'][^>]*>.*?</a>',
+            '',
+            fragment,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        # 3. Replace <div class="article-math-block">...</div> with its inner text,
+        #    so $$...$$ sits inline in the paragraph rather than inside a block div.
+        fragment = re.sub(
+            r'<div[^>]*class=["\'][^"\']*article-math-block[^"\']*["\'][^>]*>([\s\S]*?)</div>',
+            r'\1',
+            fragment,
+            flags=re.IGNORECASE,
         )
 
-        # Extract inline math $...$
-        def replace_inline_math(m):
-            key = f"<<<OPTICA_INLINE_MATH_{len(math_placeholders)}>>>"
-            math_placeholders[key] = m.group(0)
+        math_store = {}
+        counter = [0]
+
+        def stash(s):
+            key = f"\x00MATH{counter[0]}\x00"
+            counter[0] += 1
+            math_store[key] = s
             return key
 
-        html_fragment = re.sub(
-            r'\$[^$]+?\$',
-            replace_inline_math,
-            html_fragment,
+        # Stash display math first (longer match)
+        fragment = re.sub(
+            r'\$\$[\s\S]*?\$\$',
+            lambda m: stash(m.group(0)),
+            fragment,
+        )
+        # Stash inline math
+        fragment = re.sub(
+            r'\$[^$\n]+?\$',
+            lambda m: stash(m.group(0)),
+            fragment,
         )
 
-        # Convert HTML to markdown
-        md = convert_html_fragment_to_markdown(html_fragment) if html_fragment else ''
+        md = convert_html_fragment_to_markdown(fragment) if fragment else ''
 
-        # Restore math placeholders
-        for placeholder, math in math_placeholders.items():
-            md = md.replace(placeholder, math)
+        # Restore math
+        for key, val in math_store.items():
+            md = md.replace(key, val)
 
         md = md.strip()
         md = re.sub(r'\n{3,}', '\n\n', md)
@@ -260,17 +343,19 @@ class OpticaHandler(PublisherHandler):
     # ------------------------------------------------------------------
 
     @classmethod
-    def extract_figures_from_html(cls, html_content: str) -> dict:
-        """Extract figure URLs and captions from HTML.
+    def extract_figures_from_html(cls, html_content: str, base_url: str = None) -> dict:
+        """Extract figure URLs and captions.
 
-        Optica figures use <div class="figure-image"> with:
-        - Title in <span class="figure-title">
-        - Caption in <span class="figure-caption">
-        - Download link in <a href="/viewmedia.cfm?...&imagetype=full">
+        Optica figures: <div class="figure-image" id="g001">
+        - Title: <span class="figure-title"><strong>Fig. 1.</strong></span>
+        - Caption: <span class="figure-caption">...</span>
+        - Download: <a href="/viewmedia.cfm?...&imagetype=full">Download Full Size</a>
+        - Also: data-src on <img class="figure lazyimg">
         """
         if not html_content:
             return {}
 
+        base = base_url or cls.OPTICA_BASE
         soup = BeautifulSoup(html_content, 'html.parser')
         figures = {}
         seen_ids = set()
@@ -284,37 +369,32 @@ class OpticaHandler(PublisherHandler):
             fig_num = len(figures) + 1
             key = f"fig_{fig_num}"
 
-            # Extract download link
+            # Prefer "Download Full Size" link
             img_url = ''
-            download_link = fig_div.find('a', string=re.compile(r'Download Full Size', re.IGNORECASE))
-            if download_link:
-                img_url = download_link.get('href', '')
-                # Convert relative URLs to absolute
-                if img_url and not img_url.startswith('http'):
-                    img_url = 'https://opg.optica.org' + img_url if not img_url.startswith('/') else 'https://opg.optica.org' + img_url
+            for a in fig_div.find_all('a', href=True):
+                text = a.get_text(' ', strip=True).lower()
+                if 'download full' in text or 'full size' in text:
+                    img_url = a['href']
+                    break
 
-            # Fallback: find img tag with data-src
+            # Fallback: data-src on lazy img
             if not img_url:
-                img = fig_div.find('img')
-                if img:
-                    img_url = img.get('data-src') or img.get('src') or ''
-                    if img_url and not img_url.startswith('http'):
-                        img_url = 'https://opg.optica.org' + img_url
+                img_tag = fig_div.find('img')
+                if img_tag:
+                    img_url = img_tag.get('data-src') or img_tag.get('src') or ''
 
-            if not img_url or 'data:image' in img_url:
+            if not img_url or 'data:image' in img_url or 'ajax-loader' in img_url:
                 continue
 
-            # Extract caption
-            caption = ''
+            if img_url and not img_url.startswith('http'):
+                img_url = base + img_url if img_url.startswith('/') else base + '/' + img_url
+
+            # Caption
             caption_span = fig_div.find('span', class_='figure-caption')
             if caption_span:
-                caption = cls._convert_optica_paragraph_to_md(str(caption_span))
+                caption = cls._convert_paragraph_to_md(str(caption_span))
             else:
-                # Fallback: use figure-title + figure-caption
-                title_span = fig_div.find('span', class_='figure-title')
-                if title_span:
-                    caption = title_span.get_text(' ', strip=True)
-
+                caption = ''
             caption = re.sub(r'\s+', ' ', caption).strip()
 
             figures[key] = {
@@ -325,15 +405,15 @@ class OpticaHandler(PublisherHandler):
         return figures
 
     # ------------------------------------------------------------------
-    # Reference extraction
+    # Reference extraction (from inline HTML, enriched via Crossref)
     # ------------------------------------------------------------------
 
     @classmethod
     def extract_references_from_html(cls, html_content: str) -> list:
-        """Extract references from HTML.
+        """Extract reference list from HTML as raw text strings.
 
-        Optica stores references in <p id="refN" class="reference-body">
-        with HTML formatting (bold numbers, journal names, DOI links).
+        Returns list of plain-text reference strings (one per entry).
+        BibTeX enrichment is handled by convert_to_markdown using _crossref_references.
         """
         if not html_content:
             return []
@@ -341,50 +421,29 @@ class OpticaHandler(PublisherHandler):
         soup = BeautifulSoup(html_content, 'html.parser')
         references = []
 
-        # Find References section
-        refs_h2 = soup.find('h2', class_='article-heading', id='References')
-        if not refs_h2:
-            return []
-
-        # Find all reference paragraphs
         for ref_p in soup.find_all('p', class_='reference-body'):
-            ref_html = str(ref_p)
-            ref_text = ref_p.get_text(' ', strip=True)
+            # Remove footnote-like leading number markers
+            number_span = ref_p.find('strong', class_='number')
+            if number_span:
+                number_span.decompose()
 
-            if not ref_text:
-                continue
-
-            # Try to fetch DOI from reference and get metadata from Crossref
-            crossref_data = None
-            doi_link = ref_p.find('a', href=re.compile(r'doi.org'))
-            if doi_link:
-                doi_url = doi_link.get('href', '')
-                # Extract DOI from URL
-                doi_match = re.search(r'10\.\d+/[\w./\-()]+', doi_url)
-                if doi_match:
-                    doi = doi_match.group(0)
-                    try:
-                        crossref_data = fetch_crossref(doi)
-                    except Exception:
-                        pass
-
-            # Extract BibTeX from Crossref if available
-            if crossref_data:
-                bibtex = format_as_bibtex(crossref_data)
-                if bibtex:
-                    references.append(bibtex)
+            # Remove "Crossref" link text but keep DOI info
+            for a in ref_p.find_all('a', href=True):
+                if 'doi.org' in a.get('href', ''):
+                    doi_url = a['href']
+                    doi_m = re.search(r'10\.\d{4,}/\S+', doi_url)
+                    if doi_m:
+                        # Keep DOI as text
+                        a.replace_with(f"DOI:{doi_m.group(0)}")
+                    else:
+                        a.decompose()
                 else:
-                    # Fallback to raw text with DOI
-                    references.append({
-                        'raw': ref_text,
-                        'type': 'misc',
-                    })
-            else:
-                # No DOI found, use raw reference text
-                references.append({
-                    'raw': ref_text,
-                    'type': 'misc',
-                })
+                    a.decompose()
+
+            text = ref_p.get_text(' ', strip=True)
+            text = re.sub(r'\s+', ' ', text).strip()
+            if text:
+                references.append(text)
 
         return references
 
@@ -392,13 +451,13 @@ class OpticaHandler(PublisherHandler):
     # Supplemental material extraction
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _extract_supplemental_links_from_html(html_content: str) -> list:
-        """Extract supplemental material links from article page.
+    @classmethod
+    def _find_supplemental_links_from_html(cls, html_content: str) -> list:
+        """Find supplemental material links from the article HTML.
 
-        Optica stores supplemental links in:
-        - Supplemental document section with <a href="https://doi.org/10.6084/...">
-        - Supplementary Material section with links to viewmedia.cfm
+        Looks in:
+        1. <h2> containing "Supplemental" → <a href="...figshare...">
+        2. Supplementary Material table → <a class="view_media">
         """
         if not html_content:
             return []
@@ -406,95 +465,79 @@ class OpticaHandler(PublisherHandler):
         soup = BeautifulSoup(html_content, 'html.parser')
         links = []
 
-        # Find Supplemental document section
-        supp_h2 = soup.find('h2', class_='article-heading', string=re.compile(r'Supplemental', re.IGNORECASE))
-        if supp_h2:
-            # Look for figshare links
-            for a in supp_h2.find_next_siblings('p'):
-                figshare_link = a.find('a', href=re.compile(r'figshare|doi.org/10.6084'))
-                if figshare_link:
-                    href = figshare_link.get('href', '')
-                    if href and 'http' in href:
-                        links.append(href)
+        # 1. Supplemental document section with figshare / DOI links
+        for h2 in soup.find_all('h2'):
+            h2_text = h2.get_text().strip().lower()
+            if 'supplemental' not in h2_text and 'supplement' not in h2_text:
+                continue
+            # Walk siblings until next h2
+            cur = h2.find_next_sibling()
+            while cur and cur.name != 'h2':
+                for a in (cur.find_all('a', href=True) if hasattr(cur, 'find_all') else []):
+                    href = a.get('href', '')
+                    if 'figshare' in href or '10.6084' in href or '/m9.figshare' in href:
+                        if href not in links:
+                            links.append(href)
+                cur = cur.find_next_sibling() if hasattr(cur, 'find_next_sibling') else None
 
-        # Find Supplementary Material section (if exists)
-        supp_table = soup.find('table')
-        if supp_table:
-            for a in supp_table.find_all('a', class_='view_media'):
-                href = a.get('href', '')
-                if href:
-                    if not href.startswith('http'):
-                        href = 'https://opg.optica.org/' + href
-                    links.append(href)
+        # 2. Supplementary Material table (local viewmedia links)
+        for a in soup.find_all('a', class_='view_media'):
+            href = a.get('href', '')
+            if not href:
+                continue
+            if not href.startswith('http'):
+                href = cls.OPTICA_BASE + '/' + href.lstrip('/')
+            if href not in links:
+                links.append(href)
 
         return links
 
     @staticmethod
-    async def _extract_supplementary_from_figshare(page, figshare_url: str) -> tuple:
-        """Navigate to a figshare URL and extract the download link.
+    async def _resolve_figshare_download(page, figshare_url: str) -> str:
+        """Open figshare URL in a new tab and locate the direct download link.
 
-        Figshare pages have a Download button that points to the actual file.
+        Figshare pages expose a download anchor such as:
+            <a href="https://opticapublishing.figshare.com/ndownloader/files/...">
         """
-        if not figshare_url or 'figshare' not in figshare_url:
-            return [], {}
-
-        print(f"  🔗 访问figshare页面: {figshare_url}")
-
-        current_url = page.url
+        print(f"  🔗 解析Figshare链接: {figshare_url}")
+        new_tab = await page.context.new_page()
         try:
-            await page.goto(figshare_url, wait_until='networkidle', timeout=30000)
+            await new_tab.goto(figshare_url, wait_until='networkidle', timeout=30000)
         except Exception:
             try:
-                await page.goto(figshare_url, wait_until='domcontentloaded', timeout=30000)
+                await new_tab.goto(figshare_url, wait_until='domcontentloaded', timeout=30000)
             except Exception as e:
-                print(f"  ⚠ Figshare页面访问失败: {e}")
-                return [], {}
-
-        urls = []
-        descriptions = {}
+                print(f"  ⚠ Figshare页面加载失败: {e}")
+                await new_tab.close()
+                return figshare_url  # return original as fallback
 
         try:
-            # Look for download button on figshare
-            download_js = """() => {
-                const results = [];
-                const downloadBtn = document.querySelector('a[href*="/download"]');
-                if (downloadBtn) {
-                    const href = downloadBtn.getAttribute('href');
-                    if (href) {
-                        const url = new URL(href, window.location.href).href;
-                        results.push({text: 'Supplementary Material', url: url});
-                    }
-                }
-                return results;
-            }"""
-            dl_data = await page.evaluate(download_js)
-            for item in dl_data:
-                url = item.get('url', '')
-                text = item.get('text', '')
-                if url and 'http' in url:
-                    urls.append(url)
-                    if text:
-                        descriptions[url] = text
+            # Look for download links matching ndownloader pattern
+            download_url = await new_tab.evaluate("""() => {
+                // ndownloader direct link
+                const dl = document.querySelector('a[href*="ndownloader"]');
+                if (dl) return dl.href;
+                // generic Download button
+                const btn = document.querySelector('a[href*="/download"]');
+                if (btn) return btn.href;
+                return null;
+            }""")
+            if download_url:
+                print(f"  ✓ 找到下载链接: {download_url[:80]}")
+                await new_tab.close()
+                return download_url
         except Exception as e:
             print(f"  ⚠ 提取Figshare下载链接失败: {e}")
 
-        # Navigate back to article page
-        try:
-            await page.goto(current_url, wait_until='domcontentloaded', timeout=15000)
-        except Exception:
-            pass
-
-        if urls:
-            print(f"  ✓ 补充材料: {len(urls)} 个文件")
-
-        return urls, descriptions
+        await new_tab.close()
+        return figshare_url  # fallback to original DOI link
 
     # ------------------------------------------------------------------
-    # Publisher contract methods
+    # Publisher contract: extract_metadata
     # ------------------------------------------------------------------
 
     async def extract_metadata(self, page) -> dict:
-        """Return metadata from HTML meta tags."""
+        """Return metadata dict from HTML meta tags."""
         html_content = ''
         if page is not None:
             try:
@@ -517,134 +560,244 @@ class OpticaHandler(PublisherHandler):
             'author_with_affiliations': [],
             'corresponding_author_emails': [],
             'abstract': abstract,
-            'journal': meta.get('journal') or 'Optics Express',
+            'journal': meta.get('journal') or 'Optica Publishing',
             'publication_date': meta.get('publication_date'),
             'doi': meta.get('doi') or self.doi,
             'volume': meta.get('volume'),
             'issue': meta.get('issue'),
-            'pages': f"{(meta.get('first_page') or '')}-{(meta.get('last_page') or '')}".strip('-'),
+            'pages': meta.get('pages', ''),
             'year': meta.get('year'),
             'references': [],
             '_pdf_url': meta.get('pdf_url'),
+            '_keywords': meta.get('keywords', []),
         }
 
     async def get_fulltext_url(self, page) -> str:
-        """Get URL for full article text (use current page URL)."""
-        if page:
-            return page.url
-        return ''
+        return page.url if page else ''
 
     async def get_pdf_url(self, doi: str) -> str:
-        """Construct PDF download URL for Optica article."""
-        # Optica PDFs are typically at viewmedia.cfm with seq=0
-        if not doi:
-            return ''
-        # Extract the article ID from DOI (e.g., OE.444043 from 10.1364/OE.444043)
-        match = re.search(r'10\.1364/(.+)', doi)
-        if match:
-            article_id = match.group(1).replace('.', '_')
-            return f"https://opg.optica.org/viewmedia.cfm?uri={article_id}&seq=0"
         return ''
 
     async def get_supplemental_url(self, doi: str) -> str:
-        """Return supplemental materials endpoint (same as article page in Optica)."""
         return ''
 
     async def extract_references(self, html: str) -> list:
-        """Parse references from HTML."""
         return self.extract_references_from_html(html)
 
     async def get_figures(self, json_data: dict) -> dict:
-        """Extract figures from JSON (not used for Optica; use extract_figures_from_html instead)."""
         return {}
 
+    # ------------------------------------------------------------------
+    # Main extraction entry point
+    # ------------------------------------------------------------------
+
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
-        """Run complete extraction and return shared workflow payload."""
-        html_content = ''
-        if page:
-            html_content = await page.content()
-        elif captured and 'html' in captured:
-            html_content = captured['html']
+        """Complete Optica extraction following the unified publisher contract.
 
-        if not html_content:
-            return {}
+        Returns:
+            {
+                'metadata': dict,
+                'links': {
+                    'pdf_url': str,
+                    'figure_urls': dict,          # {'fig_N': {'url': ..., 'caption': ...}}
+                    'supplemental_urls': list,
+                    'supplemental_descriptions': dict,
+                },
+                'fulltext_data': str,             # raw HTML
+                'journal_name': 'optica',
+            }
+        """
+        page, managed_playwright, managed_browser, managed_context = await init_extract_all_page(
+            self, page, doi, 'OpticaHandler'
+        )
 
-        # Extract metadata
-        metadata = await self.extract_metadata(page)
+        set_actual_base_url(self, page)
 
-        # Extract article text
-        abstract_md, body_md = self.extract_article_text_from_html(html_content)
-        metadata['abstract'] = abstract_md or metadata.get('abstract', '')
+        try:
+            # Get full HTML
+            try:
+                fulltext_html = await page.content()
+            except Exception:
+                fulltext_html = ''
 
-        # Extract figures
-        figures = self.extract_figures_from_html(html_content)
+            # Metadata
+            metadata = await self.extract_metadata(page)
+            doi = doi or self.doi
+            metadata['doi'] = doi
 
-        # Extract references
-        references = self.extract_references_from_html(html_content)
-        metadata['references'] = references
+            pdf_url = metadata.pop('_pdf_url', None)
+            metadata.pop('_keywords', None)
 
-        # Extract supplemental links
-        supp_links = self._extract_supplemental_links_from_html(html_content)
+            # Figures
+            base_url = getattr(self, '_base_url', None) or self.OPTICA_BASE
+            figure_urls = {}
+            if fulltext_html:
+                figure_urls = self.extract_figures_from_html(fulltext_html, base_url=base_url)
 
-        return {
-            'metadata': metadata,
-            'body': body_md,
-            'figures': figures,
-            'references': references,
-            'supplemental_links': supp_links,
-        }
+            # References (raw text list from HTML)
+            if fulltext_html:
+                metadata['references'] = self.extract_references_from_html(fulltext_html)
+
+            # Supplemental materials
+            supp_urls = []
+            supp_descriptions = {}
+            if fulltext_html:
+                raw_supp = self._find_supplemental_links_from_html(fulltext_html)
+                for link in raw_supp:
+                    if 'figshare' in link or '10.6084' in link:
+                        resolved = await self._resolve_figshare_download(page, link)
+                        supp_urls.append(resolved)
+                        supp_descriptions[resolved] = 'Supplemental document'
+                    else:
+                        supp_urls.append(link)
+                        supp_descriptions[link] = 'Supplemental document'
+
+            return {
+                'metadata': metadata,
+                'links': {
+                    'pdf_url': pdf_url,
+                    'figure_urls': figure_urls,
+                    'supplemental_urls': supp_urls,
+                    'supplemental_descriptions': supp_descriptions,
+                },
+                'fulltext_data': fulltext_html,
+                'journal_name': 'optica',
+            }
+
+        finally:
+            if managed_context is not None:
+                try:
+                    await managed_context.close()
+                except Exception:
+                    pass
+            if managed_browser is not None:
+                try:
+                    await managed_browser.close()
+                except Exception:
+                    pass
+            if managed_playwright is not None:
+                try:
+                    await managed_playwright.stop()
+                except Exception:
+                    pass
+            if managed_context is not None:
+                self.page = None
+
+    # ------------------------------------------------------------------
+    # Markdown generation
+    # ------------------------------------------------------------------
 
     def convert_to_markdown(self, metadata: dict, article_text, **kwargs) -> str:
-        """Format extracted data as Markdown."""
-        lines = []
+        """Generate complete Markdown for an Optica article.
 
-        # Title
-        if metadata.get('title'):
-            lines.append(f"# {metadata['title']}")
-            lines.append("")
+        Args:
+            metadata: dict returned by extract_all
+            article_text: full HTML string (fulltext_data from extract_all)
+            **kwargs: add_figure_refs, figure_filenames, supplemental_urls,
+                      supplemental_descriptions, supplemental_downloads
+        """
+        title = metadata.get('title') or 'Optica Article'
+        md_parts = [f"# {title}", ""]
 
-        # Metadata header
-        if metadata.get('authors'):
-            authors_str = ', '.join(metadata['authors'])
-            lines.append(f"**Authors:** {authors_str}")
-
-        if metadata.get('journal'):
-            journal_str = metadata['journal']
-            if metadata.get('volume'):
-                journal_str += f", Vol. {metadata['volume']}"
-            if metadata.get('issue'):
-                journal_str += f", Issue {metadata['issue']}"
-            if metadata.get('pages'):
-                journal_str += f", pp. {metadata['pages']}"
-            lines.append(f"**Journal:** {journal_str}")
-
-        if metadata.get('year'):
-            lines.append(f"**Year:** {metadata['year']}")
+        # Authors
+        authors = metadata.get('authors', [])
+        if authors:
+            md_parts.append("**Authors:** " + ', '.join(authors))
+            md_parts.append("")
 
         if metadata.get('doi'):
-            lines.append(f"**DOI:** {metadata['doi']}")
+            md_parts.append(f"**DOI:** {metadata['doi']}")
+            md_parts.append("")
 
-        lines.append("")
+        md_parts.append("## Publication")
+        md_parts.append("")
+        md_parts.append(f"**Journal:** {metadata.get('journal') or 'Optica Publishing'}")
+        md_parts.append("")
+
+        for field, label in [('volume', 'Volume'), ('issue', 'Issue'), ('pages', 'Pages'),
+                              ('publication_date', 'Published')]:
+            if metadata.get(field):
+                md_parts.append(f"**{label}:** {metadata[field]}")
+                md_parts.append("")
 
         # Abstract
-        if metadata.get('abstract'):
-            lines.append("## Abstract")
-            lines.append(metadata['abstract'])
-            lines.append("")
+        abstract = metadata.get('abstract', '')
+        if abstract:
+            md_parts.extend(["---", "", "## Abstract", "", abstract, ""])
 
-        # Body
-        if article_text:
-            lines.append(article_text)
-            lines.append("")
+        # Body text (extract from HTML)
+        body_md = ''
+        if isinstance(article_text, str) and article_text.strip():
+            if article_text.lstrip().startswith('<'):
+                _, body_md = self.extract_article_text_from_html(article_text)
+            else:
+                body_md = article_text.strip()
+
+        # Embed downloaded figure images after captions
+        if kwargs.get('add_figure_refs') and kwargs.get('figure_filenames'):
+            for fig_num, filename in sorted(
+                kwargs['figure_filenames'].items(),
+                key=lambda x: (int(x[0]) if str(x[0]).isdigit() else 0)
+            ):
+                body_md = re.sub(
+                    rf'(\*\*Fig\.?\s*{re.escape(str(fig_num))}[.:]\*\*[^\n]*)',
+                    rf'\1\n\n![Figure {fig_num}.]({filename})',
+                    body_md,
+                )
+
+        md_parts.extend(["---", "", "## Article Text", "", body_md or "[Article text not found.]", ""])
+
+        # Supplemental materials
+        supp_urls = kwargs.get('supplemental_urls', [])
+        supp_downloads = kwargs.get('supplemental_downloads', [])
+        supp_descriptions = kwargs.get('supplemental_descriptions', {})
+        if supp_urls or supp_downloads:
+            md_parts.extend(["---", "", "## Supplemental Material", ""])
+            if supp_downloads:
+                for dl in supp_downloads:
+                    md_parts.append(f"- {dl}")
+            elif supp_urls:
+                for url in supp_urls:
+                    desc = supp_descriptions.get(url, '')
+                    label = desc or url
+                    md_parts.append(f"- [{label}]({url})")
+            md_parts.append("")
 
         # References
-        if metadata.get('references'):
-            lines.append("## References")
-            for ref in metadata['references']:
-                if isinstance(ref, dict) and 'raw' in ref:
-                    lines.append(f"- {ref['raw']}")
-                elif isinstance(ref, str):
-                    lines.append(f"- {ref}")
-            lines.append("")
+        references = metadata.get('references', [])
+        crossref_refs = metadata.get('_crossref_references', [])
 
-        return "\n".join(lines)
+        if crossref_refs:
+            md_parts.extend(["---", "", "## References", ""])
+            for idx, ref in enumerate(crossref_refs, 1):
+                unstructured = ref.get('unstructured', '')
+                if unstructured:
+                    md_parts.append(f"[{idx}] {unstructured}")
+                else:
+                    md_parts.append(generate_reference_text_from_crossref(ref, index=idx))
+                md_parts.append("")
+
+                ref_key = ref.get('key', f'ref{idx}')
+                parts = {
+                    'author': ref.get('author', ''),
+                    'title': ref.get('article-title', ''),
+                    'journal': ref.get('journal-title', ''),
+                    'volume': ref.get('volume', ''),
+                    'firstpage': ref.get('first-page', ''),
+                    'year': str(ref.get('year', '')),
+                    'doi': ref.get('DOI', ''),
+                }
+                parts = {k: v for k, v in parts.items() if v or k == 'doi'}
+                if any(parts.get(k) for k in ['author', 'title', 'journal']):
+                    bibtex = format_as_bibtex(parts, key=ref_key)
+                    md_parts.extend(["```bibtex", bibtex, "```", ""])
+            md_parts.append("")
+
+        elif references:
+            md_parts.extend(["---", "", "## References", ""])
+            for idx, ref in enumerate(references, 1):
+                md_parts.append(f"[{idx}] {ref}")
+                md_parts.append("")
+            md_parts.append("")
+
+        return "\n".join(md_parts)
