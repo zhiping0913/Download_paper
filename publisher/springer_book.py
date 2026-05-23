@@ -306,14 +306,98 @@ class SpringerBookHandler(PublisherHandler):
 
         return '\n\n'.join(paragraphs)
 
+    def _extract_chapters_recursive(self, container, sequence_counter: list) -> List[Dict]:
+        """Recursively extract chapters from nested part structures.
+
+        Handles both direct <li data-test="chapter"> elements and nested chapters
+        inside part sections (<li> with <h3 class="c-book-part-heading--underline">).
+
+        Args:
+            container: BeautifulSoup element containing <li> items
+            sequence_counter: list with single int [current_sequence] to track numbering across recursion
+
+        Returns:
+            List of chapter dicts with 'sequence_number' field added
+        """
+        chapters_list = []
+
+        # Get direct child <li> elements only (not nested ones yet)
+        for li in container.find_all('li', recursive=False):
+            # Check if this li is a chapter item
+            if li.get('data-test') == 'chapter':
+                chapter_info = self._extract_chapter_from_li(li)
+                if chapter_info.get('title'):
+                    chapter_info['sequence_number'] = sequence_counter[0]
+                    sequence_counter[0] += 1
+                    chapters_list.append(chapter_info)
+
+            # Check for nested part section (has <h3 class="c-book-part-heading--underline">)
+            # The nested <ol> might be wrapped in a <div class="c-card__body">
+            part_heading = li.find('h3', class_='c-book-part-heading--underline')
+            if part_heading:
+                # Look for nested ol anywhere inside this li
+                nested_ol = li.find('ol')
+                if nested_ol:
+                    # Recursively extract chapters from this nested list
+                    nested_chapters = self._extract_chapters_recursive(nested_ol, sequence_counter)
+                    chapters_list.extend(nested_chapters)
+
+        return chapters_list
+
+
+    def _extract_chapter_from_li(self, li_element) -> Dict:
+        """Extract chapter information from a single <li> element.
+
+        Args:
+            li_element: BeautifulSoup <li> element with data-test="chapter"
+
+        Returns:
+            Dict with chapter info (title, url, doi, pdf_url)
+        """
+        chapter_info = {}
+
+        # Extract chapter title
+        heading = li_element.find(['h3', 'h4'], class_='app-card-open__heading')
+        if heading:
+            chapter_info['title'] = heading.get_text(' ', strip=True)
+
+        # Look for chapter page link
+        chapter_link = li_element.find('a', href=lambda x: x and '/chapter/' in x)
+        if chapter_link:
+            href = chapter_link.get('href', '')
+            if href:
+                chapter_info['url'] = href
+                if '/chapter/' in href:
+                    doi_part = href.split('/chapter/')[-1].rstrip('/')
+                    if doi_part:
+                        chapter_info['doi'] = doi_part
+
+        # Find PDF download link
+        pdf_link = li_element.find('a', class_='c-pdf-chapter-download__link')
+        if pdf_link:
+            pdf_href = pdf_link.get('href', '')
+            if pdf_href:
+                if pdf_href.startswith('//'):
+                    chapter_info['pdf_url'] = 'https:' + pdf_href
+                elif not pdf_href.startswith('http'):
+                    chapter_info['pdf_url'] = self.actual_base_url + pdf_href
+                else:
+                    chapter_info['pdf_url'] = pdf_href
+
+        return chapter_info
+
     def _extract_chapters_info(self, html_content: str) -> List[Dict]:
-        """Extract chapter information from Table of Contents.
+        """Extract chapter information from Table of Contents, including nested chapters in parts.
+
+        Recursively traverses the TOC structure to find all chapters, whether they are
+        top-level or nested inside part sections.
 
         Returns list of dicts with:
         - title: Chapter title
         - url: Chapter page URL (if available)
         - doi: Chapter DOI (extracted from URL)
         - pdf_url: PDF download link
+        - sequence_number: Sequential chapter number (0-indexed)
         """
         soup = BeautifulSoup(html_content, 'html.parser')
         chapters_info = []
@@ -323,48 +407,22 @@ class SpringerBookHandler(PublisherHandler):
         if not toc_section:
             return []
 
-        # Find all chapter list items
-        chapters = toc_section.find_all('li', {'data-test': 'chapter'})
+        # Find the book-toc section nested inside
+        book_toc_section = toc_section.find('section', {'data-title': 'book-toc'})
+        if not book_toc_section:
+            return []
 
-        for chapter in chapters:
-            chapter_info = {}
+        # Find the ordered list containing chapters
+        ol_element = book_toc_section.find('ol', class_='c-book-toc')
+        if not ol_element:
+            return []
 
-            # Extract chapter title
-            heading = chapter.find('h3', class_='app-card-open__heading')
-            if heading:
-                chapter_info['title'] = heading.get_text(' ', strip=True)
-
-            # Look for chapter page link (either in heading or elsewhere)
-            chapter_link = chapter.find('a', href=lambda x: x and '/chapter/' in x)
-            if chapter_link:
-                href = chapter_link.get('href', '')
-                # Extract DOI from URL like "/chapter/10.1007/978-981-15-2381-6_1"
-                if href:
-                    chapter_info['url'] = href
-                    # Extract DOI from href - everything after "/chapter/"
-                    if '/chapter/' in href:
-                        doi_part = href.split('/chapter/')[-1]
-                        # Remove trailing slash if present
-                        doi_part = doi_part.rstrip('/')
-                        if doi_part:
-                            chapter_info['doi'] = doi_part
-
-            # Find PDF download link
-            pdf_link = chapter.find('a', class_='c-pdf-chapter-download__link')
-            if pdf_link:
-                pdf_href = pdf_link.get('href', '')
-                if pdf_href:
-                    if pdf_href.startswith('//'):
-                        chapter_info['pdf_url'] = 'https:' + pdf_href
-                    elif not pdf_href.startswith('http'):
-                        chapter_info['pdf_url'] = self.actual_base_url + pdf_href
-                    else:
-                        chapter_info['pdf_url'] = pdf_href
-
-            if chapter_info.get('title'):  # Only add if we have at least a title
-                chapters_info.append(chapter_info)
+        # Use recursive extraction with sequence counter
+        sequence_counter = [0]
+        chapters_info = self._extract_chapters_recursive(ol_element, sequence_counter)
 
         return chapters_info
+
 
     async def _extract_chapter_content(self, page, chapter_doi: str) -> Optional[Dict]:
         """Extract content from a single chapter using NatureHandler.
@@ -396,15 +454,15 @@ class SpringerBookHandler(PublisherHandler):
             return None
 
     def _extract_toc_chapter_pdfs(self, html_content: str) -> tuple:
-        """Extract all chapter PDF links from Table of Contents section.
+        """Extract all chapter PDF links from Table of Contents section, including nested chapters.
 
-        Finds <section data-title="Table of contents">, then extracts each chapter's
-        PDF link from <li data-test="chapter"> elements.
+        Recursively finds all chapters in both top-level and nested part sections,
+        extracting PDF links and using sequential numbering for identification.
 
         Returns:
             tuple: (supplemental_urls, supplemental_descriptions)
-                - supplemental_urls: List of chapter PDF URLs
-                - supplemental_descriptions: Dict mapping chapter titles to descriptions
+                - supplemental_urls: List of chapter PDF URLs in sequential order
+                - supplemental_descriptions: Dict mapping chapter title to "NN--title" format
         """
         soup = BeautifulSoup(html_content, 'html.parser')
 
@@ -416,44 +474,70 @@ class SpringerBookHandler(PublisherHandler):
         if not toc_section:
             return [], {}
 
-        # Find all chapter list items
-        chapters = toc_section.find_all('li', {'data-test': 'chapter'})
-        if not chapters:
+        # Find the book-toc section nested inside
+        book_toc_section = toc_section.find('section', {'data-title': 'book-toc'})
+        if not book_toc_section:
             return [], {}
 
-        for chapter in chapters:
-            # Extract chapter title from heading
-            heading = chapter.find('h3', class_='app-card-open__heading')
-            if not heading:
-                continue
+        # Find the ordered list containing chapters
+        ol_element = book_toc_section.find('ol', class_='c-book-toc')
+        if not ol_element:
+            return [], {}
 
-            # Get chapter title (could be text or within an <a> tag)
-            chapter_title = heading.get_text(' ', strip=True)
-            if not chapter_title:
-                continue
-
-            # Find PDF download link in the chapter
-            pdf_link = chapter.find('a', class_='c-pdf-chapter-download__link')
-            if not pdf_link:
-                continue
-
-            href = pdf_link.get('href', '')
-            if not href:
-                continue
-
-            # Convert relative URL to absolute
-            if href.startswith('//'):
-                url = 'https:' + href
-            elif not href.startswith('http'):
-                url = self.actual_base_url + href
-            else:
-                url = href
-
-            supplemental_urls.append(url)
-            # Use chapter title as the key for descriptions (ensures unique naming)
-            supplemental_descriptions[chapter_title] = chapter_title
+        # Use recursive extraction with sequence counter
+        sequence_counter = [0]
+        self._extract_pdf_urls_recursive(ol_element, sequence_counter, supplemental_urls, supplemental_descriptions)
 
         return supplemental_urls, supplemental_descriptions
+
+    def _extract_pdf_urls_recursive(self, container, sequence_counter: list, urls_list: list, descriptions_dict: dict):
+        """Recursively extract PDF URLs and descriptions from nested chapter structure.
+
+        Args:
+            container: BeautifulSoup element containing <li> items
+            sequence_counter: list with single int [current_sequence] to track numbering
+            urls_list: List to append URLs to
+            descriptions_dict: Dict to store numbered descriptions
+        """
+        # Get direct child <li> elements only
+        for li in container.find_all('li', recursive=False):
+            # Check if this li is a chapter item
+            if li.get('data-test') == 'chapter':
+                # Extract PDF URL and title
+                heading = li.find(['h3', 'h4'], class_='app-card-open__heading')
+                if heading:
+                    chapter_title = heading.get_text(' ', strip=True)
+                    if chapter_title:
+                        # Find PDF download link
+                        pdf_link = li.find('a', class_='c-pdf-chapter-download__link')
+                        if pdf_link:
+                            href = pdf_link.get('href', '')
+                            if href:
+                                # Convert relative URL to absolute
+                                if href.startswith('//'):
+                                    url = 'https:' + href
+                                elif not href.startswith('http'):
+                                    url = self.actual_base_url + href
+                                else:
+                                    url = href
+
+                                # Add to results with sequence number
+                                urls_list.append(url)
+                                seq_num = sequence_counter[0]
+                                sequence_counter[0] += 1
+                                # Store description with sequence number: "00--Chapter Title"
+                                descriptions_dict[chapter_title] = f"{seq_num:02d}--{chapter_title}"
+
+            # Check for nested part section (has <h3 class="c-book-part-heading--underline">)
+            # The nested <ol> might be wrapped in a <div class="c-card__body">
+            part_heading = li.find('h3', class_='c-book-part-heading--underline')
+            if part_heading:
+                # Look for nested ol anywhere inside this li
+                nested_ol = li.find('ol')
+                if nested_ol:
+                    # Recursively extract from nested list
+                    self._extract_pdf_urls_recursive(nested_ol, sequence_counter, urls_list, descriptions_dict)
+
 
     def _extract_pdf_url(self, html_content: str) -> Optional[str]:
         """Extract PDF download URL from page.

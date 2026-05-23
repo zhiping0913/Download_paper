@@ -590,8 +590,13 @@ async def download_supplemental_materials(
                 safe_title = re.sub(r'[<>:"/\\|?*]', '_', chapter_title)
                 safe_title = re.sub(r'_+', '_', safe_title).strip('_')  # 去重下划线并去除边界
 
-                # 生成输出文件名：supplemental--{chapter_title}
-                output_filename = f"supplemental--{safe_title}"
+                # 生成输出文件名
+                # 如果desc_value已经包含序列号（如"00--Front Matter"），则直接使用
+                if desc_value and isinstance(desc_value, str) and '--' in desc_value:
+                    output_filename = f"supplemental--{desc_value}"
+                else:
+                    # 否则使用原始格式
+                    output_filename = f"supplemental--{safe_title}"
                 output_path = output_dir / output_filename
 
                 # 确保输出目录存在
