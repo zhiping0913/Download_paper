@@ -808,13 +808,22 @@ class CambridgeHandler(PublisherHandler):
 
         if crossref_refs:
             # Use Crossref references if available (unified BibTeX generation)
+            # Sort by the numeric suffix in the key (e.g., S..._r13 → 13)
+            def _ref_sort_key(r):
+                m = re.search(r'_r(\d+)$', r.get('key', ''))
+                return int(m.group(1)) if m else 9999
+
+            crossref_refs = sorted(crossref_refs, key=_ref_sort_key)
+
             md_parts.extend([
                 "---",
                 "",
                 "## References",
                 "",
             ])
-            for idx, ref in enumerate(crossref_refs, 1):
+            for ref in crossref_refs:
+                m = re.search(r'_r(\d+)$', ref.get('key', ''))
+                idx = int(m.group(1)) if m else 0
                 # Get original unstructured reference if available
                 unstructured = ref.get('unstructured', '')
                 if unstructured:
