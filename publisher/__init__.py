@@ -11,5 +11,6 @@ from .aps import APSHandler
 from .aip import AIPHandler
 from .cambridge import CambridgeHandler
 from .iop import IOPHandler
+from .optica import OpticaHandler
 
-__all__ = ['NatureHandler', 'APSHandler', 'AIPHandler', 'CambridgeHandler', 'IOPHandler']
+__all__ = ['NatureHandler', 'APSHandler', 'AIPHandler', 'CambridgeHandler', 'IOPHandler', 'OpticaHandler']
