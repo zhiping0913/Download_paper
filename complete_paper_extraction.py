@@ -496,8 +496,8 @@ async def download_pdf(
             # 下载开始时页面加载会中断，这是正常的
             pass
 
-        # 等待下载完成
-        await asyncio.sleep(3)
+        # 等待下载完成（部分链接需等待5-10秒后才会自动跳转到PDF）
+        await asyncio.sleep(10)
 
         download_page.remove_listener("download", handle_download)
         if download_page is not page:
