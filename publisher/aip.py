@@ -162,6 +162,11 @@ class AIPHandler(PublisherHandler):
         for tag in soup(['script', 'style', 'noscript']):
             tag.decompose()
 
+        # Remove decorative SVG icons (e.g. external-link arrows on physicstoday).
+        # By this point all MathJax SVGs are already replaced with placeholders.
+        for svg_tag in soup.find_all('svg'):
+            svg_tag.decompose()
+
         # Collapse xref-bibr links to plain [number] brackets.
         for a_tag in soup.select('a.xref-bibr'):
             sup_tag = a_tag.find('sup')
@@ -193,6 +198,8 @@ class AIPHandler(PublisherHandler):
             md = md.replace(f"AIPMATH{index:03d}MATHEND", latex)
         md = cleanup_markdown(md)
         md = remove_newlines_in_paragraph(md, "", "p")
+        # Collapse redundant ****+ sequences (from nested <b><b> or <i><i>) to **
+        md = re.sub(r'\*{4,}', '**', md)
         md = re.sub(r'\s+', ' ', md).strip()
         return md
 
@@ -331,6 +338,10 @@ class AIPHandler(PublisherHandler):
             return '', ''
 
         soup = BeautifulSoup(html_content, 'html.parser')
+
+        if cls._is_physicstoday_page(soup):
+            return '', cls._extract_physicstoday_body(soup)
+
         abstract_parts = []
         body_parts = []
 
@@ -427,6 +438,10 @@ class AIPHandler(PublisherHandler):
             return []
 
         soup = BeautifulSoup(html_content, 'html.parser')
+
+        if cls._is_physicstoday_page(soup):
+            return cls._extract_physicstoday_references(soup)
+
         references = []
 
         ref_divs = soup.find_all('div', attrs={'data-content-id': True})
@@ -484,6 +499,10 @@ class AIPHandler(PublisherHandler):
             return {}
 
         soup = BeautifulSoup(html_content, 'html.parser')
+
+        if cls._is_physicstoday_page(soup):
+            return cls._extract_physicstoday_figure_urls(soup)
+
         figures = {}
         seen_ids = set()
 
@@ -647,6 +666,201 @@ class AIPHandler(PublisherHandler):
 
         return links, descriptions
 
+    # -------------------------------------------------------------------------
+    # Physics Today (physicstoday.aip.org) helpers
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _is_physicstoday_page(soup) -> bool:
+        """Detect a Physics Today page by its unique article body class."""
+        return bool(soup.find('div', class_='RichTextArticleBody'))
+
+    @classmethod
+    def _extract_physicstoday_pdf_url(cls, soup) -> str:
+        """Return the PDF href from the FloatingSocialMedia download button."""
+        for li in soup.find_all('li', class_='FloatingSocialMedia-icon-item_download'):
+            a = li.find('a', href=True)
+            if a:
+                href = a.get('href', '').strip()
+                if href:
+                    return href
+        return ''
+
+    @classmethod
+    def _extract_physicstoday_metadata(cls, soup, doi: str = None) -> dict:
+        """Extract title, year, abstract, and authors from a Physics Today page."""
+        import json as json_mod
+        meta = {}
+
+        # JSON-LD: authoritative for headline, datePublished, description
+        ld_script = soup.find('script', type='application/ld+json')
+        if ld_script and ld_script.string:
+            try:
+                ld = json_mod.loads(ld_script.string)
+                meta['title'] = ld.get('headline') or ld.get('name') or ''
+                date_pub = ld.get('datePublished', '')
+                if date_pub:
+                    meta['year'] = date_pub[:4]
+                meta['abstract'] = ld.get('description', '')
+            except Exception:
+                pass
+
+        if not meta.get('title'):
+            og = soup.find('meta', attrs={'property': 'og:title'})
+            if og:
+                meta['title'] = og.get('content', '').strip()
+        if not meta.get('title'):
+            h1 = soup.find('h1', class_='Page-headline')
+            if h1:
+                meta['title'] = h1.get_text(strip=True)
+
+        if not meta.get('abstract'):
+            og_desc = soup.find('meta', attrs={'property': 'og:description'})
+            if og_desc:
+                meta['abstract'] = og_desc.get('content', '').strip()
+        if not meta.get('abstract'):
+            sub = soup.find('div', class_='Page-subHeadline')
+            if sub:
+                meta['abstract'] = sub.get_text(strip=True)
+
+        authors = []
+        author_with_affiliations = []
+        for name_div in soup.select('div.Page-authors .IndividualCard__name'):
+            name = name_div.get_text(' ', strip=True)
+            if name:
+                authors.append(name)
+                author_with_affiliations.append({'author': name, 'affiliations': []})
+        meta['authors'] = authors
+        meta['author_with_affiliations'] = author_with_affiliations
+
+        doi_p = soup.find('p', class_='doi-wrapper')
+        if doi_p:
+            doi_a = doi_p.find('a')
+            if doi_a:
+                meta['doi'] = doi_a.get_text(strip=True)
+        if not meta.get('doi') and doi:
+            meta['doi'] = doi
+
+        meta.setdefault('title', 'Physics Today Article')
+        meta.setdefault('journal', 'Physics Today')
+        meta.setdefault('year', None)
+        meta.setdefault('abstract', '')
+        meta['corresponding_author_emails'] = []
+        meta['references'] = []
+        return meta
+
+    @classmethod
+    def _convert_physicstoday_figure(cls, fig_element) -> str:
+        """Convert a Physics Today <figure> to markdown, preferring the 2x webp URL."""
+        img_url = ''
+        webp_source = fig_element.find('source', attrs={'type': 'image/webp'})
+        if webp_source:
+            srcset = webp_source.get('srcset', '')
+            if srcset:
+                # srcset format: "URL1 1x,URL2 2x" — last entry is largest
+                entries = [e.strip() for e in srcset.split(',') if e.strip()]
+                if entries:
+                    last = entries[-1].strip()
+                    parts = last.split()
+                    img_url = parts[0] if parts else ''
+        if not img_url:
+            img = fig_element.find('img')
+            if img:
+                img_url = img.get('src', '').strip()
+
+        figcaption = fig_element.find('figcaption')
+        caption = ''
+        if figcaption:
+            for modal in figcaption.find_all('bsp-modal-window'):
+                modal.decompose()
+            cap_parts = []
+            for p in figcaption.find_all('p'):
+                text = p.get_text(' ', strip=True)
+                if text:
+                    cap_parts.append(text)
+            caption = ' '.join(cap_parts).strip()
+
+        if img_url and caption:
+            return f"![Figure]({img_url})\n\n{caption}"
+        if img_url:
+            return f"![Figure]({img_url})"
+        return caption
+
+    @classmethod
+    def _extract_physicstoday_body(cls, soup) -> str:
+        """Extract article body from div.RichTextArticleBody on Physics Today pages."""
+        body_div = soup.find('div', class_='RichTextArticleBody')
+        if not body_div:
+            return ''
+
+        parts = []
+        for child in body_div.children:
+            if isinstance(child, NavigableString):
+                continue
+            if child.name == 'p':
+                text = child.get_text(strip=True)
+                if not text:
+                    continue
+                md = cls._convert_aip_html_fragment_to_markdown(str(child))
+                if md:
+                    parts.extend([md, ''])
+            elif child.name == 'h2':
+                heading = child.get_text(' ', strip=True)
+                if heading:
+                    parts.extend([f"### {heading}", ''])
+            elif child.name == 'div':
+                for fig in child.find_all('figure'):
+                    fig_md = cls._convert_physicstoday_figure(fig)
+                    if fig_md:
+                        parts.extend([fig_md, ''])
+        return '\n'.join(parts).strip()
+
+    @classmethod
+    def _extract_physicstoday_figure_urls(cls, soup) -> dict:
+        """Extract figure URLs from Physics Today pages, preferring webp 2x."""
+        figures = {}
+        for fig_idx, fig in enumerate(soup.find_all('figure'), 1):
+            img_url = ''
+            webp_source = fig.find('source', attrs={'type': 'image/webp'})
+            if webp_source:
+                srcset = webp_source.get('srcset', '')
+                if srcset:
+                    entries = [e.strip() for e in srcset.split(',') if e.strip()]
+                    if entries:
+                        last = entries[-1].strip()
+                        parts = last.split()
+                        img_url = parts[0] if parts else ''
+            if not img_url:
+                img = fig.find('img')
+                if img:
+                    img_url = img.get('src', '').strip()
+            if img_url:
+                figcaption = fig.find('figcaption')
+                caption = ''
+                if figcaption:
+                    for modal in figcaption.find_all('bsp-modal-window'):
+                        modal.decompose()
+                    caption = figcaption.get_text(' ', strip=True)
+                figures[str(fig_idx)] = {'url': img_url, 'caption': caption}
+        return figures
+
+    @classmethod
+    def _extract_physicstoday_references(cls, soup) -> list:
+        """Extract references from <ol class="BodyReference"> on Physics Today pages."""
+        refs = []
+        ref_ol = soup.find('ol', class_='BodyReference')
+        if not ref_ol:
+            return refs
+        for idx, li in enumerate(ref_ol.find_all('li', recursive=False), 1):
+            p = li.find('p')
+            if not p:
+                continue
+            ref_md = cls._convert_aip_html_fragment_to_markdown(str(p))
+            ref_md = re.sub(r'^[►▶]\s*', '', ref_md.strip()).strip()
+            if ref_md:
+                refs.append(f"[{idx}] {ref_md}")
+        return refs
+
     async def get_fulltext_url(self, page) -> str:
         if page is not None:
             try:
@@ -687,6 +901,18 @@ class AIPHandler(PublisherHandler):
                 fulltext_html = await page.content()
             except Exception:
                 fulltext_html = ''
+
+            # Override metadata for Physics Today pages (different HTML structure)
+            if fulltext_html:
+                _pt_soup = BeautifulSoup(fulltext_html, 'html.parser')
+                if self._is_physicstoday_page(_pt_soup):
+                    pt_meta = self._extract_physicstoday_metadata(_pt_soup, doi)
+                    for k, v in pt_meta.items():
+                        if v is not None and v != '' and v != []:
+                            metadata[k] = v
+                    if not pdf_url:
+                        pdf_url = self._extract_physicstoday_pdf_url(_pt_soup)
+
             if fulltext_html and not metadata.get('abstract'):
                 metadata['abstract'] = self.extract_main_abstract_from_html(fulltext_html)
             if fulltext_html:
