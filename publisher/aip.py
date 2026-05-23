@@ -475,6 +475,10 @@ class AIPHandler(PublisherHandler):
             return []
 
         soup = BeautifulSoup(html_content, 'html.parser')
+
+        if cls._is_physicstoday_page(soup):
+            return cls._extract_physicstoday_ref_dois(soup)
+
         dois = []
 
         ref_divs = soup.find_all('div', attrs={'data-content-id': True})
@@ -843,6 +847,24 @@ class AIPHandler(PublisherHandler):
                     caption = figcaption.get_text(' ', strip=True)
                 figures[str(fig_idx)] = {'url': img_url, 'caption': caption}
         return figures
+
+    @classmethod
+    def _extract_physicstoday_ref_dois(cls, soup) -> list:
+        """Return a DOI (or '') for each reference in ol.BodyReference."""
+        dois = []
+        ref_ol = soup.find('ol', class_='BodyReference')
+        if not ref_ol:
+            return dois
+        for li in ref_ol.find_all('li', recursive=False):
+            doi = ''
+            for a in li.find_all('a', href=True):
+                href = a.get('href', '')
+                m = re.search(r'10\.\d{4,}/[^\s"\'<>]+', href)
+                if m:
+                    doi = m.group(0).rstrip('.')
+                    break
+            dois.append(doi)
+        return dois
 
     @classmethod
     def _extract_physicstoday_references(cls, soup) -> list:
