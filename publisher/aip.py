@@ -301,6 +301,28 @@ class AIPHandler(PublisherHandler):
         return f"\n{header}\n\n{md}\n"
 
     @classmethod
+    def _convert_aip_disp_formula_block(cls, disp_formula_div) -> str:
+        """Convert a div.disp-formula containing one or more formula-wraps.
+
+        Replaces each formula-wrap with a placeholder, converts the container
+        text via pandoc, then restores the LaTeX blocks.
+        Does NOT consume siblings — callers handle trailing inline content.
+        """
+        import copy
+        block_copy = copy.deepcopy(disp_formula_div)
+        display_formulas = []
+        for fw in block_copy.find_all('div', class_='formula-wrap'):
+            formula_md = cls._convert_aip_display_formula(fw)
+            if formula_md:
+                placeholder = f"AIPDISPF{len(display_formulas):03d}MATHEND"
+                display_formulas.append((placeholder, formula_md))
+                fw.replace_with(placeholder)
+        text_md = cls._convert_aip_html_fragment_to_markdown(str(block_copy))
+        for placeholder, formula_md in display_formulas:
+            text_md = text_md.replace(placeholder, f"\n\n{formula_md}\n")
+        return text_md.strip()
+
+    @classmethod
     def _convert_aip_block_child_p(cls, block_div) -> str:
         """Convert AIP ``div.block-child-p`` to markdown.
 
@@ -398,34 +420,75 @@ class AIPHandler(PublisherHandler):
                 body_parts.extend([figure_md, ""])
                 continue
 
-            # block-child-p contains paragraph text possibly mixed with
-            # embedded display formulas — convert as a single unit.
-            block_p = node.select_one('div.block-child-p')
-            if block_p:
-                block_md = cls._convert_aip_block_child_p(block_p)
-                if block_md:
-                    body_parts.extend([block_md, ""])
-                continue
+            # Iterate direct children in document order, buffering inline
+            # content (text nodes, spans, links) between structural blocks.
+            # This correctly handles nodes where a <p> precedes a disp-formula,
+            # or where trailing inline text follows a formula block.
+            pending_inline: list = []
 
-            formula = node.select_one('div.formula-wrap')
-            if formula:
-                formula_md = cls._convert_aip_display_formula(formula)
-                if formula_md:
-                    body_parts.extend([formula_md, ""])
-                continue
+            def _flush_inline() -> None:
+                if not pending_inline:
+                    return
+                after_md = cls._convert_aip_html_fragment_to_markdown(
+                    "<p>" + "".join(pending_inline) + "</p>"
+                )
+                if after_md:
+                    body_parts.extend([after_md, ""])
+                pending_inline.clear()
 
-            table = node.select_one('div.table-wrap')
-            if table:
-                table_md = cls._convert_aip_table_to_md(table)
-                if table_md:
-                    body_parts.extend([table_md, ""])
-                continue
+            for child in node.children:
+                if isinstance(child, NavigableString):
+                    if str(child).strip():
+                        pending_inline.append(str(child))
+                    continue
 
-            paragraphs = node.find_all('p', recursive=False)
-            for paragraph in paragraphs:
-                paragraph_md = cls._convert_aip_html_fragment_to_markdown(str(paragraph))
-                if paragraph_md:
-                    body_parts.extend([paragraph_md, ""])
+                if child.name == 'p':
+                    _flush_inline()
+                    paragraph_md = cls._convert_aip_html_fragment_to_markdown(str(child))
+                    if paragraph_md:
+                        body_parts.extend([paragraph_md, ""])
+                    continue
+
+                if child.name == 'div':
+                    if child.select_one('div.fig-section'):
+                        _flush_inline()
+                        fig_md = cls._convert_aip_figure(child)
+                        if fig_md:
+                            body_parts.extend([fig_md, ""])
+                        continue
+                    cls_list = child.get('class') or []
+                    if 'block-child-p' in cls_list:
+                        _flush_inline()
+                        block_md = cls._convert_aip_block_child_p(child)
+                        if block_md:
+                            body_parts.extend([block_md, ""])
+                        continue
+                    if 'disp-formula' in cls_list:
+                        _flush_inline()
+                        formula_block_md = cls._convert_aip_disp_formula_block(child)
+                        if formula_block_md:
+                            body_parts.extend([formula_block_md, ""])
+                        continue
+                    if 'formula-wrap' in cls_list:
+                        _flush_inline()
+                        formula_md = cls._convert_aip_display_formula(child)
+                        if formula_md:
+                            body_parts.extend([formula_md, ""])
+                        continue
+                    if 'table-wrap' in cls_list:
+                        _flush_inline()
+                        table_md = cls._convert_aip_table_to_md(child)
+                        if table_md:
+                            body_parts.extend([table_md, ""])
+                        continue
+                    # Unrecognised div — treat as inline content
+                    pending_inline.append(str(child))
+                    continue
+
+                # span, a, sup, sub, etc. — inline content
+                pending_inline.append(str(child))
+
+            _flush_inline()
 
         abstract_md = "\n\n".join(abstract_parts).strip()
         body_md = "\n".join(body_parts).strip()
