@@ -180,9 +180,10 @@ class OpticaHandler(PublisherHandler):
                 body_parts.append(f"## {h2_text}")
                 body_parts.append("")
 
-            # Walk siblings, grouping orphaned inline elements (text + spans)
-            # that appear after display equation divs in browser-rendered HTML.
-            cur = h2.find_next_sibling()
+            # Walk ALL siblings (including NavigableString text nodes) so that
+            # orphaned inline content after display equations is captured.
+            # find_next_sibling() skips text nodes; next_sibling does not.
+            cur = h2.next_sibling
             inline_buffer = []
 
             def flush_inline_buffer():
@@ -196,7 +197,7 @@ class OpticaHandler(PublisherHandler):
                 inline_buffer.clear()
 
             from bs4 import NavigableString as _NS
-            while cur and not is_section_h2(cur):
+            while cur is not None and not is_section_h2(cur):
                 if isinstance(cur, _NS):
                     text = str(cur)
                     if text.strip():
@@ -207,7 +208,7 @@ class OpticaHandler(PublisherHandler):
                     else:
                         flush_inline_buffer()
                         cls._walk_optica_element(cur, body_parts)
-                cur = cur.find_next_sibling()
+                cur = cur.next_sibling
             flush_inline_buffer()
 
         body_md = "\n".join(body_parts).strip()
