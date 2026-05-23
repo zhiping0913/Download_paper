@@ -342,6 +342,12 @@ class OpticaHandler(PublisherHandler):
                 parts.append(table_md)
                 parts.append("")
 
+        elif element.name in ('ul', 'ol'):
+            list_md = cls._convert_paragraph_to_md(str(element))
+            if list_md:
+                parts.append(list_md)
+                parts.append("")
+
         elif element.name == 'div':
             classes = element.get('class') or []
             if 'article-math-block' in classes:
@@ -382,7 +388,7 @@ class OpticaHandler(PublisherHandler):
                 # Skip modal containers; table data accessed via _render_table_element
                 return
             else:
-                for child in element.find_all(['p', 'h3', 'h4', 'div', 'table'],
+                for child in element.find_all(['p', 'h3', 'h4', 'div', 'table', 'ul', 'ol'],
                                               recursive=False):
                     cls._walk_optica_element(child, parts, soup_root)
 
