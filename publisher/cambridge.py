@@ -845,9 +845,9 @@ class CambridgeHandler(PublisherHandler):
                     'year': str(ref.get('year', '')),
                     'doi': ref.get('DOI', ''),
                 }
-                # Filter empty values but preserve DOI even if empty
-                parts = {k: v for k, v in parts.items() if v or k == 'doi'}
-                if any(parts.get(k) for k in ['author', 'title', 'journal']):
+                # Filter empty values
+                parts = {k: v for k, v in parts.items() if v}
+                if parts:
                     bibtex = format_as_bibtex(parts, key=ref_key)
                     md_parts.extend(["```bibtex", bibtex, "```", ""])
         elif references:
