@@ -757,7 +757,7 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
         download_page = await context.new_page() if force_headed and context is not None else page
 
         # Navigate to the figure URL so auth cookies are active on this origin
-        response = await download_page.goto(fig_url, wait_until='networkidle', timeout=30000)
+        response = await download_page.goto(fig_url, wait_until='networkidle', timeout=60000)
         content_type = response.headers.get('content-type', '') if response else ''
 
         if response and content_type.startswith('image/'):
@@ -779,7 +779,7 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
                 img_src = normalize_image_url(img_src, download_page.url)
                 image_data = await _fetch_image_as_bytes(download_page, img_src)
                 if not image_data:
-                    response = await download_page.goto(img_src, wait_until='networkidle', timeout=30000)
+                    response = await download_page.goto(img_src, wait_until='networkidle', timeout=60000)
                     image_data = await response.body()
                 img_filename = original_image_filename(img_src, fig_num)
                 img_path = output_dir / img_filename
