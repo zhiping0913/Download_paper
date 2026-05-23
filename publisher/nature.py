@@ -1442,12 +1442,9 @@ def generate_bibtex_from_unstructured(unstructured: str, key: str = 'ref') -> st
     if len(title) > 200:
         title = title[:200] + '...'
 
-    # Generate basic BibTeX entry
-    bibtex = f"""@article{{{key},
-  author = "{{{author}}}",
-  title = "{{{title}}}",
-  year = "{{{year}}}"
-}}"""
+    # Generate basic BibTeX entry — only title, year, doi
+    doi_field = f"\n  doi = {{{doi}}}" if doi else ""
+    bibtex = f"@misc{{{key},\n  title = {{{title}}},\n  year = {{{year}}}{doi_field}\n}}"
 
     return bibtex
 

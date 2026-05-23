@@ -353,36 +353,14 @@ def _build_bibtex_from_s2(s2_data: dict, doi: str) -> str:
 
     title = s2_data.get('title', '')
     year = s2_data.get('year', '')
-    venue = s2_data.get('venue', '')
-    if not venue:
-        venue = ''
-
     authors = s2_data.get('authors', [])
     author_names = [a.get('name', '') for a in authors]
 
-    # Generate key
     key = generate_bibtex_key(author_names, str(year) if year else '', title)
 
-    # Format authors as "Last, First"
-    formatted_authors = []
-    for name in author_names:
-        if ',' in name:
-            formatted_authors.append(name)
-        else:
-            parts = name.rsplit(None, 1)
-            if len(parts) == 2:
-                formatted_authors.append(f"{parts[1]}, {parts[0]}")
-            else:
-                formatted_authors.append(name)
-
-    lines = ["@article{" + key + ","]
-    if formatted_authors:
-        lines.append(f"  author = {{{' and '.join(formatted_authors)}}},")
+    lines = [f"@misc{{{key},"]
     if title:
         lines.append(f"  title = {{{title}}},")
-    if venue:
-        # venue from S2 might be journal name or conference
-        lines.append(f"  journal = {{{venue}}},")
     if year:
         lines.append(f"  year = {{{year}}},")
     if doi:
@@ -398,42 +376,14 @@ def _build_bibtex_from_crossref(crossref_data: dict, doi: str) -> str:
 
     title = crossref_data.get('title', '')
     year = crossref_data.get('year')
-    journal = crossref_data.get('journal', '')
-    publisher = crossref_data.get('publisher', '')
-    volume = crossref_data.get('volume')
-    issue = crossref_data.get('issue')
-    pages = crossref_data.get('pages')
-
     authors = crossref_data.get('authors', [])
     author_names = [a.get('name', '') for a in authors if a.get('name')]
 
-    # Generate key
     key = generate_bibtex_key(author_names, str(year) if year else '', title)
 
-    # Format authors as "Last, First"
-    formatted_authors = []
-    for author in authors:
-        family = author.get('family', '')
-        given = author.get('given', '')
-        if family:
-            name = f"{family}, {given}" if given else family
-            formatted_authors.append(name)
-
-    lines = ["@article{" + key + ","]
-    if formatted_authors:
-        lines.append(f"  author = {{{' and '.join(formatted_authors)}}},")
+    lines = [f"@misc{{{key},"]
     if title:
         lines.append(f"  title = {{{title}}},")
-    if journal:
-        lines.append(f"  journal = {{{journal}}},")
-    elif publisher:
-        lines.append(f"  publisher = {{{publisher}}},")
-    if volume:
-        lines.append(f"  volume = {{{volume}}},")
-    if issue:
-        lines.append(f"  issue = {{{issue}}},")
-    if pages:
-        lines.append(f"  pages = {{{pages}}},")
     if year:
         lines.append(f"  year = {{{year}}},")
     if doi:
