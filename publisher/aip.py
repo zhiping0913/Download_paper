@@ -1066,6 +1066,18 @@ class AIPHandler(PublisherHandler):
                     body_md,
                 )
 
+        # For physicstoday: body already contains ![Figure](https://...) links embedded
+        # inline. Replace each web URL sequentially with the corresponding local filename.
+        if kwargs.get('figure_filenames') and re.search(r'!\[Figure\]\(https?://', body_md):
+            for fig_num in sorted(kwargs['figure_filenames'].keys(), key=lambda x: int(x)):
+                filename = kwargs['figure_filenames'][fig_num]
+                body_md = re.sub(
+                    r'!\[Figure\]\(https?://[^)]+\)',
+                    f'![Figure {fig_num}]({filename})',
+                    body_md,
+                    count=1,
+                )
+
         md_parts.extend([
             "---",
             "",
