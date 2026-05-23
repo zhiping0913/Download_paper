@@ -197,7 +197,12 @@ class CambridgeHandler(PublisherHandler):
         # Inline formulas rendered as MathJax CHTML with assistive MathML
         for formula in soup.select('span.inline-formula'):
             math_tag = formula.find('math')
-            latex = cls._convert_mathml(math_tag) if math_tag else ''
+            if math_tag:
+                latex = cls._convert_mathml(math_tag)
+            else:
+                mjx_math_el = formula.find('mjx-math')
+                data_latex = mjx_math_el.get('data-latex', '') if mjx_math_el else ''
+                latex = f"${data_latex}$" if data_latex else ''
             if latex:
                 formula.replace_with(NavigableString(f" {stash_formula(latex)} "))
 
