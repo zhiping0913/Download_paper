@@ -264,72 +264,27 @@ def format_as_bibtex(parts: dict, *, key: str = None) -> str:
     """
     authors_raw = _pick(parts, 'citation_author', 'author')
     title = _pick(parts, 'citation_title', 'title')
-    journal = _pick(parts, 'citation_journal_title', 'journal', 'journal_title')
-    conference = _pick(parts, 'citation_conference_title', 'conference', 'conference_title')
-    volume = _pick(parts, 'citation_volume', 'volume')
-    pages = _pick(parts, 'citation_firstpage', 'firstpage',
-                  'citation_pages', 'pages') or ''
-    lastpage = _pick(parts, 'citation_lastpage', 'lastpage') or ''
     year = _pick(parts, 'citation_publication_date', 'publication_date', 'date', 'year')
     doi = _pick(parts, 'citation_doi', 'doi')
-
-    # Determine entry type
-    if conference:
-        entry_type = 'inproceedings'
-        venue_key = 'booktitle'
-        venue_value = conference
-    elif journal:
-        entry_type = 'article'
-        venue_key = 'journal'
-        venue_value = journal
-    else:
-        entry_type = 'misc'
 
     # Extract year
     year_match = re.search(r'(\d{4})', str(year))
     year_str = year_match.group(1) if year_match else year
 
-    # Parse author list
-    author_list = [a.strip() for a in authors_raw.split(';') if a.strip()]
-    formatted_authors = []
-    for author in author_list:
-        if author.lower() == 'others':
-            formatted_authors.append('others')
-            continue
-        if ',' in author:
-            formatted_authors.append(author)
-        else:
-            name_parts = author.rsplit(None, 1)
-            if len(name_parts) == 2:
-                formatted_authors.append(f"{name_parts[1]}, {name_parts[0]}")
-            else:
-                formatted_authors.append(author)
-
     # Generate key if not provided
     if key is None:
-        key = generate_bibtex_key(formatted_authors, year_str, title)
+        author_list = [a.strip() for a in authors_raw.split(';') if a.strip()]
+        key = generate_bibtex_key(author_list, year_str, title)
 
-    # Build BibTeX entry
-    lines = [f"@{entry_type}{{{key},"]
-    lines.append(f"  author = {{{' and '.join(formatted_authors)}}},")
+    # Build BibTeX entry — only title, year, doi
+    lines = [f"@misc{{{key},"]
     if title:
         lines.append(f"  title = {{{title}}},")
-    if entry_type in ('article', 'inproceedings'):
-        lines.append(f"  {venue_key} = {{{venue_value}}},")
-    if volume:
-        lines.append(f"  volume = {{{volume}}},")
-    if pages:
-        if lastpage:
-            lines.append(f"  pages = {{{pages}--{lastpage}}},")
-        else:
-            lines.append(f"  pages = {{{pages}}},")
     if year_str:
-        # Year might be last field before DOI, so add comma
         if doi:
             lines.append(f"  year = {{{year_str}}},")
         else:
             lines.append(f"  year = {{{year_str}}}")
-    # DOI should be the last field (no comma after)
     if doi:
         lines.append(f"  doi = {{{doi}}}")
     lines.append("}")
