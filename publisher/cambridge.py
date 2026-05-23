@@ -203,7 +203,13 @@ class CambridgeHandler(PublisherHandler):
 
         for container in soup.find_all('mjx-container'):
             math_tag = container.find('math')
-            latex = cls._convert_mathml(math_tag) if math_tag else ''
+            if math_tag:
+                latex = cls._convert_mathml(math_tag) if math_tag else ''
+            else:
+                # Fallback: extract data-latex attribute (Cambridge CHTML mode has no <math> tag)
+                mjx_math_el = container.find('mjx-math')
+                data_latex = mjx_math_el.get('data-latex', '') if mjx_math_el else ''
+                latex = f"${data_latex}$" if data_latex else ''
             if latex:
                 container.replace_with(NavigableString(f" {stash_formula(latex)} "))
 
@@ -297,12 +303,27 @@ class CambridgeHandler(PublisherHandler):
                             if img_src and img_name:
                                 body_parts.extend([f"![{img_name}]({img_src})", ""])
 
-                elif child.name == 'div' and 'displayed-formula' in child.get('class', []):
-                    math_tag = child.find('math')
-                    if math_tag:
-                        formula_md = cls._convert_mathml(math_tag, display=True)
-                        if formula_md:
-                            body_parts.extend([formula_md, ""])
+                elif child.name == 'div' and 'disp-formula' in child.get('class', []):
+                    latex_str = ''
+                    mjx_container = child.find('mjx-container')
+                    if mjx_container:
+                        mjx_math_el = mjx_container.find('mjx-math')
+                        if mjx_math_el:
+                            latex_str = mjx_math_el.get('data-latex', '')
+                    if latex_str:
+                        label_el = child.find('span', class_='label')
+                        label_text = label_el.get_text(' ', strip=True) if label_el else ''
+                        if label_text:
+                            formula_md = f"$$\n{latex_str}\\tag{{{label_text}}}\n$$"
+                        else:
+                            formula_md = f"$$\n{latex_str}\n$$"
+                        body_parts.extend([formula_md, ""])
+                    else:
+                        math_tag = child.find('math')
+                        if math_tag:
+                            formula_md = cls._convert_mathml(math_tag, display=True)
+                            if formula_md:
+                                body_parts.extend([formula_md, ""])
 
         body_md = "\n".join(body_parts).strip()
         return '', body_md
