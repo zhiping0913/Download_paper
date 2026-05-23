@@ -1327,13 +1327,15 @@ class NatureHandler(PublisherHandler):
                 # Filter empty values but preserve DOI even if empty
                 parts = {k: v for k, v in parts.items() if v or k == 'doi'}
 
-                # If no structured fields but have unstructured text, generate BibTeX from unstructured
-                if not any(parts.get(k) for k in ['author', 'title', 'journal']) and unstructured:
-                    bibtex = generate_bibtex_from_unstructured(unstructured, key=ref_key)
-                    if bibtex:
-                        md_content += f"```bibtex\n{bibtex}\n```\n\n"
-                elif any(parts.get(k) for k in ['author', 'title', 'journal']):
-                    bibtex = format_as_bibtex(parts, key=ref_key)
+                # If title missing but unstructured text available, use it as title
+                if not parts.get('title') and unstructured:
+                    title_text = re.sub(r'\s+', ' ', unstructured).strip()
+                    if len(title_text) > 200:
+                        title_text = title_text[:200] + '...'
+                    parts['title'] = title_text
+
+                bibtex = format_as_bibtex(parts, key=ref_key)
+                if bibtex:
                     md_content += f"```bibtex\n{bibtex}\n```\n\n"
         elif metadata.get('references'):
             md_content += "## References\n\n"
