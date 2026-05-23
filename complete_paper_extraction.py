@@ -718,6 +718,32 @@ async def download_supplemental_materials(
 
 
 
+async def _fetch_image_as_bytes(page, url: str) -> bytes:
+    """Fetch a URL as raw bytes using browser-side fetch + base64.
+
+    Avoids the CDP binary-as-string corruption bug where 0xFF bytes
+    get replaced with U+FFFD (efbfbd) when Playwright returns non-base64
+    encoded binary responses.
+    """
+    import base64
+    b64 = await page.evaluate("""
+        async (url) => {
+            const resp = await fetch(url, {credentials: 'include'});
+            if (!resp.ok) return null;
+            const buf = await resp.arrayBuffer();
+            const bytes = new Uint8Array(buf);
+            let binary = '';
+            for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary);
+        }
+    """, url)
+    if b64 is None:
+        return None
+    return base64.b64decode(b64)
+
+
 async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, context=None, force_headed: bool = False) -> str:
     """下载高分辨率图片 - 使用API响应中的URL"""
     try:
@@ -730,14 +756,18 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
 
         download_page = await context.new_page() if force_headed and context is not None else page
 
+        # Navigate to the figure URL so auth cookies are active on this origin
         response = await download_page.goto(fig_url, wait_until='networkidle', timeout=30000)
         content_type = response.headers.get('content-type', '') if response else ''
+
         if response and content_type.startswith('image/'):
-            image_data = await response.body()
+            # Use browser-side fetch to avoid CDP binary corruption
+            image_data = await _fetch_image_as_bytes(download_page, fig_url)
+            if not image_data:
+                image_data = await response.body()
             img_filename = original_image_filename(fig_url, fig_num)
             img_path = output_dir / img_filename
-            with open(img_path, 'wb') as f:
-                f.write(image_data)
+            img_path.write_bytes(image_data)
             print(f"    ✓ 保存: {img_filename}")
             return img_filename
 
@@ -747,13 +777,13 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
             img_src = await img_elements[0].get_attribute('src')
             if img_src:
                 img_src = normalize_image_url(img_src, download_page.url)
-                response = await download_page.goto(img_src, wait_until='networkidle', timeout=30000)
-                image_data = await response.body()
+                image_data = await _fetch_image_as_bytes(download_page, img_src)
+                if not image_data:
+                    response = await download_page.goto(img_src, wait_until='networkidle', timeout=30000)
+                    image_data = await response.body()
                 img_filename = original_image_filename(img_src, fig_num)
-
                 img_path = output_dir / img_filename
-                with open(img_path, 'wb') as f:
-                    f.write(image_data)
+                img_path.write_bytes(image_data)
                 print(f"    ✓ 保存: {img_filename}")
                 if download_page is not page:
                     await download_page.close()
