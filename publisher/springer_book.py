@@ -99,11 +99,37 @@ class SpringerBookHandler(PublisherHandler):
             # Extract PDF download link
             pdf_url = self._extract_pdf_url(fulltext_html)
 
-            # Extract chapter PDFs from Table of Contents
-            supplemental_urls, supplemental_descriptions = self._extract_toc_chapter_pdfs(fulltext_html)
+            # Collect chapters from all TOC pages with shared sequence counter
+            sequence_counter = [0]
+            chapters_info = self._extract_chapters_info(fulltext_html, sequence_counter)
+            print(f"  📄 Page 1: {len(chapters_info)} chapters")
 
-            # Extract chapters information (links and DOIs)
-            chapters_info = self._extract_chapters_info(fulltext_html)
+            # Fetch remaining TOC pages until a page has no chapters
+            page_num = 2
+            while True:
+                extra_html = await self._fetch_book_page_html(page, page_num)
+                if not extra_html:
+                    break
+                extra_chapters = self._extract_chapters_info(extra_html, sequence_counter)
+                if not extra_chapters:
+                    break
+                chapters_info.extend(extra_chapters)
+                print(f"  📄 Page {page_num}: {len(extra_chapters)} chapters (total: {len(chapters_info)})")
+                page_num += 1
+
+            # Derive supplemental URLs and descriptions directly from chapters_info
+            # (chapters_info has pdf_url and sequence_number from _extract_chapter_from_li)
+            # Use seq-prefixed key to avoid collisions on duplicate titles (e.g. multiple "Front Matter")
+            supplemental_urls = []
+            supplemental_descriptions = {}
+            for ch in chapters_info:
+                if ch.get('pdf_url'):
+                    supplemental_urls.append(ch['pdf_url'])
+                    title = ch.get('title', '')
+                    seq = ch.get('sequence_number', 0)
+                    numbered_key = f"{seq:02d}--{title}"
+                    supplemental_descriptions[numbered_key] = numbered_key
+
             metadata['_chapters_info'] = chapters_info
 
             # Extract ISBN and ISSN from Crossref data
@@ -386,7 +412,7 @@ class SpringerBookHandler(PublisherHandler):
 
         return chapter_info
 
-    def _extract_chapters_info(self, html_content: str) -> List[Dict]:
+    def _extract_chapters_info(self, html_content: str, sequence_counter: list = None) -> List[Dict]:
         """Extract chapter information from Table of Contents, including nested chapters in parts.
 
         Recursively traverses the TOC structure to find all chapters, whether they are
@@ -417,12 +443,40 @@ class SpringerBookHandler(PublisherHandler):
         if not ol_element:
             return []
 
-        # Use recursive extraction with sequence counter
-        sequence_counter = [0]
+        # Use recursive extraction with sequence counter (shared across pages if provided)
+        if sequence_counter is None:
+            sequence_counter = [0]
         chapters_info = self._extract_chapters_recursive(ol_element, sequence_counter)
 
         return chapters_info
 
+
+    async def _fetch_book_page_html(self, page, page_num: int) -> str:
+        """Fetch HTML from a specific pagination page of the book TOC.
+
+        Creates a temporary new browser page to avoid disrupting the main page.
+
+        Args:
+            page: Playwright page object (used to access browser context)
+            page_num: Page number to fetch (1-indexed)
+
+        Returns:
+            HTML content string, or empty string on failure
+        """
+        book_url = f"https://link.springer.com/book/{self.doi}?page={page_num}"
+        nav_page = await page.context.new_page()
+        try:
+            await nav_page.goto(book_url, wait_until='domcontentloaded', timeout=60000)
+            try:
+                await nav_page.wait_for_load_state('networkidle', timeout=15000)
+            except Exception:
+                pass
+            return await nav_page.content()
+        except Exception as e:
+            print(f"  ⚠️  获取第{page_num}页失败: {e}")
+            return ''
+        finally:
+            await nav_page.close()
 
     async def _extract_chapter_content(self, page, chapter_doi: str) -> Optional[Dict]:
         """Extract content from a single chapter using NatureHandler.
