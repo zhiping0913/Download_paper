@@ -115,12 +115,14 @@ class OpticaHandler(PublisherHandler):
     # ------------------------------------------------------------------
 
     @classmethod
-    def extract_article_text_from_html(cls, html_content: str):
+    def extract_article_text_from_html(cls, html_content: str, crossref_refs=None):
         """Extract article body, returning (abstract_md, body_md).
 
-        Traverses <h2 class="article-heading"> sections inside the article body div.
-        Paragraphs use <p> tags; inline formulas are $...$; display formulas are
-        in <div class="article-math-block"> with $$...$$.
+        All <h2 class="article-heading"> sections are rendered into body_md in
+        document order. Abstract is extracted separately into abstract_md.
+        References section is rendered with HTML text (full author names) plus
+        BibTeX blocks from crossref_refs. Supplemental, Funding, Acknowledgment
+        and all other sections are rendered as normal body sections.
         """
         if not html_content:
             return '', ''
@@ -130,7 +132,6 @@ class OpticaHandler(PublisherHandler):
         # Find the article body container
         article_body = soup.find('div', id='articleBody')
         if not article_body:
-            # Fallback: find after the <!-- Article Body --> comment
             marker = soup.find(string=re.compile(r'Article Body', re.IGNORECASE))
             if marker:
                 article_body = marker.find_next('div', class_=re.compile(r'main-content'))
@@ -145,19 +146,16 @@ class OpticaHandler(PublisherHandler):
             return (hasattr(el, 'name') and el.name == 'h2'
                     and 'article-heading' in (el.get('class') or []))
 
-        def is_block_element(el):
-            return hasattr(el, 'name') and el.name in (
-                'p', 'div', 'h2', 'h3', 'h4', 'ul', 'ol', 'table', 'blockquote')
-
-        # Traverse all h2 headings
+        # Traverse all h2 headings in document order
         for h2 in article_body.find_all('h2', class_='article-heading'):
             h2_id = h2.get('id', '').lower()
             h2_text = h2.get_text(' ', strip=True)
 
+            # Abstract: extract to metadata, skip from body
             if h2_id == 'abstract':
                 abs_parts = []
-                cur = h2.find_next_sibling()
-                while cur and not is_section_h2(cur):
+                cur = h2.next_sibling
+                while cur is not None and not is_section_h2(cur):
                     if hasattr(cur, 'name') and cur.name == 'p':
                         p_md = cls._convert_paragraph_to_md(str(cur))
                         if p_md:
@@ -167,22 +165,23 @@ class OpticaHandler(PublisherHandler):
                             p_md = cls._convert_paragraph_to_md(str(p))
                             if p_md:
                                 abs_parts.append(p_md)
-                    cur = cur.find_next_sibling()
+                    cur = cur.next_sibling
                 abstract_md = '\n\n'.join(abs_parts).strip()
                 continue
 
-            if re.search(r'supplemental|supplement', h2_id):
-                continue
-            if h2_id == 'references':
+            # References: render HTML text + BibTeX; do not walk siblings generically
+            if re.search(r'^references?$', h2_id):
+                body_parts.extend(cls._render_references_section(h2, crossref_refs))
+                body_parts.append('')
                 continue
 
+            # All other sections (Supplemental, Funding, Acknowledgment, etc.)
             if h2_text:
                 body_parts.append(f"## {h2_text}")
                 body_parts.append("")
 
             # Walk ALL siblings (including NavigableString text nodes) so that
             # orphaned inline content after display equations is captured.
-            # find_next_sibling() skips text nodes; next_sibling does not.
             cur = h2.next_sibling
             inline_buffer = []
 
@@ -207,7 +206,7 @@ class OpticaHandler(PublisherHandler):
                         inline_buffer.append(str(cur))
                     else:
                         flush_inline_buffer()
-                        cls._walk_optica_element(cur, body_parts)
+                        cls._walk_optica_element(cur, body_parts, soup_root=soup)
                 cur = cur.next_sibling
             flush_inline_buffer()
 
@@ -216,7 +215,96 @@ class OpticaHandler(PublisherHandler):
         return abstract_md, body_md
 
     @classmethod
-    def _walk_optica_element(cls, element, parts: list):
+    def _render_references_section(cls, h2_el, crossref_refs=None):
+        """Render the References section with HTML text and optional BibTeX blocks.
+
+        Format per reference:
+            [N] <full HTML text with author names and Crossref link>
+            ```bibtex
+            @article{key, ...}
+            ```
+        """
+        parts = ['## References', '']
+
+        # Build index map: 1-based ref number → crossref data
+        bibtex_map = {}
+        if crossref_refs:
+            for ref in crossref_refs:
+                key = ref.get('key', '')
+                m = re.search(r'-R(\d+)$', key)
+                if m:
+                    bibtex_map[int(m.group(1))] = ref
+
+        idx = 0
+        cur = h2_el.next_sibling
+        while cur is not None:
+            if hasattr(cur, 'name'):
+                if cur.name == 'h2' and 'article-heading' in (cur.get('class') or []):
+                    break
+                if cur.name == 'p' and 'reference-body' in (cur.get('class') or []):
+                    idx += 1
+                    # Remove the bold "N. " number tag before conversion
+                    ref_html = re.sub(
+                        r'<strong\s+class=["\']number["\'][^>]*>.*?</strong>',
+                        '',
+                        str(cur),
+                        flags=re.DOTALL,
+                    )
+                    ref_md = cls._convert_paragraph_to_md(ref_html).strip()
+                    parts.append(f"[{idx}] {ref_md}")
+                    parts.append('')
+                    if idx in bibtex_map:
+                        ref_data = bibtex_map[idx]
+                        bib_parts = {
+                            'author': ref_data.get('author', ''),
+                            'title': ref_data.get('article-title', ''),
+                            'journal': ref_data.get('journal-title', ''),
+                            'volume': ref_data.get('volume', ''),
+                            'firstpage': ref_data.get('first-page', ''),
+                            'year': str(ref_data.get('year', '')),
+                            'doi': ref_data.get('DOI', ''),
+                        }
+                        bib_parts = {k: v for k, v in bib_parts.items() if v}
+                        if any(bib_parts.get(k) for k in ['author', 'title', 'journal']):
+                            bibtex = format_as_bibtex(
+                                bib_parts, key=ref_data.get('key', f'ref{idx}')
+                            )
+                            parts.extend(['```bibtex', bibtex, '```', ''])
+            cur = cur.next_sibling
+        return parts
+
+    @classmethod
+    def _render_table_element(cls, element, parts, soup_root=None):
+        """Render an inline table reference (div.text-plus-thumb).
+
+        Extracts the caption from the description paragraph and fetches the
+        actual table data from the linked modal element (#tableN).
+        """
+        # Caption from <p class="table-caption-label"> or first <p>
+        caption_p = (element.find('p', class_='table-caption-label')
+                     or element.find('p'))
+        if caption_p:
+            caption_md = cls._convert_paragraph_to_md(str(caption_p)).strip()
+            if caption_md:
+                parts.append(caption_md)
+
+        # Fetch table data from modal via data-bs-target="#tableN"
+        modal_link = element.find('a', attrs={'data-bs-target': True})
+        if modal_link and soup_root:
+            modal_id = modal_link.get('data-bs-target', '').lstrip('#')
+            if modal_id:
+                modal_el = soup_root.find(id=modal_id)
+                if modal_el:
+                    table_target = (modal_el.find('div', class_='table-responsive')
+                                    or modal_el.find('table'))
+                    if table_target:
+                        table_md = cls._convert_paragraph_to_md(str(table_target))
+                        if table_md:
+                            parts.append(table_md)
+        parts.append('')
+
+    @classmethod
+    def _walk_optica_element(cls, element, parts: list, soup_root=None):
         """Process a single element and append markdown lines to parts."""
         if element.name == 'p':
             p_md = cls._convert_paragraph_to_md(str(element))
@@ -237,22 +325,22 @@ class OpticaHandler(PublisherHandler):
                 parts.append(f"#### {h4_text}")
                 parts.append("")
 
+        elif element.name == 'table':
+            table_md = cls._convert_paragraph_to_md(str(element))
+            if table_md:
+                parts.append(table_md)
+                parts.append("")
+
         elif element.name == 'div':
             classes = element.get('class') or []
             if 'article-math-block' in classes:
-                # Display equation: convert via HTML→Markdown pipeline (handles
-                # both raw $$...$$ source and MathJax-rendered mjx-container).
                 eq_md = cls._convert_paragraph_to_md(str(element)).strip()
-                # Remove equation label prefix like "[]{#e1} (1) " or "(1) "
                 eq_md = re.sub(r'^\[\]\{#\S+\}\s*\(\d+\)\s*', '', eq_md)
                 eq_md = re.sub(r'^\(\d+\)\s*', '', eq_md)
                 if eq_md:
-                    # Already has $$...$$ from MathML conversion; just ensure blank lines
                     parts.append(f"\n{eq_md}\n")
                     parts.append("")
             elif 'figure-image' in classes:
-                # Figures are handled by extract_figures_from_html; insert caption placeholder
-                fig_id = element.get('id', '')
                 title_span = element.find('span', class_='figure-title')
                 caption_span = element.find('span', class_='figure-caption')
                 if title_span:
@@ -266,10 +354,26 @@ class OpticaHandler(PublisherHandler):
                     else:
                         parts.append(f"**{label}.**")
                     parts.append("")
+            elif 'text-plus-thumb' in classes:
+                # Inline table reference: caption + table data from modal
+                cls._render_table_element(element, parts, soup_root)
+            elif 'table-responsive' in classes:
+                table_md = cls._convert_paragraph_to_md(str(element))
+                if table_md:
+                    parts.append(table_md)
+                    parts.append("")
+            elif element.find('h2', class_='article-heading'):
+                # Skip section-container divs (e.g. <div class="back">):
+                # their h2 children are handled by the outer section loop.
+                return
+            elif any(c in (classes or []) for c in
+                     ('modal', 'modal-dialog', 'modal-content', 'modal-body')):
+                # Skip modal containers; table data accessed via _render_table_element
+                return
             else:
-                # Recurse into nested divs
-                for child in element.find_all(['p', 'h3', 'h4', 'div'], recursive=False):
-                    cls._walk_optica_element(child, parts)
+                for child in element.find_all(['p', 'h3', 'h4', 'div', 'table'],
+                                              recursive=False):
+                    cls._walk_optica_element(child, parts, soup_root)
 
     @staticmethod
     def _convert_paragraph_to_md(html_fragment: str) -> str:
@@ -726,11 +830,14 @@ class OpticaHandler(PublisherHandler):
         if abstract:
             md_parts.extend(["---", "", "## Abstract", "", abstract, ""])
 
-        # Body text (extract from HTML)
+        # Body text (extract from HTML, passing crossref_refs for BibTeX injection)
         body_md = ''
+        crossref_refs = metadata.get('_crossref_references', [])
         if isinstance(article_text, str) and article_text.strip():
             if article_text.lstrip().startswith('<'):
-                _, body_md = self.extract_article_text_from_html(article_text)
+                _, body_md = self.extract_article_text_from_html(
+                    article_text, crossref_refs=crossref_refs
+                )
             else:
                 body_md = article_text.strip()
 
@@ -748,57 +855,12 @@ class OpticaHandler(PublisherHandler):
 
         md_parts.extend(["---", "", "## Article Text", "", body_md or "[Article text not found.]", ""])
 
-        # Supplemental materials
-        supp_urls = kwargs.get('supplemental_urls', [])
+        # Supplemental material download filenames (extra metadata, not in HTML body)
         supp_downloads = kwargs.get('supplemental_downloads', [])
-        supp_descriptions = kwargs.get('supplemental_descriptions', {})
-        if supp_urls or supp_downloads:
-            md_parts.extend(["---", "", "## Supplemental Material", ""])
-            if supp_downloads:
-                for dl in supp_downloads:
-                    md_parts.append(f"- {dl}")
-            elif supp_urls:
-                for url in supp_urls:
-                    desc = supp_descriptions.get(url, '')
-                    label = desc or url
-                    md_parts.append(f"- [{label}]({url})")
-            md_parts.append("")
-
-        # References
-        references = metadata.get('references', [])
-        crossref_refs = metadata.get('_crossref_references', [])
-
-        if crossref_refs:
-            md_parts.extend(["---", "", "## References", ""])
-            for idx, ref in enumerate(crossref_refs, 1):
-                unstructured = ref.get('unstructured', '')
-                if unstructured:
-                    md_parts.append(f"[{idx}] {unstructured}")
-                else:
-                    md_parts.append(generate_reference_text_from_crossref(ref, index=idx))
-                md_parts.append("")
-
-                ref_key = ref.get('key', f'ref{idx}')
-                parts = {
-                    'author': ref.get('author', ''),
-                    'title': ref.get('article-title', ''),
-                    'journal': ref.get('journal-title', ''),
-                    'volume': ref.get('volume', ''),
-                    'firstpage': ref.get('first-page', ''),
-                    'year': str(ref.get('year', '')),
-                    'doi': ref.get('DOI', ''),
-                }
-                parts = {k: v for k, v in parts.items() if v or k == 'doi'}
-                if any(parts.get(k) for k in ['author', 'title', 'journal']):
-                    bibtex = format_as_bibtex(parts, key=ref_key)
-                    md_parts.extend(["```bibtex", bibtex, "```", ""])
-            md_parts.append("")
-
-        elif references:
-            md_parts.extend(["---", "", "## References", ""])
-            for idx, ref in enumerate(references, 1):
-                md_parts.append(f"[{idx}] {ref}")
-                md_parts.append("")
+        if supp_downloads:
+            md_parts.extend(["---", "", "## Supplemental Material Downloads", ""])
+            for dl in supp_downloads:
+                md_parts.append(f"- {dl}")
             md_parts.append("")
 
         return "\n".join(md_parts)
