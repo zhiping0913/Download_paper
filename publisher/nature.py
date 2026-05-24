@@ -62,6 +62,7 @@ class NatureHandler(PublisherHandler):
         page, managed_playwright, managed_browser, managed_context = await init_extract_all_page(
             self, page, doi, 'NatureHandler'
         )
+        doi = self.doi  # resolve doi from handler after init (may have been None)
 
         if captured is None:
             captured = self.setup_network_capture(page, self.doi or doi)

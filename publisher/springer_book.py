@@ -54,6 +54,7 @@ class SpringerBookHandler(PublisherHandler):
         page, managed_playwright, managed_browser, managed_context = await init_extract_all_page(
             self, page, doi, 'SpringerBookHandler'
         )
+        doi = self.doi  # resolve doi from handler after init (may have been None)
 
         # If original DOI was a chapter DOI and page is already loaded,
         # navigate to the book page instead

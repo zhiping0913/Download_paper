@@ -612,6 +612,7 @@ class CambridgeHandler(PublisherHandler):
         page, managed_playwright, managed_browser, managed_context = await init_extract_all_page(
             self, page, doi, 'CambridgeHandler'
         )
+        doi = self.doi  # resolve doi from handler after init (may have been None)
 
         # Get the actual page URL for correct base_url resolution
         set_actual_base_url(self, page)
