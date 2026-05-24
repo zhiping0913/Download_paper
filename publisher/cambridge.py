@@ -339,7 +339,7 @@ class CambridgeHandler(PublisherHandler):
 
     @classmethod
     def extract_figures_from_html(cls, html_content: str) -> dict:
-        """Extract figure URLs and captions from HTML."""
+        """Extract figure and table-image URLs and captions from HTML."""
         if not html_content:
             return {}
 
@@ -387,6 +387,29 @@ class CambridgeHandler(PublisherHandler):
             figures[key] = {
                 'url': img_url.strip(),
                 'caption': caption,
+            }
+
+        # Also capture table images: figure-thumb with data-img-name="Table N."
+        # (Cambridge renders tables as GIF images, not HTML tables)
+        tab_num = len(figures)
+        for thumb in soup.find_all('div', class_='figure-thumb'):
+            img = thumb.find('img', class_='aop-lazy-load-image')
+            if not img:
+                continue
+            img_name = img.get('data-img-name', '')
+            if not img_name.startswith('Table'):
+                continue
+            img_url = img.get('data-src') or img.get('data-original-image') or img.get('src') or ''
+            if not img_url:
+                continue
+            if img_url in {v['url'] for v in figures.values()}:
+                continue  # already captured
+            tab_num += 1
+            key = f"tab_{tab_num}"
+            figures[key] = {
+                'url': img_url.strip(),
+                'caption': img_name,
+                'img_name': img_name,
             }
 
         return figures
@@ -744,16 +767,32 @@ class CambridgeHandler(PublisherHandler):
             else:
                 body_md = article_text.strip()
 
-        # Replace CDN image URLs with local filenames for downloaded figures
+        # Replace CDN image URLs with local filenames for downloaded figures and tables
         if kwargs.get('add_figure_refs') and kwargs.get('figure_filenames'):
             figure_filenames = kwargs['figure_filenames']
-            for fig_num, filename in sorted(figure_filenames.items(), key=lambda x: int(x[0])):
-                # Replace ![Figure N.](any_url) with ![Figure N.](local_filename)
-                body_md = re.sub(
-                    rf'(!\[Figure\s*{re.escape(fig_num)}\.\]\()([^)]+)(\))',
-                    rf'\g<1>{filename}\3',
-                    body_md,
-                )
+            figure_urls = kwargs.get('figure_urls', {})
+            for fig_id, fig_info in figure_urls.items():
+                fig_match = re.search(r'(\d+)$', str(fig_id))
+                if not fig_match:
+                    continue
+                fig_num_str = fig_match.group(1)
+                local_filename = figure_filenames.get(fig_num_str)
+                if not local_filename:
+                    continue
+                if fig_id.startswith('tab_'):
+                    img_name = re.escape(fig_info.get('img_name', '').rstrip('.')) if isinstance(fig_info, dict) else ''
+                    if img_name:
+                        body_md = re.sub(
+                            rf'(!\[{img_name}\.?\]\()([^)]+)(\))',
+                            rf'\g<1>{local_filename}\3',
+                            body_md,
+                        )
+                else:
+                    body_md = re.sub(
+                        rf'(!\[Figure\s*{re.escape(fig_num_str)}\.\]\()([^)]+)(\))',
+                        rf'\g<1>{local_filename}\3',
+                        body_md,
+                    )
 
         md_parts.extend([
             "---",
