@@ -547,6 +547,17 @@ async def download_supplemental_materials(
     import urllib.parse
     import shutil
 
+    _MEDIA_EXTENSIONS = {
+        '.mp4', '.avi', '.mov', '.wmv', '.mkv', '.webm',
+        '.mp3', '.wav', '.ogg', '.flac',
+        '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.tif', '.webp',
+        '.zip', '.gz', '.tar', '.7z', '.rar', '.pdf',
+    }
+
+    def _is_direct_download_url(u: str) -> bool:
+        ext = Path(urllib.parse.urlparse(u).path).suffix.lower()
+        return ext in _MEDIA_EXTENSIONS
+
     if descriptions is None:
         descriptions = {}
 
@@ -615,6 +626,31 @@ async def download_supplemental_materials(
 
                 print(f"  📥 下载补充材料 ({i}/{len(supplemental_links)}): {chapter_title}")
                 print(f"     URL: {url}")
+
+                # For media/binary files, use APIRequestContext to fetch bytes directly.
+                # This shares cookies with the browser context but skips the renderer,
+                # so the browser won't open a video player or image viewer.
+                if _is_direct_download_url(url):
+                    try:
+                        api_response = await context.request.get(url, timeout=60000)
+                        if api_response.ok:
+                            body = await api_response.body()
+                            if body:
+                                output_path.write_bytes(body)
+                                output_path = _detect_and_rename(output_path)
+                                file_size_mb = output_path.stat().st_size / (1024 * 1024)
+                                print(f"    ✓ 已保存: {output_path.name} ({file_size_mb:.2f} MB)")
+                                downloaded_count += 1
+                                saved_name = output_path.name
+                                downloaded_descriptions[saved_name] = desc_value if desc_value else chapter_title
+                            else:
+                                print(f"    ⚠️  响应体为空: {chapter_title}")
+                        else:
+                            print(f"    ⚠️  请求失败 (status={api_response.status}): {chapter_title}")
+                    except Exception as e:
+                        print(f"    ⚠️  直接下载失败: {str(e)[:100]}")
+                    success = True
+                    break
 
                 # force-headed mode avoids navigating the article tab.
                 download_page = await context.new_page() if force_headed or page is None else page
