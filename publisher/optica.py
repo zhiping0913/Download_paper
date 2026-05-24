@@ -223,6 +223,19 @@ class OpticaHandler(PublisherHandler):
 
         body_md = "\n".join(body_parts).strip()
         body_md = re.sub(r'\n{3,}', '\n\n', body_md)
+
+        # Fallback for articles with no body <h2> sections (e.g. short letters):
+        # body text lives in a bare <article> element inside articleBody.
+        if not body_md:
+            article_el = article_body.find('article')
+            if article_el:
+                fallback_parts = []
+                for child in article_el.children:
+                    if hasattr(child, 'name') and child.name:
+                        cls._walk_optica_element(child, fallback_parts, soup_root=soup)
+                body_md = "\n".join(fallback_parts).strip()
+                body_md = re.sub(r'\n{3,}', '\n\n', body_md)
+
         return abstract_md, body_md
 
     @classmethod
