@@ -10,6 +10,7 @@ from publisher.nature import NatureHandler
 from publisher.iop import IOPHandler
 from publisher.springer_book import SpringerBookHandler
 from publisher.optica import OpticaHandler
+from publisher.sciencedirect import ScienceDirectHandler
 
 
 def detect_publisher_from_url(url: str) -> str:
@@ -78,11 +79,13 @@ def detect_publisher_from_url(url: str) -> str:
         # Only check well-defined APS journal abbreviations
         return 'aps'
 
-    # Elsevier / ScienceDirect (routes through NatureHandler fallbacks)
+    # Elsevier / ScienceDirect (dedicated handler)
     elif 'sciencedirect.com' in url_lower:
-        return 'nature'
+        return 'sciencedirect'
+    elif 'linkinghub.elsevier.com' in url_lower:
+        return 'sciencedirect'
     elif '10.1016' in url_lower:
-        return 'nature'
+        return 'sciencedirect'
 
     # EDP Sciences (routes through NatureHandler fallbacks)
     elif 'epj-conferences.org' in url_lower:
@@ -116,6 +119,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return IOPHandler(**kwargs)
     elif publisher == 'optica':
         return OpticaHandler(**kwargs)
+    elif publisher == 'sciencedirect':
+        return ScienceDirectHandler(**kwargs)
     elif publisher == 'aip':
         return AIPHandler(**kwargs)
     elif publisher == 'cambridge':
