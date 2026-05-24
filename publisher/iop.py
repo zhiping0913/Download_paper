@@ -11,6 +11,7 @@ so a dedicated preprocessing pass extracts them before the HTML→Markdown pipel
 import re
 import urllib.request
 import json
+from pathlib import Path
 
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
@@ -600,7 +601,7 @@ class IOPHandler(PublisherHandler):
         return links
 
     @staticmethod
-    async def _extract_supplementary_from_data_page(page, doi: str) -> tuple:
+    async def _extract_supplementary_from_data_page(page, doi: str, captured_data_dir=None) -> tuple:
         """Navigate to the IOP supplementary /data page and extract download links.
 
         Every IOP article has a standard supplementary endpoint:
@@ -620,6 +621,17 @@ class IOPHandler(PublisherHandler):
             except Exception as e:
                 print(f"  ⚠ 补充材料页面访问失败: {e}")
                 return [], {}
+
+        # Save supplemental page HTML before navigating away
+        if captured_data_dir is not None:
+            try:
+                supp_html = await page.content()
+                supp_html_file = Path(captured_data_dir) / "supp.html"
+                with open(supp_html_file, 'w', encoding='utf-8') as f:
+                    f.write(supp_html)
+                print(f"  ✓ 补充材料页面HTML已保存: {supp_html_file.name}")
+            except Exception as e:
+                print(f"  ⚠ 补充材料HTML保存失败: {e}")
 
         try:
             # IOP supplementary links are structured as:
@@ -774,7 +786,9 @@ class IOPHandler(PublisherHandler):
             if page is not None:
                 try:
                     supp_urls, supp_descriptions = (
-                        await self._extract_supplementary_from_data_page(page, doi)
+                        await self._extract_supplementary_from_data_page(
+                            page, doi, captured_data_dir=self.captured_data_dir
+                        )
                     )
                 except Exception as e:
                     print(f"  ⚠ 补充材料提取异常: {e}")
