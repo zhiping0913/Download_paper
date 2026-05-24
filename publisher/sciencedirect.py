@@ -646,8 +646,47 @@ class ScienceDirectHandler(PublisherHandler):
     # ------------------------------------------------------------------
 
     @classmethod
+    def _figure_is_graphical_abstract(cls, fig_elem) -> bool:
+        """Return True when *fig_elem* lives inside an ``abstract`` container.
+
+        ScienceDirect places the graphical abstract as
+        ``<figure class="figure" id="dfig1">`` under
+        ``<div class="abstract graphical">``.  Those should not be numbered
+        alongside the real article figures.
+        """
+        for parent in fig_elem.parents:
+            classes = parent.get('class') or []
+            if 'abstract' in classes or 'graphical' in classes:
+                return True
+        return False
+
+    @classmethod
+    def extract_graphical_abstract_url(cls, html_content: str) -> str:
+        """Return the high-res URL of the article's graphical abstract, if any."""
+        if not html_content:
+            return ''
+        soup = BeautifulSoup(html_content, 'html.parser')
+        for fig_elem in soup.find_all('figure', class_='figure'):
+            if not cls._figure_is_graphical_abstract(fig_elem):
+                continue
+            # Prefer the high-res download anchor; fall back to standard.
+            for anchor in fig_elem.find_all('a', class_='download-link'):
+                href = (anchor.get('href') or '').strip()
+                if href:
+                    return href
+            img = fig_elem.find('img')
+            if img:
+                return (img.get('src') or img.get('data-src') or '').strip()
+        return ''
+
+    @classmethod
     def extract_figures_from_html(cls, html_content: str) -> dict:
-        """Return ``{'fig_N': {'url': ..., 'caption': ...}}`` for download."""
+        """Return ``{'fig_N': {'url': ..., 'caption': ...}}`` for download.
+
+        Figures inside the abstract container (the graphical abstract) are
+        excluded — they are returned by ``extract_graphical_abstract_url`` and
+        downloaded separately as ``key_image.*``.
+        """
         if not html_content:
             return {}
 
@@ -656,6 +695,8 @@ class ScienceDirectHandler(PublisherHandler):
         seen = set()
 
         for fig_elem in soup.find_all('figure', class_='figure'):
+            if cls._figure_is_graphical_abstract(fig_elem):
+                continue
             fig_id = fig_elem.get('id', '') or ''
             if fig_id and fig_id in seen:
                 continue
@@ -956,6 +997,11 @@ class ScienceDirectHandler(PublisherHandler):
                 supp_urls, supp_descriptions = self._extract_supplemental_from_html(
                     fulltext_html
                 )
+                # Graphical abstract (e.g. ga1_lrg.jpg) is downloaded as key_image
+                # via the shared download pipeline (metadata['key_image_url']).
+                key_image_url = self.extract_graphical_abstract_url(fulltext_html)
+                if key_image_url:
+                    metadata['key_image_url'] = key_image_url
 
             return {
                 'metadata': metadata,
