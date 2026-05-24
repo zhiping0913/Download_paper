@@ -447,9 +447,9 @@ class ScienceDirectHandler(PublisherHandler):
 
         combined_abstract = "\n\n".join(abstract_parts).strip()
 
-        body_div = soup.find('div', class_='body u-font-serif', id='body')
-        if not body_div:
-            body_div = soup.find('div', id='body')
+        # The body wrapper may use lowercase or capitalized class
+        # (``body u-font-serif`` vs ``Body u-font-serif``). Fall back to ``id``.
+        body_div = soup.find('div', id='body')
 
         if not body_div:
             return combined_abstract, ''
@@ -740,6 +740,92 @@ class ScienceDirectHandler(PublisherHandler):
         return references
 
     # ------------------------------------------------------------------
+    # Supplemental material extraction
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _extract_supplemental_from_html(cls, html_content: str) -> tuple:
+        """Find supplementary download links inside ``Appendix … Supplementary …`` sections.
+
+        Strategy (per ``support_sciencedirect.md``): walk every heading whose
+        text contains both ``Appendix`` and ``Supp`` (case-insensitive); inside
+        the enclosing section, harvest any download anchor with an absolute
+        URL that points to a content asset (``ars.els-cdn.com``) or carries a
+        ``download`` attribute / ``download-link`` class.
+
+        Returns ``(urls, descriptions)`` where ``descriptions`` is keyed by URL
+        with the caption text (label + body) when available.
+        """
+        if not html_content:
+            return [], {}
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        urls = []
+        descriptions = {}
+
+        for heading in soup.find_all(['h2', 'h3', 'h4']):
+            text = heading.get_text(' ', strip=True)
+            if not text:
+                continue
+            if not (re.search(r'Appendix', text, re.IGNORECASE)
+                    and re.search(r'Supp', text, re.IGNORECASE)):
+                continue
+
+            container = heading.find_parent('section')
+            if container is None:
+                # Fall back to siblings until the next sibling heading.
+                container = heading.parent
+
+            # Each <span class="e-component"> wraps one attachment (link + caption).
+            components = container.find_all('span', class_=re.compile(r'\be-component\b'))
+            if not components:
+                # Last-resort: any download anchor under the container.
+                components = [container]
+
+            for comp in components:
+                anchor = None
+                for a in comp.find_all('a', href=True):
+                    href = a['href'].strip()
+                    classes = a.get('class') or []
+                    if not href:
+                        continue
+                    if not href.startswith('http'):
+                        if href.startswith('/'):
+                            href = cls.SD_BASE + href
+                        else:
+                            continue
+                    if (
+                        'download-link' in classes
+                        or a.has_attr('download')
+                        or 'ars.els-cdn.com' in href
+                        or 'els-cdn.com' in href
+                    ):
+                        anchor = (a, href)
+                        break
+
+                if anchor is None:
+                    continue
+                a_tag, url = anchor
+                if url in descriptions:
+                    continue
+
+                # Caption: <span class="captions"><span><p><span class="label">MMC S1</span>. …</p></span></span>
+                caption_text = ''
+                cap_span = comp.find('span', class_='captions')
+                if cap_span:
+                    inner_p = cap_span.find('p')
+                    caption_text = (inner_p or cap_span).get_text(' ', strip=True)
+                if not caption_text:
+                    caption_text = (a_tag.get('title') or '').strip()
+                if not caption_text:
+                    caption_text = 'Supplementary material'
+
+                urls.append(url)
+                descriptions[url] = re.sub(r'\s+', ' ', caption_text).strip()
+
+        return urls, descriptions
+
+    # ------------------------------------------------------------------
     # Publisher contract methods
     # ------------------------------------------------------------------
 
@@ -864,16 +950,21 @@ class ScienceDirectHandler(PublisherHandler):
                 metadata['references'] = self.extract_references_from_html(fulltext_html)
 
             figure_urls = {}
+            supp_urls = []
+            supp_descriptions = {}
             if fulltext_html:
                 figure_urls = self.extract_figures_from_html(fulltext_html)
+                supp_urls, supp_descriptions = self._extract_supplemental_from_html(
+                    fulltext_html
+                )
 
             return {
                 'metadata': metadata,
                 'links': {
                     'pdf_url': pdf_url,
                     'figure_urls': figure_urls,
-                    'supplemental_urls': [],
-                    'supplemental_descriptions': {},
+                    'supplemental_urls': supp_urls,
+                    'supplemental_descriptions': supp_descriptions,
                 },
                 'fulltext_data': fulltext_html,
                 'journal_name': 'sciencedirect',
