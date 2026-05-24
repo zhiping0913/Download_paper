@@ -565,16 +565,25 @@ async def download_supplemental_materials(
                 if not url:
                     continue
 
-                # 优先使用descriptions中的标题作为文件名（对于Springer书籍）
+                # 优先使用descriptions中的标题作为文件名
                 chapter_title = None
                 desc_value = None
 
-                # 从descriptions中找到对应的chapter标题
                 if descriptions:
-                    # 获取descriptions中的第i个条目的key和value
-                    desc_items = list(descriptions.items())
-                    if i - 1 < len(desc_items):
-                        chapter_title, desc_value = desc_items[i - 1]
+                    # Try URL-keyed lookup first (IOP, Optica, etc.)
+                    chapter_title = descriptions.get(url) or descriptions.get(url.split('?')[0])
+                    if chapter_title:
+                        desc_value = chapter_title
+                        chapter_title = None  # will be set from URL basename below; desc_value carries text
+                    else:
+                        # Positional lookup for Springer books where key IS the chapter title
+                        desc_items = list(descriptions.items())
+                        if i - 1 < len(desc_items):
+                            key, val = desc_items[i - 1]
+                            # Only use key as chapter_title if it doesn't look like a URL
+                            if key and not key.startswith('http'):
+                                chapter_title = key
+                                desc_value = val
 
                 # 如果没有找到chapter标题，从URL中提取文件名
                 if not chapter_title:
@@ -590,13 +599,15 @@ async def download_supplemental_materials(
                 safe_title = re.sub(r'[<>:"/\\|?*]', '_', chapter_title)
                 safe_title = re.sub(r'_+', '_', safe_title).strip('_')  # 去重下划线并去除边界
 
-                # 生成输出文件名
-                # 如果desc_value已经包含序列号（如"00--Front Matter"），则直接使用
+                # 生成输出文件名，确保不超过文件系统限制（255字节）
                 if desc_value and isinstance(desc_value, str) and '--' in desc_value:
                     output_filename = f"supplemental--{desc_value}"
                 else:
-                    # 否则使用原始格式
                     output_filename = f"supplemental--{safe_title}"
+                # Truncate to stay within OS filename limit (255 bytes)
+                stem = Path(output_filename).stem[:200]
+                suffix = Path(output_filename).suffix
+                output_filename = stem + suffix
                 output_path = output_dir / output_filename
 
                 # 确保输出目录存在
