@@ -495,26 +495,25 @@ class ScienceDirectHandler(PublisherHandler):
                     cls._render_table_block(child, parts)
                     continue
 
-                # ScienceDirect wraps paragraphs in <div class="u-margin-s-bottom"
-                # id="prXXXX">.  Treat as a paragraph only when there are no
-                # nested figure / table / section blocks inside.
+                # A div counts as a paragraph when it has no nested
+                # block-level descendants (table, block figure, section).
+                # Inline ``<figure class="inline-figure">`` images do NOT
+                # count — they belong inside the paragraph flow.
                 has_nested_block = bool(
                     child.find('div', class_='tables')
                     or child.find('figure', class_='figure')
                     or child.find('section')
                 )
-                if not has_nested_block and (
-                    child.get('id', '').startswith('pr')
-                    or 'u-margin' in ' '.join(classes)
-                ):
-                    p_md = cls._convert_paragraph_to_md(str(child))
-                    if p_md:
-                        parts.append(p_md)
-                        parts.append("")
+                if has_nested_block:
+                    cls._walk_sd_body(child, parts)
                     continue
 
-                # Nested wrapper: recurse
-                cls._walk_sd_body(child, parts)
+                # Leaf div → paragraph (covers both pr* ids and the
+                # d1eNNNN ids seen in newer ScienceDirect renderings).
+                p_md = cls._convert_paragraph_to_md(str(child))
+                if p_md:
+                    parts.append(p_md)
+                    parts.append("")
                 continue
 
             if child.name == 'p':
