@@ -965,6 +965,7 @@ async def complete_extraction_workflow(
                 fulltext_data,
                 add_figure_refs=bool(downloads['figures']),
                 figure_filenames=downloads['figures'],
+                figure_urls=links.get('figure_urls', {}),
                 supplemental_urls=links.get('supplemental_urls', []),
                 supplemental_descriptions=links.get('supplemental_descriptions', {}),
                 supplemental_downloads=downloads.get('supplemental', []),
