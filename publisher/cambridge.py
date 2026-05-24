@@ -300,14 +300,6 @@ class CambridgeHandler(PublisherHandler):
                             if parts:
                                 body_parts.extend([" ".join(parts), ""])
 
-                    if fig_thumb:
-                        img = fig_thumb.find('img', class_='aop-lazy-load-image')
-                        if img:
-                            img_name = img.get('data-img-name', '')
-                            img_src = img.get('data-src') or img.get('data-original-image') or ''
-                            if img_src and img_name:
-                                body_parts.extend([f"![{img_name}]({img_src})", ""])
-
                 elif child.name == 'div' and 'disp-formula' in child.get('class', []):
                     latex_str = ''
                     mjx_container = child.find('mjx-container')
