@@ -821,6 +821,7 @@ class APSHandler(PublisherHandler):
         page, managed_playwright, managed_browser, managed_context = await init_extract_all_page(
             self, page, doi, 'APSHandler'
         )
+        doi = self.doi  # resolve doi from handler after init (may have been None)
 
         self.configure(page=page, doi=doi)
 
