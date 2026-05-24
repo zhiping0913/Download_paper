@@ -300,6 +300,14 @@ class CambridgeHandler(PublisherHandler):
                             if parts:
                                 body_parts.extend([" ".join(parts), ""])
 
+                    if fig_thumb:
+                        img = fig_thumb.find('img', class_='aop-lazy-load-image')
+                        if img:
+                            img_name = img.get('data-img-name', '')
+                            img_src = img.get('data-src') or img.get('data-original-image') or ''
+                            if img_src and img_name:
+                                body_parts.extend([f"![{img_name}]({img_src})", ""])
+
                 elif child.name == 'div' and 'disp-formula' in child.get('class', []):
                     latex_str = ''
                     mjx_container = child.find('mjx-container')
@@ -736,13 +744,14 @@ class CambridgeHandler(PublisherHandler):
             else:
                 body_md = article_text.strip()
 
-        # Insert downloaded figure images after captions
+        # Replace CDN image URLs with local filenames for downloaded figures
         if kwargs.get('add_figure_refs') and kwargs.get('figure_filenames'):
             figure_filenames = kwargs['figure_filenames']
             for fig_num, filename in sorted(figure_filenames.items(), key=lambda x: int(x[0])):
+                # Replace ![Figure N.](any_url) with ![Figure N.](local_filename)
                 body_md = re.sub(
-                    rf'(\*\*Figure\s*{re.escape(fig_num)}\.\*\*[^\n]*)',
-                    rf'\1\n\n![Figure {fig_num}.]({filename})',
+                    rf'(!\[Figure\s*{re.escape(fig_num)}\.\]\()([^)]+)(\))',
+                    rf'\g<1>{filename}\3',
                     body_md,
                 )
 
