@@ -529,31 +529,94 @@ class ScienceDirectHandler(PublisherHandler):
                 parts.append(text)
                 parts.append("")
 
+    @staticmethod
+    def _direct_sub_figures(fig_elem) -> list:
+        """Return ``<figure class="figure">`` elements that are direct
+        children of *fig_elem* (composite figures like Fig. 4(a)–(d))."""
+        return [
+            c for c in fig_elem.children
+            if hasattr(c, 'name') and c.name == 'figure'
+            and 'figure' in (c.get('class') or [])
+        ]
+
+    @staticmethod
+    def _direct_caption_span(fig_elem):
+        """Return the ``<span class="captions">`` direct child of *fig_elem*.
+
+        Used to locate the shared caption of a composite figure without
+        accidentally grabbing a sub-figure's caption (which ``find`` would
+        otherwise return because BeautifulSoup walks descendants by default).
+        """
+        for child in fig_elem.children:
+            if (hasattr(child, 'name') and child.name == 'span'
+                    and 'captions' in (child.get('class') or [])):
+                return child
+        return None
+
+    @classmethod
+    def _extract_figure_caption(cls, caption_span) -> tuple:
+        """Return ``(label, caption_md)`` parsed from a captions span.
+
+        Captions are structured as ``<span class="captions"><span><p><span
+        class="label">Fig. N</span>. body</p></span></span>``.
+        """
+        if caption_span is None:
+            return '', ''
+
+        label = ''
+        caption_md = ''
+        inner_p = caption_span.find('p')
+        if inner_p:
+            label_span = inner_p.find('span', class_='label')
+            if label_span:
+                label = label_span.get_text(' ', strip=True)
+                label_span.decompose()
+            caption_md = cls._convert_paragraph_to_md(str(inner_p))
+        else:
+            label_span = caption_span.find('span', class_='label')
+            if label_span:
+                label = label_span.get_text(' ', strip=True)
+                label_span.decompose()
+            caption_md = cls._convert_paragraph_to_md(str(caption_span))
+
+        # Normalize whitespace in the label so e.g. "Fig.\n   4(a)" → "Fig. 4(a)".
+        label = re.sub(r'\s+', ' ', label).strip()
+        caption_md = re.sub(r'^[.\s]+', '', caption_md or '').strip()
+        return label, caption_md
+
     @classmethod
     def _render_figure(cls, fig_elem, parts: list):
-        """Append a Markdown figure block (caption only, image inserted post-download)."""
-        caption_span = fig_elem.find('span', class_='captions')
-        caption_md = ''
-        label = ''
-        if caption_span:
-            # The caption is structured as: <p><span class="label">Fig. N</span>. body</p>
-            inner_p = caption_span.find('p')
-            if inner_p:
-                label_span = inner_p.find('span', class_='label')
-                if label_span:
-                    label = label_span.get_text(' ', strip=True)
-                    label_span.decompose()
-                caption_md = cls._convert_paragraph_to_md(str(inner_p))
-            else:
-                label_span = caption_span.find('span', class_='label')
-                if label_span:
-                    label = label_span.get_text(' ', strip=True)
-                    label_span.decompose()
-                caption_md = cls._convert_paragraph_to_md(str(caption_span))
+        """Append a Markdown figure block (caption only; the actual image is
+        inserted later by ``convert_to_markdown`` via filename rewriting).
 
-        caption_md = re.sub(r'^[.\s]+', '', caption_md or '').strip()
-        if label:
+        Composite figures (``<figure id="figN">`` containing sub-figures
+        ``<figure id="figNa">…``) are rendered as one Markdown block per
+        sub-figure, followed by the shared outer caption.
+        """
+        sub_figures = cls._direct_sub_figures(fig_elem)
+
+        if sub_figures:
+            for sub in sub_figures:
+                cls._render_figure(sub, parts)
+            outer_caption = cls._direct_caption_span(fig_elem)
+            label, caption_md = cls._extract_figure_caption(outer_caption)
+            if label and caption_md:
+                parts.append(f"**{label}.** {caption_md}")
+                parts.append("")
+            elif label:
+                parts.append(f"**{label}.**")
+                parts.append("")
+            elif caption_md:
+                parts.append(caption_md)
+                parts.append("")
+            return
+
+        caption_span = fig_elem.find('span', class_='captions')
+        label, caption_md = cls._extract_figure_caption(caption_span)
+        if label and caption_md:
             parts.append(f"**{label}.** {caption_md}")
+        elif label:
+            parts.append(f"**{label}.**")
         elif caption_md:
             parts.append(caption_md)
         else:
@@ -697,45 +760,63 @@ class ScienceDirectHandler(PublisherHandler):
         for fig_elem in soup.find_all('figure', class_='figure'):
             if cls._figure_is_graphical_abstract(fig_elem):
                 continue
+            # Composite outer figures (e.g. fig4 wrapping fig4a–d) have no image
+            # of their own; the actual images live in the inner sub-figures,
+            # which find_all() will visit on subsequent iterations.
+            if cls._direct_sub_figures(fig_elem):
+                continue
             fig_id = fig_elem.get('id', '') or ''
             if fig_id and fig_id in seen:
                 continue
             if fig_id:
                 seen.add(fig_id)
 
+            # Restrict the download / caption lookups to this figure's own
+            # ``<span>`` wrapper so we don't accidentally read a parent
+            # composite figure's content.
+            direct_span = None
+            for child in fig_elem.children:
+                if (hasattr(child, 'name') and child.name == 'span'
+                        and not (child.get('class') and 'captions' in child.get('class'))):
+                    direct_span = child
+                    break
+            scope = direct_span or fig_elem
+
             # Prefer high-res download anchor; fall back to full-size, then the <img>.
             img_url = ''
-            for anchor in fig_elem.find_all('a', class_='download-link'):
+            for anchor in scope.find_all('a', class_='download-link'):
                 title = (anchor.get('title') or '').lower()
                 if 'high-res' in title:
                     img_url = anchor.get('href', '').strip()
                     break
             if not img_url:
-                for anchor in fig_elem.find_all('a', class_='download-link'):
+                for anchor in scope.find_all('a', class_='download-link'):
                     title = (anchor.get('title') or '').lower()
                     if 'full-size' in title or 'full size' in title:
                         img_url = anchor.get('href', '').strip()
                         break
             if not img_url:
-                img = fig_elem.find('img')
+                img = scope.find('img')
                 if img:
                     img_url = (img.get('src') or img.get('data-src') or '').strip()
 
             if not img_url or 'data:image' in img_url:
                 continue
 
-            caption = ''
-            caption_span = fig_elem.find('span', class_='captions')
-            if caption_span:
-                inner_p = caption_span.find('p')
-                if inner_p:
-                    caption = cls._convert_paragraph_to_md(str(inner_p))
-                else:
-                    caption = cls._convert_paragraph_to_md(str(caption_span))
-                caption = re.sub(r'\s+', ' ', caption).strip()
+            # Caption span is a direct sibling of the image wrapper inside fig_elem.
+            caption_span = cls._direct_caption_span(fig_elem)
+            if caption_span is None:
+                # Fall back to the first descendant captions span (single figures).
+                caption_span = fig_elem.find('span', class_='captions')
+            label_text, caption_md = cls._extract_figure_caption(caption_span)
+            caption_md = re.sub(r'\s+', ' ', caption_md).strip()
 
             key = f"fig_{len(figures) + 1}"
-            figures[key] = {'url': img_url, 'caption': caption}
+            figures[key] = {
+                'url': img_url,
+                'caption': caption_md,
+                'label': label_text,  # e.g. "Fig. 4(a)" — used to embed in MD
+            }
 
         return figures
 
@@ -1090,16 +1171,35 @@ class ScienceDirectHandler(PublisherHandler):
                 "",
             ])
 
-        # Insert downloaded figure images after captions
+        # Insert downloaded figure images after captions.
+        # Each figure URL entry carries a ``label`` (e.g. "Fig. 4(a)") so we
+        # can match composite-figure captions like ``**Fig. 4(a).**`` directly
+        # rather than just by trailing digit (which would miss the sub-letter).
         if kwargs.get('add_figure_refs') and kwargs.get('figure_filenames'):
             figure_filenames = kwargs['figure_filenames']
-            for fig_num, filename in sorted(
-                figure_filenames.items(),
-                key=lambda x: (int(x[0]) if str(x[0]).isdigit() else 0),
-            ):
+            figure_urls = kwargs.get('figure_urls', {}) or {}
+            for fig_id, fig_info in figure_urls.items():
+                if not isinstance(fig_info, dict):
+                    continue
+                m = re.search(r'(\d+)$', str(fig_id))
+                if not m:
+                    continue
+                fig_num = m.group(1)
+                filename = figure_filenames.get(fig_num)
+                if not filename:
+                    continue
+                label = (fig_info.get('label') or '').strip().rstrip('.')
+                if label:
+                    # Build a regex from the visible label, e.g. "Fig. 4(a)".
+                    label_re = re.escape(label).replace(r'\.', r'\.?')
+                    pattern = rf'(\*\*{label_re}[.:]\*\*[^\n]*)'
+                    alt_text = label
+                else:
+                    pattern = rf'(\*\*(?:Fig\.?|Figure)\s*{re.escape(fig_num)}[.:]\*\*[^\n]*)'
+                    alt_text = f"Figure {fig_num}"
                 body_md = re.sub(
-                    rf'(\*\*(?:Fig\.?|Figure)\s*{re.escape(str(fig_num))}[.:]\*\*[^\n]*)',
-                    rf'\1\n\n![Figure {fig_num}.]({filename})',
+                    pattern,
+                    rf'\1\n\n![{alt_text}.]({filename})',
                     body_md,
                 )
 
