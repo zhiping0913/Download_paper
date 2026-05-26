@@ -286,7 +286,23 @@ class ScienceHandler(PublisherHandler):
 
     @classmethod
     def _figure_caption_md(cls, fig_wrap) -> tuple:
-        """Return ``(label, caption_md, notes_md, image_url)`` for a figure-wrap div."""
+        """Return ``(label, caption_md, notes_md, image_url)`` for a figure-wrap div.
+
+        Handles two figcaption layouts seen in the wild:
+
+        * Older (sciadv.aar3761 style)::
+
+              <figcaption>
+                <div class="caption"><span class="heading">Fig. 1</span> body</div>
+                <div class="notes">…</div>
+              </figcaption>
+
+        * Newer (science.1059413 style)::
+
+              <figcaption>
+                <span class="heading">Figure 1</span> body
+              </figcaption>
+        """
         label = ''
         caption_md = ''
         notes_md = ''
@@ -303,9 +319,19 @@ class ScienceHandler(PublisherHandler):
                     label = heading.get_text(' ', strip=True)
                     heading.decompose()
                 caption_md = cls._convert_paragraph_to_md(str(caption_div))
-            notes_div = figcaption.find('div', class_='notes')
-            if notes_div is not None:
-                notes_md = cls._convert_paragraph_to_md(str(notes_div))
+                notes_div = figcaption.find('div', class_='notes')
+                if notes_div is not None:
+                    notes_md = cls._convert_paragraph_to_md(str(notes_div))
+            else:
+                # Direct layout: heading + caption text live as children of <figcaption>
+                # without a wrapping <div class="caption">.
+                from bs4 import BeautifulSoup as _BS
+                figcaption_copy = _BS(str(figcaption), 'html.parser')
+                heading = figcaption_copy.find('span', class_='heading')
+                if heading is not None:
+                    label = heading.get_text(' ', strip=True)
+                    heading.decompose()
+                caption_md = cls._convert_paragraph_to_md(str(figcaption_copy))
 
         img = figure.find('img') if figure is not None else None
         if img is not None:
@@ -354,6 +380,12 @@ class ScienceHandler(PublisherHandler):
                 continue
 
             if child.name == 'div' and 'figure-wrap' in classes:
+                # A figure-wrap can hold either a graphic figure or a table
+                # figure (<figure id="T1" class="table">). For tables we also
+                # render the actual <table> body as a Markdown table.
+                inner_figure = child.find('figure')
+                fig_classes = (inner_figure.get('class') or []) if inner_figure is not None else []
+
                 label, caption_md, notes_md, _ = cls._figure_caption_md(child)
                 if label and caption_md:
                     parts.append(f"**{label}.** {caption_md}")
@@ -365,6 +397,14 @@ class ScienceHandler(PublisherHandler):
                     parts.append("")
                     parts.append(notes_md)
                 parts.append("")
+
+                if inner_figure is not None and 'table' in fig_classes:
+                    table_el = inner_figure.find('table')
+                    if table_el is not None:
+                        table_md = cls._html_table_to_md(table_el)
+                        if table_md:
+                            parts.append(table_md)
+                            parts.append("")
                 continue
 
             if child.name == 'div' and 'display-formula' in classes:
@@ -384,6 +424,63 @@ class ScienceHandler(PublisherHandler):
             if md:
                 parts.append(md)
                 parts.append("")
+
+    @classmethod
+    def _html_table_to_md(cls, table_el) -> str:
+        """Convert a <table> element to a GitHub-flavored Markdown table.
+
+        Each cell is fed through ``_convert_paragraph_to_md`` so inline
+        formatting (math, italics, subscripts) and pipe-escapes are preserved.
+        Multi-row headers (``<thead>`` with two ``<tr>``) are collapsed into a
+        single header row of column captions, with any ``rowspan="2"`` cell
+        repeated by its column header for clarity.
+        """
+        rows = []
+
+        def cell_md(cell) -> str:
+            md = cls._convert_paragraph_to_md(str(cell))
+            md = re.sub(r'\s+', ' ', md).strip()
+            return md.replace('|', '\\|')
+
+        thead = table_el.find('thead')
+        header_cells = []
+        if thead is not None:
+            # Collect every <th> from any <tr> in the head, in document order.
+            # For a two-row head with rowspan/colspan we want the column-level
+            # labels (the second row when present), prefixed by the rowspan
+            # cell from row 1 only if it spans both header rows.
+            head_trs = thead.find_all('tr')
+            if len(head_trs) == 1:
+                header_cells = [cell_md(c) for c in head_trs[0].find_all(['th', 'td'])]
+            elif len(head_trs) >= 2:
+                # Row 1: capture any th with rowspan>=2 as left-side group label
+                row1 = head_trs[0]
+                row2 = head_trs[1]
+                row1_left = []
+                for th in row1.find_all(['th', 'td']):
+                    if int(th.get('rowspan', '1')) >= 2:
+                        row1_left.append(cell_md(th))
+                row2_cells = [cell_md(c) for c in row2.find_all(['th', 'td'])]
+                header_cells = row1_left + row2_cells
+
+        if header_cells:
+            rows.append('| ' + ' | '.join(header_cells) + ' |')
+            rows.append('|' + '|'.join(['---'] * len(header_cells)) + '|')
+
+        tbody = table_el.find('tbody') or table_el
+        for tr in tbody.find_all('tr'):
+            if thead is not None and tr.find_parent('thead'):
+                continue
+            cells = [cell_md(c) for c in tr.find_all(['td', 'th'])]
+            if not cells or all(c == '' for c in cells):
+                continue
+            if header_cells and len(cells) < len(header_cells):
+                cells.extend([''] * (len(header_cells) - len(cells)))
+            rows.append('| ' + ' | '.join(cells) + ' |')
+
+        if len(rows) <= 1:
+            return ''
+        return "\n".join(rows)
 
     @classmethod
     def extract_body_md(cls, html_content: str) -> str:
