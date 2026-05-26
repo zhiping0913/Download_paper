@@ -119,6 +119,39 @@ class ScienceHandler(PublisherHandler):
     _INLINE_MATH_PLACEHOLDER = "XSCIMATHX{idx:04d}XEND"
     _DISPLAY_MATH_PLACEHOLDER = "XSCIDISPLAYX{idx:04d}XEND"
 
+    @staticmethod
+    def _extract_core_tex_latex(span) -> str:
+        """Extract LaTeX body from a ``<span class="core-tex">`` element.
+
+        Science wraps raw TeX inside delimiter pairs:
+            \\[ … \\]    display
+            \\( … \\)    inline
+
+        The closing delimiter is often split into a nested ``<span>\\</span>]``
+        (or ``)``) to defeat copy/paste — we strip both ``\\[``/``\\]`` and
+        ``\\(``/``\\)`` from the flattened text. Returns the LaTeX body with
+        delimiters removed, or '' if the span has no text content.
+        """
+        if span is None:
+            return ''
+        text = span.get_text('', strip=False)
+        if not text:
+            return ''
+        text = text.strip()
+        # Strip leading display/inline delimiter
+        if text.startswith('\\[') or text.startswith('\\('):
+            text = text[2:]
+        # Strip trailing display/inline delimiter
+        if text.endswith('\\]') or text.endswith('\\)'):
+            text = text[:-2]
+        # Some pages serialize ``\]`` as ``<span>\</span>]`` — after get_text we
+        # may end up with ``\]`` recombined OR a bare trailing ``]``.  Strip a
+        # bare leading/trailing backslash too if present.
+        text = text.strip()
+        if text.endswith('\\'):
+            text = text[:-1].rstrip()
+        return text.strip()
+
     @classmethod
     def _stash_math(cls, soup, restore: dict, counter: list) -> None:
         """Convert all ``<math>`` elements to placeholders restoring as ``$...$``.
@@ -177,15 +210,21 @@ class ScienceHandler(PublisherHandler):
         counter = [0]
 
         # 1. Display formulae first so the label survives.
+        #    Two source formats coexist on Science:
+        #      a) MathML inside <math> (e.g. sciadv.aar3761, science.1059413)
+        #      b) Raw LaTeX inside <span class="core-tex">\[…\]</span>
+        #         (e.g. science.1132838)
+        from html_to_md_converter import mathml_to_latex_pandoc
         for disp in soup.find_all('div', class_='display-formula'):
-            from html_to_md_converter import mathml_to_latex_pandoc
-            math_tag = disp.find('math')
             label_text = ''
             label_div = disp.find('div', class_='label')
             if label_div:
                 label_text = label_div.get_text(' ', strip=True)
-            latex = mathml_to_latex_pandoc(str(math_tag)) if math_tag is not None else ''
-            if latex:
+
+            body = ''
+            math_tag = disp.find('math')
+            if math_tag is not None:
+                latex = mathml_to_latex_pandoc(str(math_tag)) or ''
                 latex = latex.strip()
                 if latex.startswith('$$') and latex.endswith('$$'):
                     body = latex[2:-2].strip()
@@ -193,6 +232,12 @@ class ScienceHandler(PublisherHandler):
                     body = latex[1:-1].strip()
                 else:
                     body = latex
+            else:
+                core_tex = disp.find('span', class_='core-tex')
+                if core_tex is not None:
+                    body = cls._extract_core_tex_latex(core_tex)
+
+            if body:
                 if label_text:
                     eq_md = f"\n$$\n{body} \\quad {label_text}\n$$\n"
                 else:
@@ -203,6 +248,18 @@ class ScienceHandler(PublisherHandler):
                 disp.replace_with(soup.new_string(f"\n{key}\n"))
             else:
                 disp.decompose()
+
+        # 1b. Inline LaTeX spans (<span class="core-tex">\(…\)</span>) that
+        #     live outside a display-formula wrapper.
+        for span in soup.find_all('span', class_='core-tex'):
+            body = cls._extract_core_tex_latex(span)
+            if body:
+                key = cls._INLINE_MATH_PLACEHOLDER.format(idx=counter[0])
+                counter[0] += 1
+                restore[key] = f"${body}$"
+                span.replace_with(soup.new_string(f" {key} "))
+            else:
+                span.decompose()
 
         # 2. Remaining (inline) math.
         cls._stash_math(soup, restore, counter)
