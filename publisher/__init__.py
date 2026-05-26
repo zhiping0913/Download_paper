@@ -12,10 +12,10 @@ from .aip import AIPHandler
 from .cambridge import CambridgeHandler
 from .iop import IOPHandler
 from .optica import OpticaHandler
-from .sciencedirect import ScienceDirectHandler
 from .science import ScienceHandler
+from .sciencedirect import ScienceDirectHandler
 
 __all__ = [
     'NatureHandler', 'APSHandler', 'AIPHandler', 'CambridgeHandler',
-    'IOPHandler', 'OpticaHandler', 'ScienceDirectHandler', 'ScienceHandler',
+    'IOPHandler', 'OpticaHandler', 'ScienceHandler', 'ScienceDirectHandler',
 ]

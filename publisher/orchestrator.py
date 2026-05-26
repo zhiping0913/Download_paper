@@ -11,6 +11,7 @@ from publisher.iop import IOPHandler
 from publisher.springer_book import SpringerBookHandler
 from publisher.optica import OpticaHandler
 from publisher.science import ScienceHandler
+from publisher.sciencedirect import ScienceDirectHandler
 
 
 def detect_publisher_from_url(url: str) -> str:
@@ -67,7 +68,23 @@ def detect_publisher_from_url(url: str) -> str:
     elif '10.1017' in url_lower:
         return 'cambridge'
 
-    # Science / AAAS detection
+    # Science / AAAS vs ScienceDirect / Elsevier
+    # -----------------------------------------
+    # Both publishers contain the string "science", so we MUST match on the
+    # full discriminating substrings — not just "science":
+    #   * Science (AAAS):       DOI prefix 10.1126, domain science.org
+    #   * ScienceDirect (RELX): DOI prefix 10.1016, domain sciencedirect.com
+    #                                              (+ linkinghub.elsevier.com redirect)
+    # "science.org" and "sciencedirect.com" are non-overlapping (no ".org" in
+    # sciencedirect.com), so the two branches cannot misclassify each other
+    # regardless of order. We test ScienceDirect first because its primary
+    # redirect host (linkinghub.elsevier.com) also has a 10.1016 DOI.
+    elif 'sciencedirect.com' in url_lower:
+        return 'sciencedirect'
+    elif 'linkinghub.elsevier.com' in url_lower:
+        return 'sciencedirect'
+    elif '10.1016' in url_lower:
+        return 'sciencedirect'
     elif 'science.org' in url_lower:
         return 'science'
     elif '10.1126' in url_lower:
@@ -84,12 +101,6 @@ def detect_publisher_from_url(url: str) -> str:
         # Note: removed 'pre' check as it matches too many words (e.g., "Compressing")
         # Only check well-defined APS journal abbreviations
         return 'aps'
-
-    # Elsevier / ScienceDirect (routes through NatureHandler fallbacks)
-    elif 'sciencedirect.com' in url_lower:
-        return 'nature'
-    elif '10.1016' in url_lower:
-        return 'nature'
 
     # EDP Sciences (routes through NatureHandler fallbacks)
     elif 'epj-conferences.org' in url_lower:
@@ -129,6 +140,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return CambridgeHandler(**kwargs)
     elif publisher == 'science':
         return ScienceHandler(**kwargs)
+    elif publisher == 'sciencedirect':
+        return ScienceDirectHandler(**kwargs)
     elif publisher == 'aps':
         return APSHandler(**kwargs)
     elif publisher == 'arxiv':
