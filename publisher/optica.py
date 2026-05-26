@@ -221,20 +221,43 @@ class OpticaHandler(PublisherHandler):
                 cur = cur.next_sibling
             flush_inline_buffer()
 
-        body_md = "\n".join(body_parts).strip()
-        body_md = re.sub(r'\n{3,}', '\n\n', body_md)
+        # Short letters (e.g. 10.1364/ol.41.000317) keep their body paragraphs
+        # in a bare <article> element directly under #articleBody, NOT under
+        # any <h2 class="article-heading"> section.  The h2 walk above only
+        # sees the back-matter h2s ("Acknowledgment", "References") that sit
+        # inside <article><div class="back">…</div></article>, so the main
+        # body paragraphs are missed.
+        #
+        # Walk the bare <article>'s direct children, but stop at the first
+        # element that signals a section already handled by the h2 walk:
+        # either an h2.article-heading itself, or a <div class="back">.  This
+        # avoids duplicating paragraphs in long-form articles where h2-led
+        # sections live inside <article> as well.
+        article_parts = []
+        article_el = article_body.find('article')
+        if article_el is not None:
+            for child in article_el.children:
+                if not hasattr(child, 'name') or not child.name:
+                    continue
+                # Stop at the first back-matter / h2-led section boundary.
+                if (child.name == 'h2'
+                        and 'article-heading' in (child.get('class') or [])):
+                    break
+                if (child.name == 'div'
+                        and 'back' in (child.get('class') or [])):
+                    break
+                cls._walk_optica_element(child, article_parts, soup_root=soup)
 
-        # Fallback for articles with no body <h2> sections (e.g. short letters):
-        # body text lives in a bare <article> element inside articleBody.
-        if not body_md:
-            article_el = article_body.find('article')
-            if article_el:
-                fallback_parts = []
-                for child in article_el.children:
-                    if hasattr(child, 'name') and child.name:
-                        cls._walk_optica_element(child, fallback_parts, soup_root=soup)
-                body_md = "\n".join(fallback_parts).strip()
-                body_md = re.sub(r'\n{3,}', '\n\n', body_md)
+        # Place the bare-<article> front matter before the h2-derived sections
+        # so the main body appears before "Corrections" / "Acknowledgment" /
+        # "References" in the rendered markdown.
+        final_parts = []
+        if article_parts:
+            final_parts.extend(article_parts)
+        final_parts.extend(body_parts)
+
+        body_md = "\n".join(final_parts).strip()
+        body_md = re.sub(r'\n{3,}', '\n\n', body_md)
 
         return abstract_md, body_md
 
