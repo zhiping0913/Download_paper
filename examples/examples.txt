@@ -4,9 +4,6 @@ aps
 10.1103/PhysRevX.7.041003   #Physical Review X, table, Popular Summary, figure, formula, supplemental (mp4, description)
 10.1103/PhysRevAccelBeams.20.043401   #Physical Review Accelerators and Beams, figure, formula, supplemental (wmv, description)
 
-
-
-
 nature, springer
 10.1038/s41566-023-01311-z   #nature photonics, article-equation, Supplementary information
 10.1038/nphys2439
@@ -14,7 +11,7 @@ nature, springer
 10.1038/s42005-024-01811-6   #Communications Physics, section-title, article-equation, figure, table, Code availability, supplementary
 10.1038/s41586-026-10400-2   #nature, figure, Formula, supplementary, Extended data figures and tables
 10.1007/978-981-15-2381-6   #springer book, chapter, Formula, article-equation, figure, table
-
+10.1007/978-3-032-08930-4   #springer book, chapter(34>20, multiple pages), figure, table, article-equation
 
 
 aip
@@ -30,8 +27,25 @@ iop
 10.1016/j.medengphy.2020.07.010   #Medical Engineering & Physics, figure, mathFormula, table, supplementary
 10.1209/0295-5075/122/14004   #A Letters journal serving all areas of physics, figure, mathFormula, footnotes, supplementary
 10.1088/1402-4896/ad640f   #Physica Scripta, figure, mathFormula,
+10.1088/1361-6587/aaa57d   #Plasma Physics and Controlled Fusion, figure, supplementary(mp4)
 
 optica
 10.1364/OE.444043   #Optics Express, Formula, figure, Supplemental (figshare)
+10.1364/OPTICA.420520   #Optica, Formula, figure, table, Supplemental (figshare)
+10.1364/AO.54.00F103   #Applied Optics, figure (a large number of high-resolution images), table, nested list
+10.1364/ol.41.000317   #Optics Letters, figure, table, formula with caption, No article body tag
 
+cambridge
+10.1017/hpl.2019.36   #High Power Laser Science and Engineering, figure (a large number of high-resolution images),
+10.1017/hpl.2018.33   #High Power Laser Science and Engineering, figure, mathFormula, table
 
+sciencedirect, Elsevier
+10.1016/j.jcp.2019.109131   #Journal of Computational Physics, figure, formula(matrix in multiple lines), table
+10.1016/j.cocom.2026.e01326   #Supplementary
+10.1016/S1369-7021(12)70017-2   #h2,h3
+10.1016/j.cpc.2018.03.018   #Fig. 4 breaks into 4 independent figures.
+
+Science
+10.1126/sciadv.aar3761   #figure, display-formula, supplemental
+10.1126/science.1059413   #figure, table, display-formula
+10.1126/science.1132838   #figure, display-formula, supplemental
