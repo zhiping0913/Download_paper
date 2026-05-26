@@ -10,7 +10,7 @@ from publisher.nature import NatureHandler
 from publisher.iop import IOPHandler
 from publisher.springer_book import SpringerBookHandler
 from publisher.optica import OpticaHandler
-from publisher.sciencedirect import ScienceDirectHandler
+from publisher.science import ScienceHandler
 
 
 def detect_publisher_from_url(url: str) -> str:
@@ -67,6 +67,12 @@ def detect_publisher_from_url(url: str) -> str:
     elif '10.1017' in url_lower:
         return 'cambridge'
 
+    # Science / AAAS detection
+    elif 'science.org' in url_lower:
+        return 'science'
+    elif '10.1126' in url_lower:
+        return 'science'
+
     # APS detection (least specific - loose substring matching)
     # WARNING: These patterns are vague and may match other content.
     # Must be checked AFTER more specific publishers.
@@ -79,13 +85,11 @@ def detect_publisher_from_url(url: str) -> str:
         # Only check well-defined APS journal abbreviations
         return 'aps'
 
-    # Elsevier / ScienceDirect (dedicated handler)
+    # Elsevier / ScienceDirect (routes through NatureHandler fallbacks)
     elif 'sciencedirect.com' in url_lower:
-        return 'sciencedirect'
-    elif 'linkinghub.elsevier.com' in url_lower:
-        return 'sciencedirect'
+        return 'nature'
     elif '10.1016' in url_lower:
-        return 'sciencedirect'
+        return 'nature'
 
     # EDP Sciences (routes through NatureHandler fallbacks)
     elif 'epj-conferences.org' in url_lower:
@@ -119,12 +123,12 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return IOPHandler(**kwargs)
     elif publisher == 'optica':
         return OpticaHandler(**kwargs)
-    elif publisher == 'sciencedirect':
-        return ScienceDirectHandler(**kwargs)
     elif publisher == 'aip':
         return AIPHandler(**kwargs)
     elif publisher == 'cambridge':
         return CambridgeHandler(**kwargs)
+    elif publisher == 'science':
+        return ScienceHandler(**kwargs)
     elif publisher == 'aps':
         return APSHandler(**kwargs)
     elif publisher == 'arxiv':
