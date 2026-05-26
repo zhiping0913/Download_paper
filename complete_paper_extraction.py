@@ -581,20 +581,33 @@ async def download_supplemental_materials(
                 desc_value = None
 
                 if descriptions:
-                    # Try URL-keyed lookup first (IOP, Optica, etc.)
+                    # 1) URL-keyed lookup (IOP, Optica, …).
                     chapter_title = descriptions.get(url) or descriptions.get(url.split('?')[0])
                     if chapter_title:
                         desc_value = chapter_title
-                        chapter_title = None  # will be set from URL basename below; desc_value carries text
+                        chapter_title = None  # set from URL basename below; desc_value carries text
                     else:
-                        # Positional lookup for Springer books where key IS the chapter title
-                        desc_items = list(descriptions.items())
-                        if i - 1 < len(desc_items):
-                            key, val = desc_items[i - 1]
-                            # Only use key as chapter_title if it doesn't look like a URL
-                            if key and not key.startswith('http'):
-                                chapter_title = key
-                                desc_value = val
+                        # 2) Filename-keyed lookup. Some publishers (APS) key
+                        #    descriptions by the file's display name and expose
+                        #    that name on the link object as ``text``.  Use it
+                        #    before falling back to a fragile positional match.
+                        link_text = (link.get('text', '')
+                                     if isinstance(link, dict) else '').strip()
+                        if link_text and link_text in descriptions:
+                            desc_value = descriptions[link_text]
+                            # Don't set chapter_title here — let the URL basename
+                            # supply the filename so we save with the publisher's
+                            # actual filename (e.g. input1D.deck) rather than
+                            # the long description text.
+                        else:
+                            # 3) Positional fallback (Springer books where the
+                            #    key itself IS the chapter title).
+                            desc_items = list(descriptions.items())
+                            if i - 1 < len(desc_items):
+                                key, val = desc_items[i - 1]
+                                if key and not key.startswith('http'):
+                                    chapter_title = key
+                                    desc_value = val
 
                 # 如果没有找到chapter标题，从URL中提取文件名
                 if not chapter_title:

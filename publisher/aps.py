@@ -465,20 +465,26 @@ async def get_supplemental_links(page, doi: str = None, journal_prefix: str = No
             except Exception as e:
                 print(f"  ⚠️  保存补充材料页面失败: {e}")
 
-        # 提取所有链接 — APS 补充材料页面上每个文件对应一个 <a data-id="filename">
+        # 提取所有链接 — APS 补充材料页面上每个文件出现两次:
+        # 一次是缩略图 <a data-id="X"><img></a>, 一次是文件名 <a data-id="X">X</a>。
+        # 必须按 data-id 去重，否则下游的位置/序号映射会错位。
         links_js = """
         () => {
             const links = [];
+            const seen = new Set();
             document.querySelectorAll('a[data-id]').forEach(a => {
                 const href = a.getAttribute('href');
                 const filename = a.getAttribute('data-id');
-                if (href && filename) {
-                    links.push({
-                        text: filename,
-                        href: href,
-                        url: new URL(href, window.location.href).href
-                    });
-                }
+                if (!href || !filename) return;
+                const url = new URL(href, window.location.href).href;
+                const key = filename + '|' + url;
+                if (seen.has(key)) return;
+                seen.add(key);
+                links.push({
+                    text: filename,
+                    href: href,
+                    url: url
+                });
             });
             return links;
         }
@@ -821,7 +827,6 @@ class APSHandler(PublisherHandler):
         page, managed_playwright, managed_browser, managed_context = await init_extract_all_page(
             self, page, doi, 'APSHandler'
         )
-        doi = self.doi  # resolve doi from handler after init (may have been None)
 
         self.configure(page=page, doi=doi)
 
