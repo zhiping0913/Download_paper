@@ -236,17 +236,47 @@ class OpticaHandler(PublisherHandler):
         article_parts = []
         article_el = article_body.find('article')
         if article_el is not None:
+            # Buffer loose inline content (raw text, <span class="inline-formula">,
+            # <a>, <em>, etc.) so that "where γ = … is the peak power …" paragraphs
+            # that follow a <div class="article-math-block"> WITHOUT being wrapped
+            # in a <p> still get emitted instead of dropped.
+            from bs4 import NavigableString as _NS
+            inline_buffer = []
+
+            def flush_inline_buffer():
+                if not inline_buffer:
+                    return
+                combined_html = ''.join(inline_buffer)
+                p_md = cls._convert_paragraph_to_md(combined_html)
+                if p_md:
+                    article_parts.append(p_md)
+                    article_parts.append("")
+                inline_buffer.clear()
+
             for child in article_el.children:
+                if isinstance(child, _NS):
+                    text = str(child)
+                    if text.strip():
+                        inline_buffer.append(text)
+                    continue
                 if not hasattr(child, 'name') or not child.name:
                     continue
                 # Stop at the first back-matter / h2-led section boundary.
                 if (child.name == 'h2'
                         and 'article-heading' in (child.get('class') or [])):
+                    flush_inline_buffer()
                     break
                 if (child.name == 'div'
                         and 'back' in (child.get('class') or [])):
+                    flush_inline_buffer()
                     break
-                cls._walk_optica_element(child, article_parts, soup_root=soup)
+                # Inline-level tags get buffered; block-level tags flush first.
+                if child.name in ('span', 'a', 'em', 'strong', 'sub', 'sup', 'b', 'i'):
+                    inline_buffer.append(str(child))
+                else:
+                    flush_inline_buffer()
+                    cls._walk_optica_element(child, article_parts, soup_root=soup)
+            flush_inline_buffer()
 
         # Place the bare-<article> front matter before the h2-derived sections
         # so the main body appears before "Corrections" / "Acknowledgment" /
