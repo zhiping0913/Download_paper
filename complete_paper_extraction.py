@@ -627,13 +627,19 @@ async def download_supplemental_materials(
                 print(f"  📥 下载补充材料 ({i}/{len(supplemental_links)}): {chapter_title}")
                 print(f"     URL: {url}")
 
-                # For media/binary files, use APIRequestContext to fetch bytes directly.
+                # For media/binary files, first try APIRequestContext to fetch bytes directly.
                 # This shares cookies with the browser context but skips the renderer,
                 # so the browser won't open a video player or image viewer.
+                # If the response is non-OK or HTML (e.g. a Cloudflare interstitial),
+                # fall through to the browser-tab download path which can execute JS
+                # and wait for the challenge to clear.
                 if _is_direct_download_url(url):
+                    direct_ok = False
                     try:
                         api_response = await context.request.get(url, timeout=60000)
-                        if api_response.ok:
+                        content_type = (api_response.headers.get('content-type') or '').lower()
+                        is_html_challenge = 'text/html' in content_type
+                        if api_response.ok and not is_html_challenge:
                             body = await api_response.body()
                             if body:
                                 output_path.write_bytes(body)
@@ -643,14 +649,19 @@ async def download_supplemental_materials(
                                 downloaded_count += 1
                                 saved_name = output_path.name
                                 downloaded_descriptions[saved_name] = desc_value if desc_value else chapter_title
+                                direct_ok = True
                             else:
                                 print(f"    ⚠️  响应体为空: {chapter_title}")
+                        elif is_html_challenge:
+                            print(f"    ↪ 直接请求被反爬虫拦截 (Cloudflare等)，回退到浏览器标签页下载")
                         else:
-                            print(f"    ⚠️  请求失败 (status={api_response.status}): {chapter_title}")
+                            print(f"    ↪ 请求失败 (status={api_response.status})，回退到浏览器标签页下载")
                     except Exception as e:
-                        print(f"    ⚠️  直接下载失败: {str(e)[:100]}")
-                    success = True
-                    break
+                        print(f"    ↪ 直接下载失败: {str(e)[:100]}，回退到浏览器标签页下载")
+                    if direct_ok:
+                        success = True
+                        break
+                    # else: fall through to the browser-tab path below.
 
                 # force-headed mode avoids navigating the article tab.
                 download_page = await context.new_page() if force_headed or page is None else page
@@ -673,13 +684,14 @@ async def download_supplemental_materials(
                     # 下载开始时页面加载会中断，这是正常的
                     pass
 
-                # 等待下载事件或超时
+                # 等待下载事件或超时。
+                # 对于 Cloudflare 等反爬挑战页面，需要给 JS 几秒钟时间通过 challenge
+                # 后才会触发实际的下载，所以等待时间放宽到 ~20 秒。
                 try:
-                    # 尝试等待download事件（对于直接文件链接更可靠）
                     if not downloaded_file:
                         download_event = await asyncio.wait_for(
-                            asyncio.create_task(download_page.wait_for_event("download", timeout=5000)),
-                            timeout=6
+                            asyncio.create_task(download_page.wait_for_event("download", timeout=20000)),
+                            timeout=22
                         )
                         if download_event:
                             downloaded_file = await download_event.path()
