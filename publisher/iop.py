@@ -608,6 +608,12 @@ class IOPHandler(PublisherHandler):
 
         Returns (urls, descriptions) tuple.
         """
+        # Defensive guard: a missing doi would produce ".../article/None/data",
+        # which is not a real IOP URL and just loads a 404 page.
+        if not doi or doi == 'None':
+            print(f"  ⚠ 跳过补充材料: DOI 缺失 (got {doi!r})")
+            return [], {}
+
         data_url = f"https://iopscience.iop.org/article/{doi}/data"
         print(f"  🔗 访问补充材料页面: {data_url}")
 
@@ -737,10 +743,15 @@ class IOPHandler(PublisherHandler):
 
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
         """Run the IOP handler through the unified publisher contract."""
-        # Initialize page and managed resources using shared function
+        # Initialize page and managed resources using shared function.
+        # The workflow often calls extract_all() with doi=None and relies on
+        # init_extract_all_page to populate self.doi from elsewhere (e.g. the
+        # already-configured handler).  Pick the resolved value back up here
+        # so the downstream supplementary URL doesn't become "/article/None/data".
         page, managed_playwright, managed_browser, managed_context = await init_extract_all_page(
             self, page, doi, 'IOPHandler'
         )
+        doi = self.doi
 
         # Get the actual page URL for correct base_url resolution
         set_actual_base_url(self, page)
