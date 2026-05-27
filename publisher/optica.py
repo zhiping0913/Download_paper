@@ -221,20 +221,75 @@ class OpticaHandler(PublisherHandler):
                 cur = cur.next_sibling
             flush_inline_buffer()
 
-        body_md = "\n".join(body_parts).strip()
-        body_md = re.sub(r'\n{3,}', '\n\n', body_md)
+        # Short letters (e.g. 10.1364/ol.41.000317) keep their body paragraphs
+        # in a bare <article> element directly under #articleBody, NOT under
+        # any <h2 class="article-heading"> section.  The h2 walk above only
+        # sees the back-matter h2s ("Acknowledgment", "References") that sit
+        # inside <article><div class="back">…</div></article>, so the main
+        # body paragraphs are missed.
+        #
+        # We therefore ALWAYS walk the bare <article>'s direct children, not
+        # just when body_parts is empty — short letters can still produce a
+        # non-empty body_parts from their "Corrections" / "Acknowledgment" /
+        # "References" h2 sections, which would otherwise suppress this walk.
+        # Stop at the first element that signals a section already handled
+        # by the h2 walk: either an h2.article-heading or a <div class="back">.
+        #
+        # Also buffer loose inline children — raw NavigableStrings, <span>,
+        # <a>, <em>, <strong>, <sub>, <sup>, <b>, <i> — so that paragraphs
+        # written without a wrapping <p> (e.g. the "where γ = … of the gold
+        # layers." sentence that trails an article-math-block) still survive.
+        from bs4 import NavigableString as _NS
+        article_parts = []
+        article_el = article_body.find('article')
+        if article_el is not None:
+            inline_buffer = []
 
-        # Fallback for articles with no body <h2> sections (e.g. short letters):
-        # body text lives in a bare <article> element inside articleBody.
-        if not body_md:
-            article_el = article_body.find('article')
-            if article_el:
-                fallback_parts = []
-                for child in article_el.children:
-                    if hasattr(child, 'name') and child.name:
-                        cls._walk_optica_element(child, fallback_parts, soup_root=soup)
-                body_md = "\n".join(fallback_parts).strip()
-                body_md = re.sub(r'\n{3,}', '\n\n', body_md)
+            def flush_article_inline_buffer():
+                if not inline_buffer:
+                    return
+                combined_html = ''.join(inline_buffer)
+                p_md = cls._convert_paragraph_to_md(combined_html)
+                if p_md:
+                    article_parts.append(p_md)
+                    article_parts.append("")
+                inline_buffer.clear()
+
+            for child in article_el.children:
+                if isinstance(child, _NS):
+                    text = str(child)
+                    if text.strip():
+                        inline_buffer.append(text)
+                    continue
+                if not hasattr(child, 'name') or not child.name:
+                    continue
+                # Stop at the first back-matter / h2-led section boundary so
+                # we don't double-emit content already in body_parts.
+                if (child.name == 'h2'
+                        and 'article-heading' in (child.get('class') or [])):
+                    flush_article_inline_buffer()
+                    break
+                if (child.name == 'div'
+                        and 'back' in (child.get('class') or [])):
+                    flush_article_inline_buffer()
+                    break
+                if child.name in ('span', 'a', 'em', 'strong', 'sub', 'sup', 'b', 'i'):
+                    inline_buffer.append(str(child))
+                else:
+                    flush_article_inline_buffer()
+                    cls._walk_optica_element(child, article_parts, soup_root=soup)
+            flush_article_inline_buffer()
+
+        # Place the bare-<article> front matter before the h2-derived sections
+        # so the main body appears before "Corrections" / "Acknowledgment" /
+        # "References" in the rendered markdown.
+        final_parts = []
+        if article_parts:
+            final_parts.extend(article_parts)
+        final_parts.extend(body_parts)
+
+        body_md = "\n".join(final_parts).strip()
+        body_md = re.sub(r'\n{3,}', '\n\n', body_md)
 
         return abstract_md, body_md
 
