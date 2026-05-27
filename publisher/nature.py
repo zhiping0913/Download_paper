@@ -600,7 +600,22 @@ class NatureHandler(PublisherHandler):
 
         main_content_html = str(main_content_div)
 
-        paragraph_matches = list(re.finditer(r'<p[^>]*>(.*?)</p>', main_content_html, re.DOTALL))
+        # Match figure blocks first so the paragraph regex doesn't grab their inner <p>.
+        figure_matches = list(re.finditer(
+            r'<div[^>]*class="[^"]*c-article-section__figure[^"]*"[^>]*>(.*?)</figure>\s*</div>',
+            main_content_html,
+            re.DOTALL,
+        ))
+        figure_spans = [(m.start(), m.end()) for m in figure_matches]
+
+        def _inside_figure(pos: int) -> bool:
+            return any(s <= pos < e for s, e in figure_spans)
+
+        # `<p\b` so the regex doesn't accidentally match <picture>
+        paragraph_matches = [
+            m for m in re.finditer(r'<p\b[^>]*>(.*?)</p>', main_content_html, re.DOTALL)
+            if not _inside_figure(m.start())
+        ]
         equation_matches = list(
             re.finditer(
                 r'<div[^>]*class="c-article-equation"[^>]*>(.*?)</div>\s*</div>',
@@ -624,11 +639,13 @@ class NatureHandler(PublisherHandler):
             ordered_items.append((match.start(), match.group(0)))
         for match in table_matches:
             ordered_items.append((match.start(), match.group(0)))
+        for match in figure_matches:
+            ordered_items.append((match.start(), match.group(0)))
 
         ordered_items.sort(key=lambda item: item[0])
         items = [content for _, content in ordered_items]
 
-        print(f"  ✅ Main content blocks: {len(paragraph_matches)} paragraphs, {len(equation_matches)} equations, {len(heading_matches)} headings, {len(table_matches)} tables")
+        print(f"  ✅ Main content blocks: {len(paragraph_matches)} paragraphs, {len(equation_matches)} equations, {len(heading_matches)} headings, {len(table_matches)} tables, {len(figure_matches)} figures")
         return items
 
     def extract_paragraphs_from_html(self, html_file: str) -> List[str]:
@@ -780,6 +797,56 @@ class NatureHandler(PublisherHandler):
                     prefix = '#' * (level + 1)  # h2 → ###, h3 → ####
                     return f"{prefix} {heading_text}"
                 return ""
+
+            # Handle figure blocks — emit the figcaption text as a bold heading,
+            # then a clean ![](url) image, then the description text.
+            if 'c-article-section__figure' in paragraph_html and 'c-article-section__figure-description' in paragraph_html:
+                fig_soup = BeautifulSoup(paragraph_html, 'html.parser')
+                figcaption = fig_soup.find('figcaption')
+                caption_text = ''
+                if figcaption:
+                    caption_text = figcaption.get_text(' ', strip=True)
+                    caption_text = re.sub(r'\s+', ' ', caption_text).strip()
+
+                # Extract image URL from <picture><source srcset> or <img src>
+                image_url = ''
+                picture = fig_soup.find('picture')
+                if picture:
+                    source = picture.find('source')
+                    if source and source.get('srcset', ''):
+                        image_url = source['srcset'].split(',')[0].strip().split()[0]
+                    if not image_url:
+                        img = picture.find('img')
+                        if img:
+                            image_url = img.get('src', '')
+                if image_url:
+                    if image_url.startswith('//'):
+                        image_url = 'https:' + image_url
+                    elif not image_url.startswith('http') and self.actual_base_url:
+                        image_url = self.actual_base_url + image_url
+
+                # Convert description paragraph(s) to markdown
+                desc_div = fig_soup.find('div', class_='c-article-section__figure-description')
+                desc_md = ''
+                if desc_div:
+                    desc_parts = []
+                    for p in desc_div.find_all('p'):
+                        p_md = convert_html_to_markdown(str(p))
+                        p_md = cleanup_markdown(p_md)
+                        p_md = re.sub(r'\s+', ' ', p_md).strip()
+                        if p_md:
+                            desc_parts.append(p_md)
+                    desc_md = "\n\n".join(desc_parts)
+
+                parts = []
+                if caption_text:
+                    parts.append(f"**{caption_text}**")
+                if image_url:
+                    alt = caption_text or 'Figure'
+                    parts.append(f"![{alt}]({image_url})")
+                if desc_md:
+                    parts.append(desc_md)
+                return "\n\n".join(parts)
 
             # Handle inline table placeholders — extract caption and link
             if 'c-article-table' in paragraph_html:
