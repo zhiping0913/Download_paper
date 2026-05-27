@@ -195,7 +195,10 @@ class IOPHandler(PublisherHandler):
 
         body_parts = []
 
-        for element in body_div.find_all(['h2', 'h3', 'h4', 'p', 'div', 'figure', 'table'], recursive=False):
+        for element in body_div.find_all(
+            ['h2', 'h3', 'h4', 'p', 'div', 'figure', 'table', 'ul', 'ol'],
+            recursive=False,
+        ):
             if element.name in ('h2', 'h3', 'h4'):
                 heading_text = element.get_text(' ', strip=True)
                 heading_text = re.sub(r'\s+', ' ', heading_text or '').strip()
@@ -249,6 +252,14 @@ class IOPHandler(PublisherHandler):
                 if tbl_md:
                     body_parts.extend([tbl_md, ""])
 
+            elif element.name in ('ul', 'ol'):
+                # Convert each <li> through the IOP math-aware paragraph
+                # pipeline so embedded $...$ inline equations survive, then
+                # emit as a Markdown bullet / numbered list.
+                list_md = cls._convert_iop_list_to_md(element)
+                if list_md:
+                    body_parts.extend([list_md, ""])
+
         body_md = ""
         if body_parts:
             # Restore any display equation placeholders (from preprocessed paragraphs)
@@ -264,7 +275,10 @@ class IOPHandler(PublisherHandler):
         IOP nests article content inside multiple ``div.article-text`` layers;
         this method handles arbitrary nesting depth.
         """
-        for child in container.find_all(['p', 'h3', 'h4', 'div', 'figure', 'table'], recursive=False):
+        for child in container.find_all(
+            ['p', 'h3', 'h4', 'div', 'figure', 'table', 'ul', 'ol'],
+            recursive=False,
+        ):
             if child.name in ('h3', 'h4'):
                 heading_text = child.get_text(' ', strip=True)
                 heading_text = re.sub(r'\s+', ' ', heading_text or '').strip()
@@ -330,7 +344,37 @@ class IOPHandler(PublisherHandler):
             elif child.name == 'table' and child.get('data-toolbar-type') == 'table':
                 tbl_md = cls._table_element_to_md(child)
                 if tbl_md:
-                    body_parts.extend([tbl_md, ""])                # Ignore other divs (boxout figures are handled by figure extraction)
+                    body_parts.extend([tbl_md, ""])
+
+            elif child.name in ('ul', 'ol'):
+                list_md = cls._convert_iop_list_to_md(child)
+                if list_md:
+                    body_parts.extend([list_md, ""])
+                # Ignore other divs (boxout figures are handled by figure extraction)
+
+    @classmethod
+    def _convert_iop_list_to_md(cls, list_el) -> str:
+        """Convert a body-level ``<ul>`` / ``<ol>`` into a Markdown list.
+
+        Each ``<li>`` is run through the IOP math-aware paragraph pipeline so
+        embedded ``$…$`` inline equations and ``<sub>``/``<sup>`` formatting
+        survive. Returns ``""`` if the list has no non-empty items.
+        """
+        if list_el is None:
+            return ''
+        ordered = (list_el.name == 'ol')
+        lines = []
+        for i, li in enumerate(list_el.find_all('li', recursive=False), 1):
+            item_md = cls._convert_iop_paragraph_to_md(str(li))
+            # _convert_iop_paragraph_to_md may emit a multi-line block (e.g.
+            # if a display equation is in the item); fold it into a single
+            # line for the list view.
+            item_md = re.sub(r'\s*\n\s*', ' ', item_md).strip()
+            if not item_md:
+                continue
+            marker = f"{i}." if ordered else '-'
+            lines.append(f"{marker} {item_md}")
+        return "\n".join(lines)
 
     @staticmethod
     def _convert_iop_paragraph_to_md(html_fragment: str) -> str:
