@@ -953,6 +953,17 @@ class NatureHandler(PublisherHandler):
 
             md_parts.append(f"{idx}. [{title_text}]({href})")
 
+            # Embed inline image if this item carries a data-supp-info-image
+            # (used by extended-data figures). replace_remote_figure_placeholders()
+            # later swaps the remote URL for the local downloaded filename.
+            supp_img = title_link.get('data-supp-info-image', '')
+            if supp_img:
+                if supp_img.startswith('//'):
+                    supp_img = 'https:' + supp_img
+                elif not supp_img.startswith('http'):
+                    supp_img = self.actual_base_url + supp_img
+                md_parts.append(f"   ![{title_text}]({supp_img})")
+
             desc_div = item.find('div', {'class': 'c-article-supplementary__description'})
             if desc_div:
                 desc_paragraphs = []
@@ -1075,7 +1086,11 @@ class NatureHandler(PublisherHandler):
         return figures
 
     def _extract_figures_from_html(self, html_content: str) -> Dict[str, dict]:
-        """Extract figures from HTML structure with class='c-article-section__figure-link'."""
+        """Extract figures from HTML structure with class='c-article-section__figure-link'.
+
+        Also collects extended-data figures from data-supp-info-image attributes
+        in <section data-title="Extended data figures and tables">.
+        """
         figures = {}
         soup = BeautifulSoup(html_content, 'html.parser')
 
@@ -1086,28 +1101,26 @@ class NatureHandler(PublisherHandler):
             caption = caption_elem.get_text(' ', strip=True) if caption_elem else f'Figure {fig_idx}'
             caption = re.sub(r'\s+', ' ', caption).strip()
 
-            # Try to get image URL from picture/source or img tag
+            # Try to get image URL from picture/source or img tag.
+            # Newer Nature pages put <picture> directly under .c-article-section__figure-item;
+            # older pages wrap it in <a class="c-article-section__figure-link">.
             image_url = None
-            figure_link = figure_div.find('a', class_='c-article-section__figure-link')
+            search_root = figure_div.find('a', class_='c-article-section__figure-link') or figure_div
 
-            if figure_link:
-                # Try to find picture > source with srcset
-                picture = figure_link.find('picture')
-                if picture:
-                    source = picture.find('source')
-                    if source:
-                        srcset = source.get('srcset', '')
-                        if srcset:
-                            # Extract first URL from srcset (format: "url size, url size, ...")
-                            urls = srcset.split(',')
-                            if urls:
-                                image_url = urls[0].strip().split()[0]
+            picture = search_root.find('picture')
+            if picture:
+                source = picture.find('source')
+                if source:
+                    srcset = source.get('srcset', '')
+                    if srcset:
+                        urls = srcset.split(',')
+                        if urls:
+                            image_url = urls[0].strip().split()[0]
 
-                # Fallback: try img src
-                if not image_url:
-                    img = figure_link.find('img')
-                    if img:
-                        image_url = img.get('src')
+            if not image_url:
+                img = search_root.find('img')
+                if img:
+                    image_url = img.get('src')
 
             # Ensure URL is absolute
             if image_url:
@@ -1119,6 +1132,35 @@ class NatureHandler(PublisherHandler):
                 figures[f'fig_{fig_idx}'] = {
                     'caption': caption,
                     'url': image_url,
+                }
+                fig_idx += 1
+
+        # Extended-data figures: <a data-supp-info-image="//.../FigN_ESM.jpg">
+        for section in soup.find_all('section'):
+            data_title = (section.get('data-title') or '').lower()
+            if 'extended' not in data_title:
+                continue
+            for item in section.find_all('div', class_='c-article-supplementary__item'):
+                title_link = item.find('a', class_='print-link')
+                if not title_link:
+                    continue
+                img_url = title_link.get('data-supp-info-image', '')
+                if not img_url:
+                    continue
+                if img_url.startswith('//'):
+                    img_url = 'https:' + img_url
+                elif not img_url.startswith('http'):
+                    img_url = self.actual_base_url + img_url
+
+                caption = title_link.get_text(' ', strip=True)
+                caption = re.sub(r'\s+', ' ', caption).strip()
+
+                # Key by FigN from URL so figure_filenames mapping is preserved
+                m = re.search(r'[Ff]ig(?:ure)?[\s_]?(\d+)', img_url)
+                key = f'fig_{m.group(1)}' if m else f'fig_{fig_idx}'
+                figures[key] = {
+                    'caption': caption,
+                    'url': img_url,
                 }
                 fig_idx += 1
 
