@@ -651,37 +651,84 @@ class ScienceHandler(PublisherHandler):
                     if md:
                         summary_parts.append(md)
 
-        # Download links — search anchors under the <h2>Supplementary Material</h2>
+        # Download links — extract by scanning EVERY anchor inside the supp
+        # section and classifying it.  Science wraps each downloadable file
+        # in a <div class="core-supplementary-material"> that ALSO contains
+        # a <div class="core-description"> — and the description text often
+        # includes biblio xrefs such as
+        #    "References (<a href="#core-collateral-R31"><i>31</i></a>–
+        #               <a href="#core-collateral-R35"><i>35</i></a>)"
+        # so the previously-used ``item.find('a', href=True)`` returned the
+        # first xref instead of the actual ``<a download=… href=/doi/suppl/…>``
+        # link sitting in <div class="core-link">.
+        #
+        # The new logic gathers every <a href> under the supp section, keeps
+        # only those that look like real file downloads, and discards the
+        # same-page xref / navigation links entirely.
         urls = []
         descriptions = {}
-        for item in supp.find_all('div', class_='core-supplementary-material'):
-            anchor = item.find('a', href=True)
-            if anchor is None:
+
+        def _looks_like_file_url(a_tag, href: str) -> bool:
+            """True if *a_tag* should be treated as a supplementary file link.
+
+            We accept any anchor that:
+              * carries an explicit ``download`` attribute, OR
+              * is hosted under Science's supplementary-file path
+                (/doi/suppl/…/suppl_file/… or /content/suppl_file/…), OR
+              * has a file-style extension (.pdf .zip .docx .xlsx .pptx
+                .csv .txt .tsv .mp4 .mov .avi .mkv .gz .tar .7z).
+            We reject:
+              * empty hrefs and same-page fragments (``#…``), which are the
+                R31/R35 xref interference links inside core-description.
+              * mailto:/javascript: pseudo-protocols.
+            """
+            if not href or href.startswith('#'):
+                return False
+            lo = href.lower()
+            if lo.startswith(('mailto:', 'javascript:', 'tel:')):
+                return False
+            if a_tag.has_attr('download'):
+                return True
+            if '/suppl_file/' in lo or '/content/suppl_file/' in lo:
+                return True
+            file_exts = (
+                '.pdf', '.zip', '.docx', '.doc', '.xlsx', '.xls', '.pptx',
+                '.ppt', '.csv', '.tsv', '.txt', '.mp4', '.mov', '.avi',
+                '.mkv', '.webm', '.gz', '.tar', '.7z', '.rar',
+            )
+            # Strip query string before checking the path's extension.
+            path = lo.split('?', 1)[0].split('#', 1)[0]
+            if path.endswith(file_exts):
+                return True
+            return False
+
+        for a in supp.find_all('a', href=True):
+            href = a['href'].strip()
+            if not _looks_like_file_url(a, href):
                 continue
-            href = anchor['href'].strip()
             if not href.startswith('http'):
                 href = urljoin(base + '/', href.lstrip('/'))
             if href in descriptions:
                 continue
+
+            # Description: prefer the sibling <div class="core-description">
+            # inside the same <div class="core-supplementary-material">
+            # ancestor, then the download attribute, then anchor text.
             description = ''
-            desc_div = item.find('div', class_='core-description')
-            if desc_div is not None:
-                description = desc_div.get_text(' ', strip=True)
+            csm_div = a.find_parent('div', class_='core-supplementary-material')
+            if csm_div is not None:
+                desc_div = csm_div.find('div', class_='core-description')
+                if desc_div is not None:
+                    description = desc_div.get_text(' ', strip=True)
             if not description:
-                description = (anchor.get('download') or '').strip() or 'Supplementary file'
+                description = (a.get('download') or '').strip()
+            if not description:
+                description = a.get_text(' ', strip=True)
+            if not description:
+                description = 'Supplementary file'
+
             urls.append(href)
             descriptions[href] = description
-
-        # Fallback: any <h2>Supplementary Material</h2> sibling links if structure differs.
-        if not urls:
-            for a in supp.find_all('a', href=True):
-                href = a['href'].strip()
-                if a.get('download') and href:
-                    if not href.startswith('http'):
-                        href = urljoin(base + '/', href.lstrip('/'))
-                    if href not in descriptions:
-                        urls.append(href)
-                        descriptions[href] = a.get('download') or 'Supplementary file'
 
         summary_md = "\n".join(summary_parts).strip()
         return urls, descriptions, summary_md
