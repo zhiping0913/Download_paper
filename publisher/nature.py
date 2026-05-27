@@ -1393,10 +1393,22 @@ class NatureHandler(PublisherHandler):
 
                 extended_data_md = self.extract_extended_data_from_html_content(fulltext_data)
                 if extended_data_md:
+                    if add_figure_refs:
+                        extended_data_md = self.replace_remote_figure_placeholders(
+                            extended_data_md,
+                            metadata,
+                            figure_filenames,
+                        )
                     md_content += f"## Extended data figures and tables\n\n{extended_data_md}\n\n"
 
                 supplementary_info_md = self.extract_supplementary_information_from_html_content(fulltext_data)
                 if supplementary_info_md:
+                    if add_figure_refs:
+                        supplementary_info_md = self.replace_remote_figure_placeholders(
+                            supplementary_info_md,
+                            metadata,
+                            figure_filenames,
+                        )
                     md_content += f"## Supplementary information\n\n{supplementary_info_md}\n\n"
             else:
                 md_content += "## Main\n\n[Article content available but could not be converted]\n"
