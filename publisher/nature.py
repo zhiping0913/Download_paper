@@ -1152,11 +1152,34 @@ class NatureHandler(PublisherHandler):
 
         return figures
 
+    @staticmethod
+    def _to_full_resolution_url(url: str) -> str:
+        """Rewrite a media.springernature.com URL to its full-resolution form.
+
+        Example: lw685/springer-static/image/.../Fig1.png?as=webp
+              → full/springer-static/image/.../Fig1.png
+        """
+        if not url or 'media.springernature.com' not in url:
+            return url
+        new_url = re.sub(
+            r'(media\.springernature\.com)/[^/]+/(springer-static)/',
+            r'\1/full/\2/',
+            url,
+        )
+        new_url = re.sub(r'[?&]as=webp\b', '', new_url)
+        new_url = re.sub(r'\?$', '', new_url)
+        return new_url
+
     def _extract_figures_from_html(self, html_content: str) -> Dict[str, dict]:
         """Extract figures from HTML structure with class='c-article-section__figure-link'.
 
         Also collects extended-data figures from data-supp-info-image attributes
         in <section data-title="Extended data figures and tables">.
+
+        Each figure dict carries:
+          - 'url': preferred high-resolution URL (lw685 → full, ?as=webp stripped)
+          - 'original_url': the URL as it appeared in the HTML (fallback)
+          - 'caption': figure title
         """
         figures = {}
         soup = BeautifulSoup(html_content, 'html.parser')
@@ -1196,9 +1219,11 @@ class NatureHandler(PublisherHandler):
                 elif not image_url.startswith('http'):
                     image_url = self.actual_base_url + image_url
 
+                full_url = self._to_full_resolution_url(image_url)
                 figures[f'fig_{fig_idx}'] = {
                     'caption': caption,
-                    'url': image_url,
+                    'url': full_url,
+                    'original_url': image_url,
                 }
                 fig_idx += 1
 
@@ -1225,9 +1250,11 @@ class NatureHandler(PublisherHandler):
                 # Key by FigN from URL so figure_filenames mapping is preserved
                 m = re.search(r'[Ff]ig(?:ure)?[\s_]?(\d+)', img_url)
                 key = f'fig_{m.group(1)}' if m else f'fig_{fig_idx}'
+                full_url = self._to_full_resolution_url(img_url)
                 figures[key] = {
                     'caption': caption,
-                    'url': img_url,
+                    'url': full_url,
+                    'original_url': img_url,
                 }
                 fig_idx += 1
 

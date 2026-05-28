@@ -366,7 +366,12 @@ async def _download_all_resources(
             print(f"  📊 找到 {len(figure_urls)} 个图片")
             for fig_id, fig_info in figure_urls.items():
                 try:
-                    fig_url = fig_info.get('url') if isinstance(fig_info, dict) else fig_info
+                    if isinstance(fig_info, dict):
+                        fig_url = fig_info.get('url')
+                        fallback_url = fig_info.get('original_url')
+                    else:
+                        fig_url = fig_info
+                        fallback_url = None
                     fig_match = re.search(r'(\d+)$', str(fig_id))
                     fig_num = fig_match.group(1) if fig_match else str(fig_id)
 
@@ -375,6 +380,14 @@ async def _download_all_resources(
                         download_page, fig_url, int(fig_num), output_dir, download_context, force_headed,
                         max_retries=5, retry_delay=1.0
                     )
+                    # Fall back to the original (lower-res) URL if the high-res fetch failed
+                    if not img_filename and fallback_url and fallback_url != fig_url:
+                        print(f"  ↪️  Figure {fig_num}: 高清链接失败，回退到原始链接")
+                        img_filename = await retry_download(
+                            download_figure,
+                            download_page, fallback_url, int(fig_num), output_dir, download_context, force_headed,
+                            max_retries=3, retry_delay=1.0
+                        )
                     if img_filename:
                         downloads['figures'][fig_num] = img_filename
                 except Exception as e:
