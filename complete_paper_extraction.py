@@ -657,15 +657,37 @@ async def download_supplemental_materials(
                 # This shares cookies with the browser context but skips the renderer,
                 # so the browser won't open a video player or image viewer.
                 # If the response is non-OK or HTML (e.g. a Cloudflare interstitial),
-                # fall through to the browser-tab download path which can execute JS
-                # and wait for the challenge to clear.
+                # OR the body is too large for the CDP transport, fall through to
+                # the browser-tab download path which streams to disk natively.
+                #
+                # Why the size cap? APIRequestContext buffers the entire response
+                # body and ships it over the CDP WebSocket base64-encoded. For a
+                # few-MB asset that's fast; for a 200+ MB video (seen on
+                # 10.1103/PhysRevLett.127.114801) the encode+round-trip stalls
+                # the websocket so badly that ``await api_response.body()``
+                # appears to hang for far longer than the actual download would
+                # take.  The browser's native download manager streams straight
+                # to disk and has no such limit.
+                DIRECT_FETCH_MAX_BYTES = 80 * 1024 * 1024  # 80 MB
+
                 if _is_direct_download_url(url):
                     direct_ok = False
                     try:
                         api_response = await context.request.get(url, timeout=60000)
                         content_type = (api_response.headers.get('content-type') or '').lower()
                         is_html_challenge = 'text/html' in content_type
-                        if api_response.ok and not is_html_challenge:
+
+                        # Inspect Content-Length BEFORE reading the body.  If the
+                        # asset is large (or the server didn't report a size at
+                        # all on a media URL), prefer the browser-tab path.
+                        cl_raw = api_response.headers.get('content-length') or ''
+                        try:
+                            content_length = int(cl_raw) if cl_raw else -1
+                        except ValueError:
+                            content_length = -1
+                        is_too_large = content_length > DIRECT_FETCH_MAX_BYTES
+
+                        if api_response.ok and not is_html_challenge and not is_too_large:
                             body = await api_response.body()
                             if body:
                                 output_path.write_bytes(body)
@@ -680,6 +702,12 @@ async def download_supplemental_materials(
                                 print(f"    ⚠️  响应体为空: {chapter_title}")
                         elif is_html_challenge:
                             print(f"    ↪ 直接请求被反爬虫拦截 (Cloudflare等)，回退到浏览器标签页下载")
+                        elif is_too_large:
+                            size_mb = content_length / (1024 * 1024) if content_length > 0 else 0
+                            print(
+                                f"    ↪ 响应体过大 ({size_mb:.1f} MB > "
+                                f"{DIRECT_FETCH_MAX_BYTES // (1024 * 1024)} MB 直接下载上限)，回退到浏览器标签页下载"
+                            )
                         else:
                             print(f"    ↪ 请求失败 (status={api_response.status})，回退到浏览器标签页下载")
                     except Exception as e:
