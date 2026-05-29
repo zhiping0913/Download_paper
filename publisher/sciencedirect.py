@@ -463,53 +463,119 @@ class ScienceDirectHandler(PublisherHandler):
 
     @classmethod
     def _walk_sd_body(cls, container, parts: list):
-        """Walk ScienceDirect body elements (sections, paragraphs, figures, tables)."""
+        """Walk ScienceDirect body content in document order.
+
+        Uses inline buffering so paragraph wrappers like ``<div id="pr0080">``
+        that mix prose with embedded block elements (figures, tables, or a
+        ``<span class="display">`` wrapping a figure/table) emit each part
+        correctly: text → paragraph, figure → figure block, more text →
+        next paragraph.  Without buffering, the recursive walker dropped
+        every NavigableString and the prose between the inline blocks
+        silently vanished from the body.
+
+        Block-level children (sections, headings, paragraph-wrappers without
+        nested blocks, figures, tables, span-wrapped figures/tables) flush
+        the inline buffer before being emitted.  Inline-level children
+        (NavigableStrings, ``<span>``, ``<em>``, ``<strong>``, ``<sub>``,
+        ``<sup>``, ``<a>``, ``<b>``, ``<i>``, ``<br>``) and any other
+        unrecognised tag are appended to the buffer and flushed at the next
+        block boundary or at the end of the walk.
+        """
+        from bs4 import NavigableString
+
+        inline_buffer = []
+
+        def flush():
+            if not inline_buffer:
+                return
+            combined = ''.join(inline_buffer)
+            p_md = cls._convert_paragraph_to_md(combined)
+            if p_md:
+                parts.append(p_md)
+                parts.append("")
+            inline_buffer.clear()
+
+        def _direct_block_child(span_el):
+            """Return ('figure'|'table', element) if *span_el* has a direct
+            block child (<figure class="figure"> or <div class="tables">)."""
+            for c in span_el.children:
+                if not hasattr(c, 'name') or not c.name:
+                    continue
+                c_cls = c.get('class') or []
+                if c.name == 'figure' and 'figure' in c_cls:
+                    return ('figure', c)
+                if c.name == 'div' and 'tables' in c_cls:
+                    return ('table', c)
+            return (None, None)
+
         for child in container.children:
+            if isinstance(child, NavigableString):
+                text = str(child)
+                if text.strip():
+                    inline_buffer.append(text)
+                continue
             if not hasattr(child, 'name') or not child.name:
                 continue
 
             classes = child.get('class') or []
 
-            if child.name in ('section',):
+            if child.name == 'section':
+                flush()
                 cls._walk_sd_body(child, parts)
                 continue
 
             if child.name in ('h2', 'h3', 'h4', 'h5'):
+                flush()
                 heading = child.get_text(' ', strip=True)
                 heading = re.sub(r'\s+', ' ', heading or '').strip()
-                if heading:
-                    # Skip generic "References" heading - we render references separately.
-                    if heading.lower() in ('references', 'reference'):
-                        continue
+                if heading and heading.lower() not in ('references', 'reference'):
                     level = '#' * (int(child.name[1]) + 1)
                     parts.append(f"{level} {heading}")
                     parts.append("")
                 continue
 
             if child.name == 'figure' and 'figure' in classes:
+                flush()
                 cls._render_figure(child, parts)
+                continue
+
+            # <span class="display"> often wraps a block figure or table
+            # inline within a paragraph.  Promote it to a block emission.
+            if child.name == 'span' and 'display' in classes:
+                kind, inner = _direct_block_child(child)
+                if kind == 'figure':
+                    flush()
+                    cls._render_figure(inner, parts)
+                    continue
+                if kind == 'table':
+                    flush()
+                    cls._render_table_block(inner, parts)
+                    continue
+                # No nested block — treat as inline (e.g. display-math span).
+                inline_buffer.append(str(child))
                 continue
 
             if child.name == 'div':
                 if 'tables' in classes:
+                    flush()
                     cls._render_table_block(child, parts)
                     continue
 
-                # A div counts as a paragraph when it has no nested
-                # block-level descendants (table, block figure, section).
-                # Inline ``<figure class="inline-figure">`` images do NOT
-                # count — they belong inside the paragraph flow.
+                # A div with NO nested block descendants is a leaf
+                # paragraph (covers both pr* ids and the d1eNNNN ids seen
+                # in newer ScienceDirect renderings).  Inline figures
+                # (<figure class="inline-figure">) do NOT count.
                 has_nested_block = bool(
                     child.find('div', class_='tables')
                     or child.find('figure', class_='figure')
                     or child.find('section')
                 )
                 if has_nested_block:
+                    flush()
                     cls._walk_sd_body(child, parts)
                     continue
 
-                # Leaf div → paragraph (covers both pr* ids and the
-                # d1eNNNN ids seen in newer ScienceDirect renderings).
+                flush()
                 p_md = cls._convert_paragraph_to_md(str(child))
                 if p_md:
                     parts.append(p_md)
@@ -517,17 +583,22 @@ class ScienceDirectHandler(PublisherHandler):
                 continue
 
             if child.name == 'p':
+                flush()
                 p_md = cls._convert_paragraph_to_md(str(child))
                 if p_md:
                     parts.append(p_md)
                     parts.append("")
                 continue
 
-            # Fallback: try paragraph conversion
-            text = cls._convert_paragraph_to_md(str(child))
-            if text:
-                parts.append(text)
-                parts.append("")
+            # Inline-level tags → buffer (text + em + span + …).
+            if child.name in ('span', 'em', 'strong', 'sub', 'sup', 'a', 'b', 'i', 'br'):
+                inline_buffer.append(str(child))
+                continue
+
+            # Anything else → buffer as inline (closest reasonable default).
+            inline_buffer.append(str(child))
+
+        flush()
 
     @staticmethod
     def _direct_sub_figures(fig_elem) -> list:
