@@ -656,13 +656,58 @@ class ScienceDirectHandler(PublisherHandler):
         return label, caption_md
 
     @classmethod
-    def _render_figure(cls, fig_elem, parts: list):
-        """Append a Markdown figure block (caption only; the actual image is
-        inserted later by ``convert_to_markdown`` via filename rewriting).
+    def _figure_image_url(cls, fig_elem) -> str:
+        """Return the best image URL for a single ``<figure>`` element.
 
-        Composite figures (``<figure id="figN">`` containing sub-figures
-        ``<figure id="figNa">…``) are rendered as one Markdown block per
-        sub-figure, followed by the shared outer caption.
+        Prefers the high-res download anchor, falls back to full-size,
+        then to the inline ``<img>`` src. Looks only inside the figure's
+        own ``<span>`` (the wrapper that contains image + download links),
+        not inside any nested ``<span class="captions">``.
+        """
+        direct_span = None
+        for child in fig_elem.children:
+            if (hasattr(child, 'name') and child.name == 'span'
+                    and not (child.get('class') and 'captions' in child.get('class'))):
+                direct_span = child
+                break
+        scope = direct_span or fig_elem
+
+        for anchor in scope.find_all('a', class_='download-link'):
+            title = (anchor.get('title') or '').lower()
+            if 'high-res' in title:
+                url = anchor.get('href', '').strip()
+                if url:
+                    return url
+        for anchor in scope.find_all('a', class_='download-link'):
+            title = (anchor.get('title') or '').lower()
+            if 'full-size' in title or 'full size' in title:
+                url = anchor.get('href', '').strip()
+                if url:
+                    return url
+        img = scope.find('img')
+        if img:
+            return (img.get('src') or img.get('data-src') or '').strip()
+        return ''
+
+    @classmethod
+    def _render_figure(cls, fig_elem, parts: list):
+        """Append a Markdown figure block.
+
+        - For figures with a ``<span class="captions">`` (e.g. publisher's
+          numbered "Fig. N. caption"), emit ``**Fig. N.** caption``.  The
+          actual image is inserted later in ``convert_to_markdown`` via the
+          ``**Fig. N.**``-pattern → ``![…](filename)`` rewrite step.
+
+        - For figures WITHOUT a caption (e.g. inline algorithm-cycle
+          illustrations like ``fg0160`` in 10.1016/j.cpc.2022.108457),
+          embed the image inline using the source URL.  ``convert_to_markdown``
+          then rewrites that URL to the local downloaded filename.  This
+          way the figure appears where it belongs in the body even though
+          there's no caption text to attach a label to.
+
+        - Composite figures (``<figure id="figN">`` containing sub-figures
+          ``<figure id="figNa">…``) recurse: one Markdown block per
+          sub-figure, followed by the shared outer caption.
         """
         sub_figures = cls._direct_sub_figures(fig_elem)
 
@@ -691,6 +736,13 @@ class ScienceDirectHandler(PublisherHandler):
         elif caption_md:
             parts.append(caption_md)
         else:
+            # No publisher caption — embed the image inline so it appears in
+            # the body markdown anyway.  convert_to_markdown will rewrite
+            # this URL to the local filename after the asset is downloaded.
+            img_url = cls._figure_image_url(fig_elem)
+            if img_url and 'data:image' not in img_url:
+                parts.append(f"![]({img_url})")
+                parts.append("")
             return
         parts.append("")
 
@@ -842,35 +894,10 @@ class ScienceDirectHandler(PublisherHandler):
             if fig_id:
                 seen.add(fig_id)
 
-            # Restrict the download / caption lookups to this figure's own
-            # ``<span>`` wrapper so we don't accidentally read a parent
-            # composite figure's content.
-            direct_span = None
-            for child in fig_elem.children:
-                if (hasattr(child, 'name') and child.name == 'span'
-                        and not (child.get('class') and 'captions' in child.get('class'))):
-                    direct_span = child
-                    break
-            scope = direct_span or fig_elem
-
-            # Prefer high-res download anchor; fall back to full-size, then the <img>.
-            img_url = ''
-            for anchor in scope.find_all('a', class_='download-link'):
-                title = (anchor.get('title') or '').lower()
-                if 'high-res' in title:
-                    img_url = anchor.get('href', '').strip()
-                    break
-            if not img_url:
-                for anchor in scope.find_all('a', class_='download-link'):
-                    title = (anchor.get('title') or '').lower()
-                    if 'full-size' in title or 'full size' in title:
-                        img_url = anchor.get('href', '').strip()
-                        break
-            if not img_url:
-                img = scope.find('img')
-                if img:
-                    img_url = (img.get('src') or img.get('data-src') or '').strip()
-
+            # Prefer high-res download anchor; fall back to full-size, then <img>.
+            # Shared helper so that _render_figure's caption-less fallback uses
+            # the same URL the workflow downloads.
+            img_url = cls._figure_image_url(fig_elem)
             if not img_url or 'data:image' in img_url:
                 continue
 
@@ -1265,14 +1292,19 @@ class ScienceDirectHandler(PublisherHandler):
                     label_re = re.escape(label).replace(r'\.', r'\.?')
                     pattern = rf'(\*\*{label_re}[.:]\*\*[^\n]*)'
                     alt_text = label
-                else:
-                    pattern = rf'(\*\*(?:Fig\.?|Figure)\s*{re.escape(fig_num)}[.:]\*\*[^\n]*)'
-                    alt_text = f"Figure {fig_num}"
-                body_md = re.sub(
-                    pattern,
-                    rf'\1\n\n![{alt_text}.]({filename})',
-                    body_md,
-                )
+                    body_md = re.sub(
+                        pattern,
+                        rf'\1\n\n![{alt_text}.]({filename})',
+                        body_md,
+                    )
+                # Always do a URL→filename rewrite as a safety net.  This
+                # handles uncaptioned inline figures (e.g. algorithm-cycle
+                # illustrations like fg0160 in 10.1016/j.cpc.2022.108457)
+                # that ``_render_figure`` emitted as ``![](URL)`` rather than
+                # via the labelled caption pattern above.
+                src_url = (fig_info.get('url') or '').strip()
+                if src_url:
+                    body_md = body_md.replace(src_url, filename)
 
         md_parts.extend([
             "---",
