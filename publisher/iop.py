@@ -395,6 +395,56 @@ class IOPHandler(PublisherHandler):
     # Figure extraction
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _figure_is_graphical_abstract(fig_elem) -> bool:
+        """True when *fig_elem* lives inside an abstract container.
+
+        IOP places the graphical abstract as
+        ``<figure id="njp…ga1" data-toolbar-type="figure">`` under
+        ``<div class="article-text wd-jnl-art-abstract">`` →
+        ``<div class="article-abstract">``.  Those should not be numbered
+        alongside the real article figures, otherwise every body reference
+        to "Figure N" embeds the wrong image (off-by-one).
+        """
+        for parent in fig_elem.parents:
+            classes = parent.get('class') or []
+            if not classes:
+                continue
+            if ('article-abstract' in classes
+                    or 'wd-jnl-art-abstract' in classes):
+                return True
+        return False
+
+    @classmethod
+    def extract_graphical_abstract_url(cls, html_content: str) -> str:
+        """Return the URL of the article's graphical abstract image, if any.
+
+        IOP exposes the graphical abstract as a regular
+        ``<figure data-toolbar-type="figure" id="…ga1">`` element nested
+        inside the article-abstract container.  The same high-res / std
+        download anchors are used as for real figures.
+        """
+        if not html_content:
+            return ''
+        soup = BeautifulSoup(html_content, 'html.parser')
+        for fig_elem in soup.find_all('figure', {'data-toolbar-type': 'figure'}):
+            if not cls._figure_is_graphical_abstract(fig_elem):
+                continue
+            hr_link = fig_elem.find('a', class_='fig-dwnld-hi-img')
+            lr_link = fig_elem.find('a', class_='fig-dwnld-std-img')
+            url = ''
+            if hr_link:
+                url = hr_link.get('href', '').strip()
+            if not url and lr_link:
+                url = lr_link.get('href', '').strip()
+            if not url:
+                img = fig_elem.find('img')
+                if img:
+                    url = (img.get('data-src') or img.get('src') or '').strip()
+            if url and 'data:image' not in url:
+                return url
+        return ''
+
     @classmethod
     def extract_figures_from_html(cls, html_content: str) -> dict:
         """Extract figure URLs and captions from HTML.
@@ -402,6 +452,10 @@ class IOPHandler(PublisherHandler):
         IOP figures use <figure id=\"dae...\" class=\"boxout\"
         data-toolbar-type=\"figure\"> with hi-res and standard download links
         inside figcaption.  High-resolution images are preferred.
+
+        Figures inside the abstract container (the graphical abstract) are
+        excluded — they are returned by ``extract_graphical_abstract_url``
+        and downloaded separately as ``key_image.*``.
         """
         if not html_content:
             return {}
@@ -411,6 +465,8 @@ class IOPHandler(PublisherHandler):
         seen_ids = set()
 
         for fig_elem in soup.find_all('figure', {'data-toolbar-type': 'figure'}):
+            if cls._figure_is_graphical_abstract(fig_elem):
+                continue
             fig_id = fig_elem.get('id', '')
             if fig_id in seen_ids:
                 continue
@@ -840,6 +896,12 @@ class IOPHandler(PublisherHandler):
             if fulltext_html:
                 figure_urls = self.extract_figures_from_html(fulltext_html)
                 iop_tables = self.extract_tables_from_html(fulltext_html)
+                # Graphical abstract (figure inside the abstract container)
+                # is downloaded as key_image via the shared workflow path,
+                # not as fig_N, so it doesn't bump the body figure numbering.
+                key_image_url = self.extract_graphical_abstract_url(fulltext_html)
+                if key_image_url:
+                    metadata['key_image_url'] = key_image_url
 
             # Supplementary: navigate to IOP /data endpoint (requires headed session)
             if page is not None:
