@@ -376,7 +376,11 @@ class OpticaHandler(PublisherHandler):
         """Render an inline table reference (div.text-plus-thumb).
 
         Extracts the caption from the description paragraph and fetches the
-        actual table data from the linked modal element (#tableN).
+        actual table data from the linked modal element (#tableN).  Any
+        footnote text that lives in the modal *after* the table-responsive
+        div (e.g. the "For the various cases, the corresponding on-target
+        laser energy …" annotation in 10.1364/OL.35.002314) is collected
+        as a single block and emitted below the table.
         """
         # Caption from <p class="table-caption-label"> or first <p>
         caption_p = (element.find('p', class_='table-caption-label')
@@ -399,7 +403,70 @@ class OpticaHandler(PublisherHandler):
                         table_md = cls._convert_paragraph_to_md(str(table_target))
                         if table_md:
                             parts.append(table_md)
+
+                    # Older Optica articles put the table footnote inline
+                    # in modal-body AFTER <div class="table-responsive">.
+                    # Collect everything between the table and the modal
+                    # close/footer as one Markdown line.
+                    footnote_md = cls._extract_modal_footnote(
+                        modal_el, table_target,
+                    )
+                    if footnote_md:
+                        parts.append(footnote_md)
         parts.append('')
+
+    @classmethod
+    def _extract_modal_footnote(cls, modal_el, table_target) -> str:
+        """Return the table footnote markdown if the modal body has trailing
+        annotation siblings after the ``<div class="table-responsive">``.
+
+        Stops at the modal footer / close button (text "Close" or any
+        element with classes ``modal-footer``/``btn-close``).
+        """
+        if modal_el is None:
+            return ''
+        modal_body = modal_el.find('div', class_='modal-body') or modal_el
+        if table_target is None or not table_target.find_parent('div', class_='modal-body'):
+            # Table target lives somewhere else; only handle the well-formed
+            # case where the table is a direct/descendant child of modal-body.
+            anchor = modal_body
+        else:
+            anchor = table_target
+
+        from bs4 import NavigableString as _NS
+        from bs4 import Comment as _Comment
+        pieces = []
+        # Walk siblings AFTER the table.
+        for sib in anchor.next_siblings:
+            # Skip HTML comments (including the stray ``<!--?xml version=…?-->``
+            # processing-instruction-style comments Optica emits before the
+            # footnote label).
+            if isinstance(sib, _Comment):
+                continue
+            if isinstance(sib, _NS):
+                text = str(sib)
+                if text.strip():
+                    pieces.append(text)
+                continue
+            if not hasattr(sib, 'name') or not sib.name:
+                continue
+            classes = sib.get('class') or []
+            # Stop at modal footer / close-button areas.
+            if any(c in classes for c in ('modal-footer', 'btn-close')):
+                break
+            if sib.name == 'button' and (
+                    'Close' in sib.get_text(' ', strip=True)
+                    or 'btn-close' in classes):
+                break
+            pieces.append(str(sib))
+
+        if not pieces:
+            return ''
+        combined = ''.join(pieces)
+        md = cls._convert_paragraph_to_md(combined).strip()
+        # Drop a stray trailing "Close" word the close button can leave behind.
+        md = re.sub(r'\s*Close\s*$', '', md).strip()
+        return md
 
     @classmethod
     def _walk_optica_element(cls, element, parts: list, soup_root=None):
