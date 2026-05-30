@@ -263,16 +263,35 @@ class OpticaHandler(PublisherHandler):
                     continue
                 if not hasattr(child, 'name') or not child.name:
                     continue
-                # Stop at the first back-matter / h2-led section boundary so
-                # we don't double-emit content already in body_parts.
+                # Stop at the first h2-led section boundary so we don't
+                # double-emit content already produced by the h2 walk.
                 if (child.name == 'h2'
                         and 'article-heading' in (child.get('class') or [])):
                     flush_article_inline_buffer()
                     break
+                # <div class="back"> is the back-matter container.  Some Optica
+                # articles (e.g. 10.1364/ol.41.000317) put their Acknowledgment
+                # / References inside it as <h2 class="article-heading"> nodes;
+                # for those, the outer h2-walk already handles the contents, so
+                # we stop here to avoid duplication.  But older articles
+                # (e.g. 10.1364/OL.35.002314) put the acknowledgments paragraph,
+                # Table 1 caption div, and Fig. 1 / Fig. 2 figure-image divs
+                # inside this <div class="back"> WITHOUT any h2 headings — the
+                # h2-walk can't see them, so we must walk into <div class="back">
+                # ourselves to recover them.
                 if (child.name == 'div'
                         and 'back' in (child.get('class') or [])):
+                    has_h2_section = bool(
+                        child.find('h2', class_='article-heading')
+                    )
+                    if has_h2_section:
+                        flush_article_inline_buffer()
+                        break
+                    # Walk into the back div so its non-h2 contents
+                    # (acknowledgments, tables, figures, reference list) survive.
                     flush_article_inline_buffer()
-                    break
+                    cls._walk_optica_element(child, article_parts, soup_root=soup)
+                    continue
                 if child.name in ('span', 'a', 'em', 'strong', 'sub', 'sup', 'b', 'i'):
                     inline_buffer.append(str(child))
                 else:
