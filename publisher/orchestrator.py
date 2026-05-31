@@ -12,6 +12,7 @@ from publisher.springer_book import SpringerBookHandler
 from publisher.optica import OpticaHandler
 from publisher.science import ScienceHandler
 from publisher.sciencedirect import ScienceDirectHandler
+from publisher.oup import OupHandler
 
 
 def detect_publisher_from_url(url: str) -> str:
@@ -67,6 +68,12 @@ def detect_publisher_from_url(url: str) -> str:
         return 'cambridge'
     elif '10.1017' in url_lower:
         return 'cambridge'
+
+    # Oxford University Press detection
+    elif 'academic.oup.com' in url_lower:
+        return 'oup'
+    elif '10.1093' in url_lower:
+        return 'oup'
 
     # Science / AAAS vs ScienceDirect / Elsevier
     # -----------------------------------------
@@ -138,6 +145,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return AIPHandler(**kwargs)
     elif publisher == 'cambridge':
         return CambridgeHandler(**kwargs)
+    elif publisher == 'oup':
+        return OupHandler(**kwargs)
     elif publisher == 'science':
         return ScienceHandler(**kwargs)
     elif publisher == 'sciencedirect':

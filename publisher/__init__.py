@@ -14,8 +14,10 @@ from .iop import IOPHandler
 from .optica import OpticaHandler
 from .science import ScienceHandler
 from .sciencedirect import ScienceDirectHandler
+from .oup import OupHandler
 
 __all__ = [
     'NatureHandler', 'APSHandler', 'AIPHandler', 'CambridgeHandler',
     'IOPHandler', 'OpticaHandler', 'ScienceHandler', 'ScienceDirectHandler',
+    'OupHandler',
 ]
