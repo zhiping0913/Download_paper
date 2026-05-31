@@ -43,7 +43,13 @@ from config import OUTPUT_DIR_DEFAULT, BATCH_SLEEP_ENABLED, BATCH_SLEEP_MIN, BAT
 
 OUTPUT_DIR = OUTPUT_DIR_DEFAULT
 # Publisher IDs that can be entered from the Phase 0 headless page.
-HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature', 'aip', 'cambridge', 'springer', 'springer_book', 'oup']
+# Phase 0 substring matches against the Crossref `publisher` field, so each
+# entry must appear *inside* the publisher's display name. Crossref returns
+# OUP papers under either "Oxford University Press (OUP)" or just
+# "Oxford University Press", so we keep both 'oup' and 'oxford' here to
+# catch both forms. The URL/DOI detector still returns the canonical
+# 'oup' handler name.
+HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature', 'aip', 'cambridge', 'springer', 'springer_book', 'oup', 'oxford']
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.tif', '.tiff', '.svg'}
 
 MIME_TO_EXT = {
