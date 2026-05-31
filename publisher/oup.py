@@ -460,6 +460,60 @@ class OupHandler(PublisherHandler):
         return '\n'.join(out_lines)
 
     @classmethod
+    def _book_list_to_md(cls, list_div, skip_headings, state) -> str:
+        """Convert one ``<div class="book-list-simple">`` to Markdown.
+
+        Each ``<div class="list-row">`` becomes one Markdown list item.
+        The row may carry an explicit ``<div class="list-col-label">(N)</div>``
+        in which case we use that as the bullet marker; otherwise the
+        content paragraph's leading ``•`` is stripped and we emit ``- ``.
+
+        The content column may contain multiple ``<p>``s and even display
+        equations (``<div class="block-child-p">``), so we walk it with the
+        shared body walker and indent the result under the bullet.
+        """
+        if list_div is None:
+            return ''
+
+        lines = []
+        for row in list_div.find_all('div', class_='list-row', recursive=False):
+            label_col = row.find('div', class_='list-col-label')
+            content_cols = [c for c in row.find_all('div', class_='list-col', recursive=False)
+                            if 'list-col-label' not in (c.get('class') or [])]
+            content_col = content_cols[0] if content_cols else None
+            if content_col is None:
+                continue
+
+            # Walk the content column with the same body machinery so paragraphs,
+            # block-child-p equations, nested lists, etc. all work.
+            sub_parts = []
+            cls._walk_body(content_col, sub_parts, skip_headings, state)
+            content_md = '\n'.join(sub_parts).strip()
+            content_md = re.sub(r'\n{3,}', '\n\n', content_md)
+            if not content_md:
+                continue
+
+            if label_col is not None:
+                marker = label_col.get_text(' ', strip=True) or '-'
+            else:
+                # Unlabeled bullet — strip the leading "•" the publisher inlined
+                # in the paragraph text.
+                content_md = re.sub(r'^[•·●*-]\s*', '', content_md)
+                marker = '-'
+
+            # Indent continuation lines under the bullet so multi-line
+            # content (e.g. with an embedded display equation) renders as
+            # one list item rather than breaking out of the list.
+            first, *rest = content_md.split('\n')
+            indented = '\n'.join(['    ' + r if r else r for r in rest])
+            if indented:
+                lines.append(f"{marker} {first}\n{indented}")
+            else:
+                lines.append(f"{marker} {first}")
+
+        return '\n'.join(lines)
+
+    @classmethod
     def _block_child_p_to_md(cls, block) -> str:
         """Convert a ``<div class="block-child-p">`` mixed inline + equation block.
 
@@ -618,6 +672,22 @@ class OupHandler(PublisherHandler):
                     tbl_md = cls._table_to_md(child)
                     if tbl_md:
                         body_parts.extend([tbl_md, ''])
+                    continue
+
+                # OUP book-chapter custom lists. The structure is
+                #   <div class="book-list-simple">
+                #     <div class="list-row [first-list-item]">
+                #       [<div class="list-col list-col-label">(N)</div>]
+                #       <div class="list-col"> ...paragraphs / equations... </div>
+                #     </div>
+                #     ...
+                #   </div>
+                # Items either start with a bullet character "•" (then it's an
+                # unlabeled bullet list) or carry an explicit "(N)" label cell.
+                if 'book-list-simple' in classes:
+                    list_md = cls._book_list_to_md(child, skip_headings, state)
+                    if list_md:
+                        body_parts.extend([list_md, ''])
                     continue
 
                 # Figure containers: match by the fig-section class so the
