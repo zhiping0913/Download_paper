@@ -227,12 +227,14 @@ class OupHandler(PublisherHandler):
             span.decompose()
 
         # Inline formulas — MathJax CHTML wrappers with a MathML twin inside
-        # <mjx-assistive-mml>.
+        # <mjx-assistive-mml>. We stash the LaTeX as a placeholder so pandoc
+        # doesn't escape the $ delimiters; the caller re-inserts $...$ after
+        # the HTML→Markdown pass.
         for inline_formula in soup.find_all('span', class_='inline-formula'):
             math_tag = inline_formula.find('math')
             latex = cls._mathml_to_latex(math_tag) if math_tag else ''
             if latex:
-                inline_formula.replace_with(NavigableString(f" ${latex}$ "))
+                inline_formula.replace_with(NavigableString(f" {stash(latex)} "))
             else:
                 inline_formula.replace_with(
                     NavigableString(inline_formula.get_text(' ', strip=True))
@@ -246,7 +248,7 @@ class OupHandler(PublisherHandler):
             math_tag = container.find('math')
             latex = cls._mathml_to_latex(math_tag) if math_tag else ''
             if latex:
-                container.replace_with(NavigableString(f" ${latex}$ "))
+                container.replace_with(NavigableString(f" {stash(latex)} "))
             else:
                 container.decompose()
 
@@ -715,6 +717,63 @@ class OupHandler(PublisherHandler):
         return text_refs, raw_dois
 
     # ------------------------------------------------------------------
+    # Footnotes
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def extract_footnotes_from_html(cls, html_content: str) -> list:
+        """Extract endnote-style footnotes from the article HTML.
+
+        OUP wraps each footnote in ``<div content-id="FN{N}" class="footnote">``
+        with the number in ``<span class="end-note-link">`` and the body in
+        ``<p class="footnote-compatibility">``. The body may contain multiple
+        ``<p>`` paragraphs as well as inline math / xref-bibr links, so we
+        run each paragraph through the OUP fragment pipeline.
+
+        Returns a list of strings shaped ``"{N}. {text}"``.
+        """
+        if not html_content:
+            return []
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        footnotes = []
+
+        for fn_div in soup.find_all('div', class_='footnote', attrs={'content-id': re.compile(r'^FN\d+$', re.IGNORECASE)}):
+            label_span = fn_div.find('span', class_='end-note-link')
+            if label_span:
+                label = label_span.get_text(' ', strip=True)
+            else:
+                # Fallback: take the digits from content-id (e.g. "FN3" → "3")
+                cid = fn_div.get('content-id', '')
+                m = re.search(r'(\d+)$', cid)
+                label = m.group(1) if m else ''
+
+            content_div = fn_div.find('div', class_='footnote-content')
+            if content_div is None:
+                continue
+
+            paragraphs = []
+            for p in content_div.find_all('p'):
+                md = cls._convert_oup_fragment_to_md(str(p))
+                if md:
+                    paragraphs.append(md)
+
+            if not paragraphs:
+                # Fallback: take whatever text the content div has.
+                text = re.sub(r'\s+', ' ', content_div.get_text(' ', strip=True)).strip()
+                if text:
+                    paragraphs.append(text)
+
+            if not paragraphs:
+                continue
+
+            body_md = ' '.join(paragraphs).strip()
+            prefix = f"{label}. " if label else ''
+            footnotes.append(f"{prefix}{body_md}")
+
+        return footnotes
+
+    # ------------------------------------------------------------------
     # Supplemental materials
     # ------------------------------------------------------------------
 
@@ -850,6 +909,8 @@ class OupHandler(PublisherHandler):
                 text_refs, raw_dois = self.extract_references_from_html(fulltext_html)
                 metadata['references'] = text_refs
                 metadata['_ref_dois'] = raw_dois
+
+                metadata['footnotes'] = self.extract_footnotes_from_html(fulltext_html)
 
             # Resolve PDF URL — citation_pdf_url meta first, otherwise look up
             # the <a class="al-link pdf article-pdfLink"> on the page.
@@ -1037,6 +1098,14 @@ class OupHandler(PublisherHandler):
                     label = supplemental_descriptions.get(url, '') or url
                     md_parts.append(f"- [{label}]({url})")
                 md_parts.append('')
+
+        # Footnotes — render before References so cross-references in the
+        # body (e.g. "[1]" superscripts) still resolve in linear reading order.
+        footnotes = metadata.get('footnotes') or []
+        if footnotes:
+            md_parts.extend(['---', '', '## Footnotes', ''])
+            for fn in footnotes:
+                md_parts.extend([fn, ''])
 
         # References — text rendering + BibTeX block per entry.
         text_refs = metadata.get('references', []) or []
