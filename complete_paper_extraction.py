@@ -49,7 +49,27 @@ OUTPUT_DIR = OUTPUT_DIR_DEFAULT
 # "Oxford University Press", so we keep both 'oup' and 'oxford' here to
 # catch both forms. The URL/DOI detector still returns the canonical
 # 'oup' handler name.
-HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature', 'aip', 'cambridge', 'springer', 'springer_book', 'oup', 'oxford']
+HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature', 'aip', 'cambridge', 'springer', 'springer_book', 'oup', 'oup_book', 'oxford']
+
+# Crossref `type` values that indicate the DOI belongs to a book or one of
+# its chapters. When we see one of these on an OUP DOI, route to the book
+# handler so the whole book gets aggregated rather than just one chapter.
+_CROSSREF_BOOK_TYPES = {'book', 'monograph', 'book-chapter', 'reference-book',
+                        'edited-book', 'book-section', 'book-part'}
+
+
+def apply_crossref_type_override(publisher: str, crossref_data: dict) -> str:
+    """Promote `oup` -> `oup_book` when Crossref says the DOI is a book.
+
+    Returns the (possibly updated) publisher identifier. Other publishers
+    are left alone — only OUP currently has a dedicated book handler.
+    """
+    if publisher != 'oup' or not crossref_data:
+        return publisher
+    crossref_type = (crossref_data.get('type') or '').strip().lower()
+    if crossref_type in _CROSSREF_BOOK_TYPES:
+        return 'oup_book'
+    return publisher
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.tif', '.tiff', '.svg'}
 
 MIME_TO_EXT = {
@@ -1339,6 +1359,9 @@ async def complete_extraction_workflow(
 
                     # 检测出版商
                     headless_publisher = detect_publisher_from_url(final_headless_url)
+                    # Promote OUP → OUP_BOOK when Crossref says this DOI is a
+                    # book or book-chapter (then OupBookHandler walks the TOC).
+                    headless_publisher = apply_crossref_type_override(headless_publisher, crossref_data)
                     print(f"  ✓ 检测出版商: {headless_publisher.upper()}")
 
                     # 检测是否被反爬虫拦截
@@ -1426,6 +1449,7 @@ async def complete_extraction_workflow(
         print()
 
         fallback_publisher = headless_publisher or detect_publisher_from_url(url)
+        fallback_publisher = apply_crossref_type_override(fallback_publisher, crossref_data)
         if fallback_publisher in HEADLESS_ACCESSIBLE_PUBLISHERS and not headless_blocked:
             print("🟢 无头Handler自主管理路径：当前出版商支持无头完整提取")
             print("=" * 80)
@@ -1479,6 +1503,7 @@ async def complete_extraction_workflow(
             print("Step 1️⃣  导航到DOI并检测出版商...")
             print("=" * 80)
             publisher = detect_publisher_from_url(url)
+            publisher = apply_crossref_type_override(publisher, crossref_data)
             handler = get_publisher_handler(
                 publisher,
                 page=page,
@@ -1500,6 +1525,7 @@ async def complete_extraction_workflow(
             print(f"✓ 最终 URL: {final_url}")
 
             final_publisher = detect_publisher_from_url(final_url)
+            final_publisher = apply_crossref_type_override(final_publisher, crossref_data)
             if final_publisher != publisher:
                 publisher = final_publisher
                 handler = get_publisher_handler(
