@@ -51,7 +51,7 @@ complete_extraction_workflow(doi, output_file=None, force_headed=False)
    **阶段一（Crossref 元数据决策）**：先通过 Crossref API 获取 DOI 的元数据，检查 `publisher` 字段是否包含以下出版商名称：
    
    ```python
-   HEADLESS_ACCESSIBLE_PUBLISHERS = ["nature", "aip", "cambridge", "springer"]
+   HEADLESS_ACCESSIBLE_PUBLISHERS = ["nature", "aip", "cambridge", "springer", "oup"]
    ```
    
    - 如果匹配且 `force_headed=False`：进入阶段二（无头预检）。
@@ -85,6 +85,7 @@ complete_extraction_workflow(doi, output_file=None, force_headed=False)
 - `10.1063`、`pubs.aip.org`、`aip.scitation.org` -> `aip`
 - `10.1088`、`iopscience.iop.org` -> `iop`
 - `10.1017`、`cambridge.org` -> `cambridge`
+- `10.1093`、`academic.oup.com` -> `oup`
 - `sciencedirect.com`、`10.1016` -> `nature` (Elsevier 回退)
 - `epj-conferences.org`、`10.1051` -> `nature` (EDP Sciences 回退)
 - `arxiv.org` -> `arxiv`
@@ -97,6 +98,7 @@ handler 创建由 `get_publisher_handler()` 负责：
 - `aip` -> `AIPHandler`
 - `iop` -> `IOPHandler`
 - `cambridge` -> `CambridgeHandler`
+- `oup` -> `OupHandler`
 - `arxiv` -> 带 `journal_prefix="arxiv"` 的 `APSHandler`
 - `unknown` -> 默认 `APSHandler`
 
@@ -182,7 +184,7 @@ APS 当前只能通过这条有头路径访问；IOP 也通过此路径。
 
 | 条件 | 提取阶段 | 下载阶段 | 说明 |
 |------|---------|---------|------|
-| `force_headed=False`, publisher 在 `HEADLESS` 列表内 | headless（共用 precheck page） | headless（新建） | Nature、AIP、Cambridge |
+| `force_headed=False`, publisher 在 `HEADLESS` 列表内 | headless（共用 precheck page） | headless（新建） | Nature、AIP、Cambridge、OUP |
 | `force_headed=False`, publisher **不在** `HEADLESS` 列表内 | headed CDP | headed（复用 context） | APS、IOP |
 | `force_headed=True`, publisher **不在** `HEADLESS` 列表内 | headed CDP | headed（复用 context） | 用户显式要求有头，与上一条行为一致 |
 | `force_headed=True`, publisher 在 `HEADLESS` 列表内 | headless（Handler 自主管理） | headless（新建） | `force_headed` 被忽略 —— 无头可访问 publisher 仍走无头 |
@@ -493,9 +495,69 @@ Cambridge 由 `publisher/cambridge.py` 的 `CambridgeHandler` 处理。
 ## References
 ```
 
+## OUP 当前实现
+
+OUP (Oxford University Press) 由 `publisher/oup.py` 的 `OupHandler` 处理。
+
+- `10.1093`、`academic.oup.com` 会被识别为 `oup`。
+- OUP 在 `HEADLESS_ACCESSIBLE_PUBLISHERS` 中，可以直接使用 Phase 0 的无头页面。
+
+### metadata 提取
+
+从 HTML `<head>` 中的 `citation_*` meta 标签提取，包括 `citation_author` / `citation_author_institution` 配对（按出现顺序匹配作者与机构）、`citation_title`、`citation_doi`、`citation_journal_title`、`citation_volume`/`citation_issue`、`citation_firstpage`/`citation_lastpage`、`citation_publication_date`、`citation_pdf_url`。
+
+### 正文提取
+
+`extract_article_text_from_html()` 遍历 `<div data-widgetname="ArticleFulltext">` 容器的直接子节点：
+
+- `<h2 class="abstract-title">` + `<section class="abstract">` → 摘要
+- `<h2 class="section-title">` / `<h3>` / `<h4>` → 各级标题
+- `<p class="chapter-para">` → 段落（含内联公式、xref-bibr/xref-fig 链接）
+- `<ul class="roman-lower">` / `<ol>` → 列表，递归处理嵌套 `<p>`
+- `<div class="formula-wrap">` → 显示公式，`<span class="label title-label">(A1)</span>` 转为 `\tag{A1}`
+- `<div class="block-child-p">` → 内联文字与多个 formula-wrap 混排块，通过占位符再注入
+- `<div class="table-full-width-wrap">` → 表格（含标题 + caption + 渲染 `<table>` 的 `.table-overflow` 版本）
+- `<div data-content-id="figN">` → 图注（图片由 `extract_figures_from_html()` 处理）
+
+公式通过 `<mjx-assistive-mml>` 内的 MathML 走 `mathml_to_latex_pandoc` 转 LaTeX。
+
+### 图片提取
+
+`extract_figures_from_html()` 从 `<div data-content-id="figN">` 内的 `<a class="download-slide">` 提取高清 URL。OUP 这个 `href` 是个 `/DownloadFile/DownloadImage.aspx?image=...` 重定向器，里面嵌入了 Silverchair CDN 的真实地址。`_clean_download_slide_url()` 剥掉重定向器前缀，并删除会话相关的 `sec`/`ar`/`xsltPath`/`imagename`/`siteId` 查询参数（保留 `Expires`/`Signature`/`Key-Pair-Id`，CDN 验签需要），得到可以直接下载的链接。
+
+### 参考文献提取
+
+`extract_references_from_html()` 遍历 `<div id="ref-auto-bib{N}" class="ref-content">`：
+
+1. 把 citation 内容转成网页显示的样子（`<div class="surname">`/`<div class="given-names">`/`<div class="year">`/`<div class="source">`/... 用空格连起来），剥掉 `Crossref`/`Search ADS` 等 citation-links 装饰。
+2. 从 `<div class="pub-id">` 抓 DOI。
+3. 与 Crossref `references` 数据按 DOI 匹配，给每条引用追加一个只含 `year` + `doi` 的 `@misc{bibN, ...}` BibTeX 块。
+
+### 补充材料提取
+
+`extract_supplemental_from_html()` 找两个地方：
+
+- `<div class="dataSuppLink">` 里的 `<a href="...stz656_supplemental_file.zip">` —— 真实下载链接。
+- `<h2>SUPPORTING INFORMATION</h2>` / `<h2>Supplementary data</h2>` 后面的 `<p>` —— 拿来当文件描述（通常是 `<strong>filename.ext</strong>` 形式）。
+
+### Markdown 生成
+
+`convert_to_markdown()` 输出结构：
+
+```markdown
+# 标题
+## Authors          # 含机构
+## Publication      # 期刊 / 卷期 / 页 / DOI
+## Abstract
+## Article Text     # 标题 + 段落 + 公式 + 表格 + 嵌入图
+## Acknowledgements # 单独抽出
+## Supporting Information   # SUPPORTING INFO 文字 + 下载链接
+## References       # 每条 + 对应 BibTeX 块
+```
+
 ## wildcard.py — 共享提取模块
 
-`publisher/wildcard.py` 提供跨 publisher 共享的提取函数，被 NatureHandler、IOPHandler、AIPHandler、CambridgeHandler 共同引用：
+`publisher/wildcard.py` 提供跨 publisher 共享的提取函数，被 NatureHandler、IOPHandler、AIPHandler、CambridgeHandler、OupHandler 共同引用：
 
 | 函数 | 用途 |
 |------|------|

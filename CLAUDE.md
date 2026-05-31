@@ -49,6 +49,7 @@ python batch_process.py --file dois.txt                     # 批量
 | `10.1063` | AIPHandler | 无头 |
 | `10.1088` | IOPHandler | 有头 |
 | `10.1017` | CambridgeHandler | 无头 |
+| `10.1093` | OupHandler | 无头 |
 
 ## 参考
 

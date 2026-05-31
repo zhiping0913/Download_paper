@@ -75,6 +75,7 @@ python batch_process.py --dois "10.1103/..." "10.1063/..."
 | `publisher/aip.py` | AIP Publishing | 无头 |
 | `publisher/iop.py` | IOP Science | 有头 |
 | `publisher/cambridge.py` | Cambridge University Press | 无头 |
+| `publisher/oup.py` | Oxford University Press | 无头 |
 
 各 handler 继承 `publisher/base.py` 中的 `PublisherHandler` 抽象基类，实现统一的 `extract_all()` 和 `convert_to_markdown()` 接口。
 
@@ -155,6 +156,7 @@ captured_data/
 - **IOP**: `<script type="math/tex">` — 正则提取，预处理后走 pandoc 转换
 - **APS**: MathML — 通过 pandoc `--mathjax` 转 LaTeX
 - **AIP/Cambridge/Nature**: MathJax CHTML — `wildcard.py` 中的 `prepare_mathjax_html_fragment()` 折叠为占位符后转换
+- **OUP**: MathJax CHTML with `<mjx-assistive-mml>` MathML twin — `OupHandler._mathml_to_latex()` 把 MathML 走 pandoc 转为 LaTeX，display 公式可附 `\tag{...}` 编号
 
 ### publisher 无关的主流程
 
@@ -185,6 +187,7 @@ CHROME_USER_DATA_DIR = "~/.config/google-chrome"  # 用户数据目录
 | `10.1063` / `pubs.aip.org` | AIPHandler | 无头 | MathJax |
 | `10.1088` / `iopscience.iop.org` | IOPHandler | 有头 | `<script type="math/tex">` |
 | `10.1017` / `cambridge.org` | CambridgeHandler | 无头 | MathJax |
+| `10.1093` / `academic.oup.com` | OupHandler | 无头 | MathJax + MathML twin |
 | `10.1016` / `sciencedirect.com` | NatureHandler (回退) | 无头 | MathJax |
 | `10.1051` / `epj-conferences.org` | NatureHandler (回退) | 无头 | MathJax |
 | `arxiv.org` | APSHandler (回退) | 有头 | 取决于源格式 |
