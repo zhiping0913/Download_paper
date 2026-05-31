@@ -994,16 +994,18 @@ class OupHandler(PublisherHandler):
                 body_md = article_text.strip()
 
         # Replace figure-caption headings with the downloaded image afterward.
+        # OUP journals vary the label text: mnras uses "Figure 1.", ptep uses
+        # "Fig. 1.". Match both forms (case-insensitive) so the image lands
+        # right after whichever caption the publisher emitted.
         figure_filenames = kwargs.get('figure_filenames') or {}
         if kwargs.get('add_figure_refs') and figure_filenames and body_md:
             for fig_num, filename in sorted(figure_filenames.items(),
                                             key=lambda x: int(x[0])):
-                # Each figure caption in body_md starts with "**Figure N.** ..." —
-                # append a Markdown image immediately after that line.
                 body_md = re.sub(
-                    rf'(\*\*Figure\s*{re.escape(fig_num)}\.\*\*[^\n]*)',
+                    rf'(\*\*(?:Figure|Fig\.?)\s*{re.escape(fig_num)}\.\*\*[^\n]*)',
                     rf'\1\n\n![Figure {fig_num}]({filename})',
                     body_md,
+                    flags=re.IGNORECASE,
                 )
 
         if body_md:
