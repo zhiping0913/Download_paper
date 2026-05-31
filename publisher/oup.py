@@ -676,6 +676,15 @@ class OupHandler(PublisherHandler):
         ``text_refs`` is a list of strings rendered to match what the web page
         shows for each entry. ``raw_dois`` is a parallel list with each ref's
         DOI (or '') so we can look it up in Crossref data.
+
+        OUP journals use different per-ref id schemes:
+          * mnras: ``<div content-id="bib1" class="js-splitview-ref-item">``
+            wrapping ``<div id="ref-auto-bib1" class="ref-content">``.
+          * ptep:  ``<div content-id="PTS067C1" class="js-splitview-ref-item">``
+            wrapping ``<div id="ref-auto-PTS067C1" class="ref-content">``
+            with a leading ``<span class="label title-label">1</span>``.
+
+        Selecting on the shared ``js-splitview-ref-item`` class covers both.
         """
         if not html_content:
             return [], []
@@ -684,27 +693,32 @@ class OupHandler(PublisherHandler):
         text_refs = []
         raw_dois = []
 
-        for ref_div in soup.find_all('div', id=re.compile(r'^ref-auto-bib\d+$')):
-            # Get the text content as the page renders it.  The publisher
-            # interleaves <div class="surname">/<div class="given-names">/...
-            # with plain commas and " et al ."; BeautifulSoup's get_text with
-            # a space separator gives us a clean inline rendering.
-            citation_div = ref_div.find('div', class_='mixed-citation') or ref_div
+        for ref_item in soup.find_all('div', class_='js-splitview-ref-item'):
+            ref_content = ref_item.find('div', class_='ref-content')
+            if ref_content is None:
+                continue
 
-            # Hide the citation-links / pub-id "Crossref"/"Search ADS" decorations.
-            decoration_copy = BeautifulSoup(str(citation_div), 'html.parser')
+            # Some journals (ptep) inline the citation; others (mnras) wrap it
+            # in <div class="mixed-citation">. Either way, work off ref_content
+            # so we always see the leading label span if present.
+            decoration_copy = BeautifulSoup(str(ref_content), 'html.parser')
+            # Hide the citation-links "Crossref"/"Search ADS"/"Find in my
+            # library" decorations and pub-id DOI badges (we'll re-add the
+            # bibtex block from Crossref separately).
             for trash in decoration_copy.find_all('div', class_='citation-links'):
                 trash.decompose()
 
             text = decoration_copy.get_text(' ', strip=True)
-            # Collapse spaces before punctuation and remove duplicate commas.
+            # Collapse spaces before punctuation and excess whitespace.
             text = re.sub(r'\s+([,.;:])', r'\1', text)
             text = re.sub(r'\s+', ' ', text).strip()
-            # Strip trailing punctuation noise.
+            # Strip the leading "N " label if the ref content carried one
+            # (ptep). The markdown emitter prefixes each entry with [N] itself.
+            text = re.sub(r'^\d+\s+', '', text)
             text = text.rstrip(' ,')
 
             doi = ''
-            pub_id = ref_div.find('div', class_='pub-id')
+            pub_id = ref_content.find('div', class_='pub-id')
             if pub_id:
                 doi_link = pub_id.find('a')
                 if doi_link:
