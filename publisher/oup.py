@@ -34,9 +34,10 @@ from publisher.wildcard import (
 )
 
 
-# Query parameters in OUP's DownloadImage.aspx redirector that must be stripped
-# from the embedded CDN URL — they are session-scoped and break direct download.
-_OUP_STRIP_PARAMS = {'sec', 'ar', 'xsltPath', 'imagename', 'siteId'}
+# Silverchair CDN signed-URL params we keep on figure URLs. Anything else is
+# session-scoped (sec/ar/xsltPath/imagename/siteId from journal articles, or
+# ChapterSecID/BookID from book chapters) and breaks the signed download.
+_OUP_KEEP_PARAMS = {'Expires', 'Signature', 'Key-Pair-Id'}
 
 
 class OupHandler(PublisherHandler):
@@ -122,11 +123,15 @@ class OupHandler(PublisherHandler):
 
         ``href`` looks like::
 
-            /DownloadFile/DownloadImage.aspx?image=https://oup.silverchair-cdn.com/.../stz656fig1.jpeg?Expires=...&Signature=...&Key-Pair-Id=...&sec=...&ar=...&xsltPath=...&imagename=...&siteId=...
+            /DownloadFile/DownloadImage.aspx?image=https://oup.silverchair-cdn.com/.../graphic211.gif?Expires=...&Signature=...&Key-Pair-Id=...&sec=...&ar=...&ChapterSecID=...&BookID=...
 
-        Strip the redirector prefix, pull out the embedded URL, then drop the
-        session-scoped sec/ar/xsltPath/imagename/siteId parameters while
-        preserving Expires/Signature/Key-Pair-Id which the CDN requires.
+        Strip the redirector prefix, pull out the embedded URL, then keep
+        only the Silverchair CDN signed-URL params (``Expires``, ``Signature``,
+        ``Key-Pair-Id``). Everything else is session-scoped and breaks the
+        signed download — and the param set varies by surface (journal
+        articles use ``sec``/``ar``/``xsltPath``/``imagename``/``siteId``,
+        book chapters use ``ChapterSecID``/``BookID``), so allowlisting the
+        keepers is more robust than denylisting each known offender.
         """
         if not href:
             return ''
@@ -139,26 +144,24 @@ class OupHandler(PublisherHandler):
         else:
             embedded = href
 
-        # The embedded URL itself has a query string. parse_qs needs the part
-        # after the *first* '?', but the embedded URL was inlined verbatim so
-        # all its '&' params are mixed with the outer redirector's. Split on
-        # the first '?' inside the embedded URL.
+        # The embedded URL itself has a query string. Outer redirector params
+        # get mixed in after the embedded URL's '&', so split on the *first*
+        # '?' to start the embedded query and filter from there.
         if '?' not in embedded:
             return embedded
 
         base, query = embedded.split('?', 1)
-        params = []
+        kept = []
         for segment in query.split('&'):
             if '=' not in segment:
                 continue
             key, _ = segment.split('=', 1)
-            if key in _OUP_STRIP_PARAMS:
-                continue
-            params.append(segment)
+            if key in _OUP_KEEP_PARAMS:
+                kept.append(segment)
 
-        if not params:
+        if not kept:
             return base
-        return f"{base}?{'&'.join(params)}"
+        return f"{base}?{'&'.join(kept)}"
 
     # ------------------------------------------------------------------
     # Math / paragraph conversion
@@ -483,31 +486,79 @@ class OupHandler(PublisherHandler):
         text_md = re.sub(r'\n{3,}', '\n\n', text_md).strip()
         return text_md
 
+    # Wrapper-div class names we recurse INTO when walking body content. These
+    # are structural containers that hold paragraphs/figures/etc, not content
+    # in their own right — book chapters wrap each section in paywall →
+    # category-section before the actual <p class="chapter-para"> elements.
+    _BODY_WRAPPER_CLASSES = (
+        'paywall', 'category-section', 'content-section', 'js-content-section',
+    )
+
     @classmethod
     def extract_article_text_from_html(cls, html_content: str):
-        """Extract abstract + body, returning ``(abstract_md, body_md)``."""
+        """Extract abstract + body, returning ``(abstract_md, body_md)``.
+
+        Handles two OUP surfaces:
+          * Journal articles — body in ``<div data-widgetname="ArticleFulltext">``,
+            content as direct children.
+          * Book chapters — body in ``<div data-widgetname="BookSectionsText">``,
+            with content nested inside ``<div class="paywall">`` →
+            ``<div class="category-section content-section js-content-section">``
+            wrappers. Abstract lives in a separate ``ChapterAbstract`` widget.
+        """
         if not html_content:
             return '', ''
 
         soup = BeautifulSoup(html_content, 'html.parser')
 
-        fulltext = soup.find('div', attrs={'data-widgetname': 'ArticleFulltext'})
+        fulltext = (
+            soup.find('div', attrs={'data-widgetname': 'ArticleFulltext'})
+            or soup.find('div', attrs={'data-widgetname': 'BookSectionsText'})
+        )
         if fulltext is None:
             return '', ''
 
-        abstract_md = ''
-        body_parts = []
+        # Abstract — for book chapters it sits in a separate widget outside
+        # `fulltext`, so search the whole soup. There's at most one
+        # <section class="abstract"> per page.
+        abstract_md = cls._extract_abstract_section(soup)
 
+        body_parts = []
         # Sections we don't want to fold into the main body — they get their own
         # markdown sections later in convert_to_markdown.
-        SKIP_HEADINGS = {'supporting information', 'supplementary data',
-                         'acknowledgements', 'acknowledgments', 'references'}
-        in_skipped_section = False
+        skip_headings = {
+            'supporting information', 'supplementary data',
+            'acknowledgements', 'acknowledgments', 'references',
+        }
+        state = {'in_skipped': False}
+        cls._walk_body(fulltext, body_parts, skip_headings, state)
 
-        # We'll process direct children of the fulltext widget container.
-        # OUP wraps everything at the same depth so this is enough to capture
-        # headings + sibling paragraphs / figures / equations / tables / lists.
-        for child in fulltext.children:
+        body_md = '\n'.join(body_parts).strip()
+        body_md = re.sub(r'\n{3,}', '\n\n', body_md)
+        return abstract_md, body_md
+
+    @classmethod
+    def _extract_abstract_section(cls, soup) -> str:
+        """Return the markdown rendering of the <section class="abstract">."""
+        section = soup.find('section', class_='abstract')
+        if section is None:
+            return ''
+        paragraphs = []
+        for p in section.find_all('p', class_='chapter-para'):
+            md = cls._convert_oup_fragment_to_md(str(p))
+            if md:
+                paragraphs.append(md)
+        return '\n\n'.join(paragraphs)
+
+    @classmethod
+    def _walk_body(cls, container, body_parts, skip_headings, state):
+        """Recursively walk *container*, emitting body parts in document order.
+
+        Descends through structural wrappers (paywall, category-section) so
+        the same logic works for both journal articles (flat structure) and
+        book chapters (deeply nested).
+        """
+        for child in container.children:
             if not getattr(child, 'name', None):
                 continue
 
@@ -518,27 +569,21 @@ class OupHandler(PublisherHandler):
                 heading_text = re.sub(r'\s+', ' ', heading_text or '').strip()
                 if not heading_text:
                     continue
-                # Stop accumulating body content once we hit a tail section.
-                if heading_text.lower() in SKIP_HEADINGS:
-                    in_skipped_section = True
+                if heading_text.lower() in skip_headings:
+                    state['in_skipped'] = True
                     continue
-                in_skipped_section = False
+                state['in_skipped'] = False
                 if 'abstract-title' in (child.get('class') or []):
                     continue
                 level = '#' * (int(tag[1]) + 1)
                 body_parts.extend([f"{level} {heading_text}", ''])
                 continue
 
-            if in_skipped_section:
+            if state['in_skipped']:
                 continue
 
             if tag == 'section' and 'abstract' in (child.get('class') or []):
-                paragraphs = []
-                for p in child.find_all('p', class_='chapter-para'):
-                    md = cls._convert_oup_fragment_to_md(str(p))
-                    if md:
-                        paragraphs.append(md)
-                abstract_md = '\n\n'.join(paragraphs)
+                # Abstract was handled separately at the top level; skip here.
                 continue
 
             if tag == 'p' and 'chapter-para' in (child.get('class') or []):
@@ -568,7 +613,8 @@ class OupHandler(PublisherHandler):
                         body_parts.extend([block_md, ''])
                     continue
 
-                if 'table-full-width-wrap' in classes or child.get('data-content-id', '').startswith('tbl'):
+                if ('table-full-width-wrap' in classes
+                        or child.get('data-content-id', '').startswith('tbl')):
                     tbl_md = cls._table_to_md(child)
                     if tbl_md:
                         body_parts.extend([tbl_md, ''])
@@ -583,16 +629,16 @@ class OupHandler(PublisherHandler):
                         body_parts.extend([caption_md, ''])
                     continue
 
-                # Article-metadata-panel, keyword groups, dataSuppLink etc — skip
+                # Structural wrappers — recurse into them so the content
+                # inside (paragraphs, figures, headings) is still picked up.
+                if any(w in classes for w in cls._BODY_WRAPPER_CLASSES):
+                    cls._walk_body(child, body_parts, skip_headings, state)
+                    continue
+
+                # Article-metadata-panel, keyword groups, dataSuppLink, etc.
                 continue
 
             # Skip anchors, scripts, widgets, etc.
-
-        # Collapse consecutive blank lines.
-        body_md = '\n'.join(body_parts).strip()
-        body_md = re.sub(r'\n{3,}', '\n\n', body_md)
-
-        return abstract_md, body_md
 
     # ------------------------------------------------------------------
     # Figure extraction
@@ -1069,18 +1115,34 @@ class OupHandler(PublisherHandler):
                 body_md = article_text.strip()
 
         # Replace figure-caption headings with the downloaded image afterward.
-        # OUP journals vary the label text: mnras uses "Figure 1.", ptep uses
-        # "Fig. 1.". Match both forms (case-insensitive) so the image lands
-        # right after whichever caption the publisher emitted.
+        # OUP varies the label text across surfaces:
+        #   * mnras journal:  "**Figure 1.** ..."
+        #   * ptep journal:   "**Fig. 1.** ..."
+        #   * book chapter:   "**Fig. 11.1.** ..." (chapter.figure numbering)
+        # Rather than guess the format, use the caption string that
+        # extract_figures_from_html already produced from the same HTML —
+        # its leading "**...**" label is guaranteed to match the body's
+        # caption byte-for-byte.
         figure_filenames = kwargs.get('figure_filenames') or {}
+        figure_urls = kwargs.get('figure_urls') or {}
         if kwargs.get('add_figure_refs') and figure_filenames and body_md:
-            for fig_num, filename in sorted(figure_filenames.items(),
-                                            key=lambda x: int(x[0])):
+            for fig_id, fig_info in figure_urls.items():
+                num_match = re.search(r'(\d+)$', fig_id)
+                if not num_match:
+                    continue
+                filename = figure_filenames.get(num_match.group(1))
+                if not filename:
+                    continue
+                caption = (fig_info.get('caption') or '') if isinstance(fig_info, dict) else ''
+                label_match = re.match(r'\*\*([^*]+?)\*\*', caption)
+                if not label_match:
+                    continue
+                label = label_match.group(1).strip()  # e.g. "Fig. 11.1."
                 body_md = re.sub(
-                    rf'(\*\*(?:Figure|Fig\.?)\s*{re.escape(fig_num)}\.\*\*[^\n]*)',
-                    rf'\1\n\n![Figure {fig_num}]({filename})',
+                    rf'(\*\*{re.escape(label)}\*\*[^\n]*)',
+                    rf'\1\n\n![{label.rstrip(".")}]({filename})',
                     body_md,
-                    flags=re.IGNORECASE,
+                    count=1,
                 )
 
         if body_md:
