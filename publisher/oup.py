@@ -572,9 +572,10 @@ class OupHandler(PublisherHandler):
                         body_parts.extend([tbl_md, ''])
                     continue
 
-                if (child.get('data-content-id', '').startswith('fig')
-                        or 'fig' in classes
-                        or child.get('data-id', '').startswith('fig')):
+                # Figure containers: match by the fig-section class so the
+                # journal-specific data-content-id naming (fig1 vs pts067f1)
+                # doesn't matter.
+                if any(cls._FIG_CLASS_RE.search(c) for c in classes):
                     caption_md = cls._figure_caption_md(child)
                     if caption_md:
                         body_parts.extend([caption_md, ''])
@@ -595,27 +596,50 @@ class OupHandler(PublisherHandler):
     # Figure extraction
     # ------------------------------------------------------------------
 
+    # Figure container regex: matches both <div class="fig fig-section ..."> and
+    # the legacy <div class="fig js-fig-section">. We intentionally use class
+    # rather than data-content-id because OUP's figure IDs vary by journal:
+    #   * mnras/stz656     → data-content-id="fig1"
+    #   * ptep/pts067      → data-content-id="pts067f1"
+    _FIG_CLASS_RE = re.compile(r'\bfig-section\b')
+
+    @classmethod
+    def _iter_figure_divs(cls, root):
+        """Yield every figure container under *root* in document order."""
+        for fig_div in root.find_all('div', class_=cls._FIG_CLASS_RE):
+            yield fig_div
+
     @classmethod
     def extract_figures_from_html(cls, html_content: str) -> dict:
         """Extract figure URLs and captions from the article HTML.
 
-        Each ``<div data-id="figN">`` is matched. The high-resolution download
-        link lives in ``<a class="download-slide">`` and goes through OUP's
-        DownloadImage.aspx redirector — we unwrap it to a direct CDN URL.
+        Each ``<div class="fig fig-section ...">`` is matched. The
+        high-resolution download link lives in ``<a class="download-slide">``
+        and goes through OUP's DownloadImage.aspx redirector — we unwrap it
+        to a direct CDN URL.
         """
         if not html_content:
             return {}
 
         soup = BeautifulSoup(html_content, 'html.parser')
         figures = {}
+        seen_keys = set()
+        fallback_idx = 0
 
-        for fig_div in soup.find_all('div', attrs={'data-content-id': re.compile(r'^fig\d+$')}):
-            fig_id = fig_div.get('data-content-id', '')
+        for fig_div in cls._iter_figure_divs(soup):
+            # Figure id may be "fig1" (mnras) or "pts067f1" (ptep) — take the
+            # trailing digit run as the figure number.
+            fig_id = fig_div.get('data-content-id') or fig_div.get('data-id') or ''
             num_match = re.search(r'(\d+)$', fig_id)
-            if not num_match:
-                continue
-            fig_num = num_match.group(1)
+            if num_match:
+                fig_num = num_match.group(1)
+            else:
+                fallback_idx += 1
+                fig_num = str(fallback_idx)
+
             key = f"fig_{fig_num}"
+            if key in seen_keys:
+                continue
 
             download_link = fig_div.find('a', class_='download-slide')
             img_url = ''
@@ -631,6 +655,7 @@ class OupHandler(PublisherHandler):
             if not img_url:
                 continue
 
+            seen_keys.add(key)
             figures[key] = {
                 'url': img_url,
                 'caption': cls._figure_caption_md(fig_div),
