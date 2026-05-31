@@ -13,6 +13,7 @@ from publisher.optica import OpticaHandler
 from publisher.science import ScienceHandler
 from publisher.sciencedirect import ScienceDirectHandler
 from publisher.oup import OupHandler
+from publisher.oup_book import OupBookHandler
 
 
 def detect_publisher_from_url(url: str) -> str:
@@ -147,6 +148,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return CambridgeHandler(**kwargs)
     elif publisher == 'oup':
         return OupHandler(**kwargs)
+    elif publisher == 'oup_book':
+        return OupBookHandler(**kwargs)
     elif publisher == 'science':
         return ScienceHandler(**kwargs)
     elif publisher == 'sciencedirect':
