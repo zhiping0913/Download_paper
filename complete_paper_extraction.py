@@ -49,7 +49,7 @@ OUTPUT_DIR = OUTPUT_DIR_DEFAULT
 # "Oxford University Press", so we keep both 'oup' and 'oxford' here to
 # catch both forms. The URL/DOI detector still returns the canonical
 # 'oup' handler name.
-HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature', 'aip', 'cambridge', 'springer', 'springer_book', 'oup', 'oup_book', 'oxford', 'pleiades']
+HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature', 'aip', 'cambridge', 'springer', 'springer_book', 'optica', 'oup', 'oup_book', 'oxford', 'pleiades']
 
 # Crossref `type` values that indicate the DOI belongs to a book or one of
 # its chapters. When we see one of these on an OUP DOI, route to the book
@@ -1278,9 +1278,12 @@ async def complete_extraction_workflow(
     if not force_headed:
         crossref_publisher = crossref_data.get('publisher', '').lower()
         if crossref_publisher:
-            # Check if Crossref publisher contains any HEADLESS_ACCESSIBLE_PUBLISHERS
+            # Check if Crossref publisher contains any HEADLESS_ACCESSIBLE_PUBLISHERS.
+            # Use word-boundary matching so short keys like 'oup' don't match
+            # inside unrelated words like 'group' (e.g. "Optica Publishing Group").
             for publisher_name in HEADLESS_ACCESSIBLE_PUBLISHERS:
-                if publisher_name.lower() in crossref_publisher:
+                pattern = r'\b' + re.escape(publisher_name.lower()) + r'\b'
+                if re.search(pattern, crossref_publisher):
                     should_use_headless_phase0 = True
                     print(f"✓ 根据Crossref publisher '{crossref_publisher}' 判断出版商为 {publisher_name.upper()}")
                     print(f"  → 将使用Phase 0进行无头浏览器预检\n")
