@@ -49,7 +49,7 @@ OUTPUT_DIR = OUTPUT_DIR_DEFAULT
 # "Oxford University Press", so we keep both 'oup' and 'oxford' here to
 # catch both forms. The URL/DOI detector still returns the canonical
 # 'oup' handler name.
-HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature', 'aip', 'cambridge', 'springer', 'springer_book', 'oup', 'oup_book', 'oxford']
+HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature', 'aip', 'cambridge', 'springer', 'springer_book', 'oup', 'oup_book', 'oxford', 'pleiades']
 
 # Crossref `type` values that indicate the DOI belongs to a book or one of
 # its chapters. When we see one of these on an OUP DOI, route to the book
