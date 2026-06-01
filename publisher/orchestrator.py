@@ -116,6 +116,10 @@ def detect_publisher_from_url(url: str) -> str:
     elif '10.1051' in url_lower:
         return 'nature'
 
+    # Pleiades Publishing — delivered via link.springer.com, handled by NatureHandler
+    elif '10.1134' in url_lower:
+        return 'nature'
+
     # ArXiv (treat as generic, default to APS-like handling)
     elif 'arxiv.org' in url_lower:
         return 'arxiv'
