@@ -331,6 +331,91 @@ class MDPIHandler(PublisherHandler):
         return figures
 
     # ------------------------------------------------------------------
+    # Tables
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _build_table_index(cls, soup) -> Dict[str, 'BeautifulSoup']:
+        """Map each in-body table wrapper id to the matching ``<table>`` element.
+
+        MDPI splits a table across two places: a placeholder wrapper inside
+        ``html-body`` (id like ``particles-03-00018-t001``) that only carries
+        the caption and a thumbnail icon, and a separate display block
+        (id ``table_body_display_particles-03-00018-t001``) that holds the
+        real ``<table>``. We pair them up by id so the walker can fetch the
+        matching ``<table>`` when it hits the wrapper.
+        """
+        index: Dict[str, BeautifulSoup] = {}
+        for show in soup.find_all('div', class_='html-table_show'):
+            sid = show.get('id', '')
+            if not sid.startswith('table_body_display_'):
+                continue
+            wrapper_id = sid[len('table_body_display_'):]
+            tbl = show.find('table')
+            if tbl is not None:
+                index[wrapper_id] = tbl
+        return index
+
+    @classmethod
+    def _convert_table_cell(cls, cell) -> str:
+        """Convert one <th>/<td> to a Markdown-table-safe single-line string."""
+        md = cls._convert_mdpi_fragment_to_md(str(cell))
+        # Pipe-table cells cannot contain raw newlines or unescaped pipes.
+        md = md.replace('\n', ' ').replace('|', '\\|')
+        return re.sub(r'\s+', ' ', md).strip()
+
+    @classmethod
+    def _table_element_to_md(cls, table) -> str:
+        """Convert a <table> to a Markdown pipe-table."""
+        if table is None:
+            return ''
+        rows = []
+        header_cells: List[str] = []
+
+        thead = table.find('thead')
+        if thead is not None:
+            for tr in thead.find_all('tr'):
+                cells = [cls._convert_table_cell(c) for c in tr.find_all(['th', 'td'])]
+                if cells:
+                    header_cells = cells
+                    break  # only the first header row drives the column count
+
+        # Fall back to the first body row if there's no <thead>.
+        tbody = table.find('tbody') or table
+        body_rows = []
+        for tr in tbody.find_all('tr'):
+            if thead and tr.find_parent('thead') is not None:
+                continue
+            cells = [cls._convert_table_cell(c) for c in tr.find_all(['th', 'td'])]
+            if cells and not all(c == '' for c in cells):
+                body_rows.append(cells)
+
+        if not header_cells and body_rows:
+            header_cells = body_rows.pop(0)
+        if not header_cells:
+            return ''
+
+        col_count = len(header_cells)
+        rows.append('| ' + ' | '.join(header_cells) + ' |')
+        rows.append('|' + '|'.join(['---'] * col_count) + '|')
+        for cells in body_rows:
+            if len(cells) < col_count:
+                cells = cells + [''] * (col_count - len(cells))
+            elif len(cells) > col_count:
+                cells = cells[:col_count]
+            rows.append('| ' + ' | '.join(cells) + ' |')
+
+        return '\n'.join(rows)
+
+    @classmethod
+    def _table_wrap_caption_md(cls, wrap) -> str:
+        """Render the caption block (``html-table_wrap_discription``) to MD."""
+        desc = wrap.find('div', class_='html-table_wrap_discription')
+        if desc is None:
+            return ''
+        return cls._convert_mdpi_fragment_to_md(str(desc))
+
+    # ------------------------------------------------------------------
     # Body extraction
     # ------------------------------------------------------------------
 
@@ -398,10 +483,17 @@ class MDPIHandler(PublisherHandler):
         return '\n'.join(lines)
 
     @classmethod
-    def _walk_body(cls, container, body_parts: list):
+    def _walk_body(cls, container, body_parts: list,
+                   table_index: Optional[Dict[str, 'BeautifulSoup']] = None):
         """Walk an MDPI ``<div class="html-body">`` (or any descendant section)
         recursively, emitting Markdown chunks for content elements and
-        descending into structural wrappers in document order."""
+        descending into structural wrappers in document order.
+
+        ``table_index`` maps in-body table-wrap ids to the matching ``<table>``
+        element from the document-level ``html-table_show`` display blocks.
+        """
+        if table_index is None:
+            table_index = {}
         for child in container.children:
             if not getattr(child, 'name', None):
                 continue
@@ -433,13 +525,24 @@ class MDPIHandler(PublisherHandler):
                     if caption:
                         body_parts.extend([caption, ''])
                     continue
+                if 'html-table-wrap' in classes:
+                    caption = cls._table_wrap_caption_md(child)
+                    if caption:
+                        body_parts.extend([caption, ''])
+                    wrap_id = child.get('id', '')
+                    tbl = table_index.get(wrap_id) if wrap_id else None
+                    if tbl is not None:
+                        tbl_md = cls._table_element_to_md(tbl)
+                        if tbl_md:
+                            body_parts.extend([tbl_md, ''])
+                    continue
                 # Generic wrapper — descend.
-                cls._walk_body(child, body_parts)
+                cls._walk_body(child, body_parts, table_index)
                 continue
 
             if tag == 'section':
                 # MDPI nests sections within sections — recurse.
-                cls._walk_body(child, body_parts)
+                cls._walk_body(child, body_parts, table_index)
                 continue
 
             if tag in ('ul', 'ol'):
@@ -449,11 +552,10 @@ class MDPIHandler(PublisherHandler):
                 continue
 
             if tag == 'table':
-                # No table examples to work from yet — fall back to a plain
-                # pandoc render so the data isn't lost.
-                md = cls._convert_mdpi_fragment_to_md(str(child))
-                if md:
-                    body_parts.extend([md, ''])
+                # Standalone <table> not inside an html-table-wrap.
+                tbl_md = cls._table_element_to_md(child)
+                if tbl_md:
+                    body_parts.extend([tbl_md, ''])
                 continue
 
             # Skip <a>, <span>, scripts, etc. at top level.
@@ -471,8 +573,13 @@ class MDPIHandler(PublisherHandler):
         if body is None:
             return abstract_md, ''
 
+        # MDPI splits each table into a wrapper inside html-body (caption only)
+        # and a separate html-table_show display block holding the real
+        # <table>. Build the wrapper→table map once for the walker.
+        table_index = cls._build_table_index(soup)
+
         body_parts: List[str] = []
-        cls._walk_body(body, body_parts)
+        cls._walk_body(body, body_parts, table_index)
 
         body_md = '\n'.join(body_parts).strip()
         body_md = re.sub(r'\n{3,}', '\n\n', body_md)
