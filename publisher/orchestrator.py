@@ -14,6 +14,7 @@ from publisher.science import ScienceHandler
 from publisher.sciencedirect import ScienceDirectHandler
 from publisher.oup import OupHandler
 from publisher.oup_book import OupBookHandler
+from publisher.mdpi import MDPIHandler
 
 
 def detect_publisher_from_url(url: str) -> str:
@@ -75,6 +76,12 @@ def detect_publisher_from_url(url: str) -> str:
         return 'oup'
     elif '10.1093' in url_lower:
         return 'oup'
+
+    # MDPI detection
+    elif 'mdpi.com' in url_lower:
+        return 'mdpi'
+    elif '10.3390' in url_lower:
+        return 'mdpi'
 
     # Science / AAAS vs ScienceDirect / Elsevier
     # -----------------------------------------
@@ -154,6 +161,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return OupHandler(**kwargs)
     elif publisher == 'oup_book':
         return OupBookHandler(**kwargs)
+    elif publisher == 'mdpi':
+        return MDPIHandler(**kwargs)
     elif publisher == 'science':
         return ScienceHandler(**kwargs)
     elif publisher == 'sciencedirect':
@@ -165,8 +174,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         kwargs.setdefault('journal_prefix', 'arxiv')
         return APSHandler(**kwargs)
     else:
-        # Default to APS handler for unknown
-        return APSHandler(**kwargs)
+        # Default to oup handler for unknown
+        return OupHandler(**kwargs)
 
 
 async def extract_metadata_multi_publisher(page, publisher: str = None) -> dict:

@@ -16,9 +16,10 @@ from .science import ScienceHandler
 from .sciencedirect import ScienceDirectHandler
 from .oup import OupHandler
 from .oup_book import OupBookHandler
+from .mdpi import MDPIHandler
 
 __all__ = [
     'NatureHandler', 'APSHandler', 'AIPHandler', 'CambridgeHandler',
     'IOPHandler', 'OpticaHandler', 'ScienceHandler', 'ScienceDirectHandler',
-    'OupHandler', 'OupBookHandler',
+    'OupHandler', 'OupBookHandler', 'MDPIHandler',
 ]
