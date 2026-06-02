@@ -560,6 +560,22 @@ class MDPIHandler(PublisherHandler):
 
             # Skip <a>, <span>, scripts, etc. at top level.
 
+    # Back-matter <section> ids/classes that have their own dedicated handling
+    # downstream (References) or that just duplicate body content (figures
+    # gallery, copyright statement). Skip them while walking html-back.
+    _BACK_SKIP_IDS = {'html-references_list', 'FiguresandTable', 'html-copyright'}
+    _BACK_SKIP_CLASSES = {'html-references', 'html-fig_gallery'}
+
+    @classmethod
+    def _is_back_skip(cls, section) -> bool:
+        sid = section.get('id', '')
+        if sid in cls._BACK_SKIP_IDS:
+            return True
+        classes = set(section.get('class') or [])
+        if classes & cls._BACK_SKIP_CLASSES:
+            return True
+        return False
+
     @classmethod
     def extract_article_text_from_html(cls, html_content: str) -> Tuple[str, str]:
         """Return ``(abstract_md, body_md)``."""
@@ -580,6 +596,21 @@ class MDPIHandler(PublisherHandler):
 
         body_parts: List[str] = []
         cls._walk_body(body, body_parts, table_index)
+
+        # Back-matter (Funding / Acknowledgments / Conflicts of Interest /
+        # Abbreviations / …) sits in a sibling <div class="html-back"> next
+        # to html-body. Walk those sections in document order too, skipping
+        # the ones with dedicated handling.
+        back = soup.find('div', class_='html-back')
+        if back is not None:
+            for sec in back.children:
+                if not getattr(sec, 'name', None):
+                    continue
+                if sec.name != 'section':
+                    continue
+                if cls._is_back_skip(sec):
+                    continue
+                cls._walk_body(sec, body_parts, table_index)
 
         body_md = '\n'.join(body_parts).strip()
         body_md = re.sub(r'\n{3,}', '\n\n', body_md)
