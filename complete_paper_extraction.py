@@ -1021,10 +1021,14 @@ async def complete_extraction_workflow(
         fulltext_data = extraction_result['fulltext_data']
 
         # Save HTML to the per-DOI capture directory.
-        if isinstance(fulltext_data, str) and fulltext_data:
+        # Prefer the raw server response (pre-JS) captured by the response
+        # interceptor; fall back to fulltext_data (post-JS rendered DOM).
+        raw_server_html = getattr(handler, '_raw_server_html', None)
+        html_to_save = raw_server_html or (fulltext_data if isinstance(fulltext_data, str) else None)
+        if html_to_save:
             html_file = captured_data_dir / "page.html"
             with open(html_file, 'w', encoding='utf-8') as f:
-                f.write(fulltext_data)
+                f.write(html_to_save)
             print(f"  ✓ HTML已保存: {html_file}")
 
         # Merge with Crossref data (fill in missing fields)
@@ -1325,6 +1329,20 @@ async def complete_extraction_workflow(
                 headless_context = await headless_browser.new_context(**context_kwargs)
                 headless_page = await headless_context.new_page()
 
+                # Capture raw server HTML (pre-JavaScript) via response interception.
+                _headless_raw_html: list = []
+
+                async def _headless_on_response(response):
+                    try:
+                        if (response.request.resource_type == 'document'
+                                and response.ok
+                                and 'text/html' in response.headers.get('content-type', '')):
+                            _headless_raw_html.append(await response.text())
+                    except Exception:
+                        pass
+
+                headless_page.on('response', _headless_on_response)
+
                 try:
                     last_precheck_error = None
                     for precheck_url in build_headless_precheck_urls():
@@ -1345,8 +1363,9 @@ async def complete_extraction_workflow(
                         raise last_precheck_error
 
                     # 保存无头浏览器访问结果
-                    # 保存HTML
-                    headless_html = await headless_page.content()
+                    # 优先保存原始HTTP响应（JS运行前），回退到渲染后DOM
+                    headless_raw_html = _headless_raw_html[-1] if _headless_raw_html else None
+                    headless_html = headless_raw_html or await headless_page.content()
                     headless_html_file = captured_data_dir / "headless_initial.html"
                     page_html_file = captured_data_dir / "page.html"
                     with open(headless_html_file, 'w', encoding='utf-8') as f:
@@ -1391,6 +1410,8 @@ async def complete_extraction_workflow(
                             doi=doi,
                         )
                         handler.crossref_data = crossref_data
+                        if headless_raw_html:
+                            handler._raw_server_html = headless_raw_html
 
                         captured_data = None
                         if hasattr(handler, 'setup_network_capture'):
@@ -1502,6 +1523,21 @@ async def complete_extraction_workflow(
 
             page = await context.new_page()
 
+            # Intercept the main-document HTTP response to capture the raw server
+            # HTML *before* JavaScript (e.g. MathJax) rewrites the DOM.
+            _headed_raw_html: list = []
+
+            async def _headed_on_response(response):
+                try:
+                    if (response.request.resource_type == 'document'
+                            and response.ok
+                            and 'text/html' in response.headers.get('content-type', '')):
+                        _headed_raw_html.append(await response.text())
+                except Exception:
+                    pass
+
+            page.on('response', _headed_on_response)
+
             # Step 1: Navigate and detect publisher
             print("Step 1️⃣  导航到DOI并检测出版商...")
             print("=" * 80)
@@ -1524,6 +1560,10 @@ async def complete_extraction_workflow(
             except:
                 pass
 
+            # Store the raw server HTML on the handler so it can use it instead
+            # of page.content() (which returns the post-JS-rendered DOM).
+            _headed_raw = _headed_raw_html[-1] if _headed_raw_html else None
+
             final_url = page.url
             print(f"✓ 最终 URL: {final_url}")
 
@@ -1544,6 +1584,9 @@ async def complete_extraction_workflow(
                     print("✓ 网络监听已启动\n")
             else:
                 handler.configure(page=page, captured_data_dir=captured_data_dir, doi=doi)
+
+            if _headed_raw:
+                handler._raw_server_html = _headed_raw
 
             print(f"✓ 检测出版商: {publisher.upper()}\n")
 
