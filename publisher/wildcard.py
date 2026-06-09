@@ -85,6 +85,15 @@ def prepare_mathjax_html_fragment(html_fragment: str, placeholder_prefix: str = 
         latex = convert_mathml(math_tag) if math_tag else ''
         if latex:
             container.replace_with(NavigableString(f" {stash_formula(latex)} "))
+        elif container.get('jax') == 'SVG':
+            # MathJax 4 SVG-only output: no MathML is embedded.
+            # Use the accessible speech text as a readable fallback so the
+            # SVG is not passed to pandoc (which would emit a base64 data URI).
+            speech = (container.get('data-semantic-speech-none') or '').strip()
+            if speech:
+                container.replace_with(NavigableString(f" [{speech}] "))
+            else:
+                container.decompose()
 
     # MathJax 2.x rendered images: <img role="math" alt="$a$" src="data:image/png;base64,..." />
     for img in soup.find_all('img', {'role': 'math'}):
