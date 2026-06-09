@@ -1021,15 +1021,20 @@ async def complete_extraction_workflow(
         fulltext_data = extraction_result['fulltext_data']
 
         # Save HTML to the per-DOI capture directory.
-        # Prefer the raw server response (pre-JS) captured by the response
-        # interceptor; fall back to fulltext_data (post-JS rendered DOM).
-        raw_server_html = getattr(handler, '_raw_server_html', None)
-        html_to_save = raw_server_html or (fulltext_data if isinstance(fulltext_data, str) else None)
-        if html_to_save:
+        # page.html     = post-JS rendered DOM (fulltext_data from handler)
+        # page_raw.html = raw server HTTP response (pre-JS, captured by interceptor)
+        if isinstance(fulltext_data, str) and fulltext_data:
             html_file = captured_data_dir / "page.html"
             with open(html_file, 'w', encoding='utf-8') as f:
-                f.write(html_to_save)
+                f.write(fulltext_data)
             print(f"  ✓ HTML已保存: {html_file}")
+
+        raw_server_html = getattr(handler, '_raw_server_html', None)
+        if raw_server_html:
+            raw_html_file = captured_data_dir / "page_raw.html"
+            with open(raw_html_file, 'w', encoding='utf-8') as f:
+                f.write(raw_server_html)
+            print(f"  ✓ 原始HTML已保存: {raw_html_file}")
 
         # Merge with Crossref data (fill in missing fields)
         if crossref_data:
@@ -1363,17 +1368,29 @@ async def complete_extraction_workflow(
                         raise last_precheck_error
 
                     # 保存无头浏览器访问结果
-                    # 优先保存原始HTTP响应（JS运行前），回退到渲染后DOM
+                    # page_raw.html / headless_initial.html = 原始HTTP响应（JS运行前）
+                    # page.html = 渲染后DOM（handler稍后通过process_with_handler覆盖写入）
                     headless_raw_html = _headless_raw_html[-1] if _headless_raw_html else None
-                    headless_html = headless_raw_html or await headless_page.content()
+                    headless_rendered_html = await headless_page.content()
+                    headless_html = headless_rendered_html  # used for bot-detection below
+
                     headless_html_file = captured_data_dir / "headless_initial.html"
                     page_html_file = captured_data_dir / "page.html"
-                    with open(headless_html_file, 'w', encoding='utf-8') as f:
-                        f.write(headless_html)
+                    # Always write the rendered DOM to page.html (consistent with headed path)
                     with open(page_html_file, 'w', encoding='utf-8') as f:
-                        f.write(headless_html)
-
-                    print(f"  ✓ 页面已保存: {headless_html_file.name} ({len(headless_html)} 字节)")
+                        f.write(headless_rendered_html)
+                    # Write raw server response separately when available
+                    if headless_raw_html:
+                        with open(headless_html_file, 'w', encoding='utf-8') as f:
+                            f.write(headless_raw_html)
+                        raw_html_file = captured_data_dir / "page_raw.html"
+                        with open(raw_html_file, 'w', encoding='utf-8') as f:
+                            f.write(headless_raw_html)
+                        print(f"  ✓ 原始HTML已保存: {headless_html_file.name} ({len(headless_raw_html)} 字节)")
+                    else:
+                        with open(headless_html_file, 'w', encoding='utf-8') as f:
+                            f.write(headless_rendered_html)
+                        print(f"  ✓ 页面已保存: {headless_html_file.name} ({len(headless_rendered_html)} 字节)")
 
                     # 检测最终URL
                     final_headless_url = headless_page.url

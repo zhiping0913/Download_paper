@@ -889,11 +889,19 @@ class OpticaHandler(PublisherHandler):
         set_actual_base_url(self, page)
 
         try:
-            # Get full HTML — prefer raw server response (pre-MathJax) if captured
+            # raw_html  = original server response (pre-MathJax, has $...$ TeX)
+            # page_html = post-JS rendered DOM saved to page.html for debugging
             try:
-                fulltext_html = await self.get_page_html(page)
+                raw_html = await self.get_page_html(page)   # raw if captured, else rendered
             except Exception:
-                fulltext_html = ''
+                raw_html = ''
+            try:
+                rendered_html = await page.content()        # always the post-JS DOM
+            except Exception:
+                rendered_html = raw_html
+
+            # All extraction uses raw_html (proper TeX math, not SVG)
+            fulltext_html = raw_html
 
             # Metadata
             metadata = await self.extract_metadata(page)
@@ -935,7 +943,10 @@ class OpticaHandler(PublisherHandler):
                     'supplemental_urls': supp_urls,
                     'supplemental_descriptions': supp_descriptions,
                 },
-                'fulltext_data': fulltext_html,
+                # fulltext_data = rendered DOM → saved to page.html by process_with_handler
+                # _raw_server_html = raw HTML → saved to page_raw.html; also used by
+                # convert_to_markdown to regenerate body text with proper LaTeX
+                'fulltext_data': rendered_html,
                 'journal_name': 'optica',
             }
 
@@ -1000,16 +1011,20 @@ class OpticaHandler(PublisherHandler):
         if abstract:
             md_parts.extend(["---", "", "## Abstract", "", abstract, ""])
 
-        # Body text (extract from HTML, passing crossref_refs for BibTeX injection)
+        # Body text (extract from HTML, passing crossref_refs for BibTeX injection).
+        # Prefer the raw server HTML (_raw_server_html, pre-MathJax) so that
+        # inline LaTeX is preserved.  article_text is the post-JS rendered DOM
+        # returned by extract_all as fulltext_data; it is used only as a fallback.
         body_md = ''
         crossref_refs = metadata.get('_crossref_references', [])
-        if isinstance(article_text, str) and article_text.strip():
-            if article_text.lstrip().startswith('<'):
+        html_for_body = getattr(self, '_raw_server_html', None) or article_text
+        if isinstance(html_for_body, str) and html_for_body.strip():
+            if html_for_body.lstrip().startswith('<'):
                 _, body_md = self.extract_article_text_from_html(
-                    article_text, crossref_refs=crossref_refs
+                    html_for_body, crossref_refs=crossref_refs
                 )
             else:
-                body_md = article_text.strip()
+                body_md = html_for_body.strip()
 
         # Embed downloaded figure images after captions
         if kwargs.get('add_figure_refs') and kwargs.get('figure_filenames'):
