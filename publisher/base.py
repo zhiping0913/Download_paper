@@ -33,6 +33,30 @@ class PublisherHandler(ABC):
             self.doi = doi
         return self
 
+    async def get_page_html(self, page=None) -> str:
+        """Return the best available HTML for the current article page.
+
+        Prefers ``self._raw_server_html`` (the original HTTP response body
+        captured before JavaScript runs) over ``page.content()`` (the
+        post-JS-rendered DOM).  Handlers that need the pre-JS HTML (e.g.
+        Optica, where MathJax replaces LaTeX source with SVG) should call
+        this instead of ``await page.content()``.
+
+        ``_raw_server_html`` is set by the navigation helpers in
+        ``wildcard.init_extract_all_page`` and by the headed-browser path in
+        ``complete_paper_extraction.py`` before each main-page navigation.
+        """
+        raw = getattr(self, '_raw_server_html', None)
+        if raw:
+            return raw
+        p = page or self.page
+        if p is not None:
+            try:
+                return await p.content()
+            except Exception:
+                pass
+        return ''
+
     @abstractmethod
     async def extract_metadata(self, page) -> dict:
         """Extract paper metadata (author, title, abstract, etc.)"""

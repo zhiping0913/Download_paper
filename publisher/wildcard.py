@@ -533,7 +533,24 @@ async def init_extract_all_page(handler, page=None, doi: str = None, handler_nam
         managed_context = await managed_browser.new_context(accept_downloads=True)
         page = await managed_context.new_page()
         handler.configure(page=page, doi=doi)
+
+        # Intercept the main-document HTTP response to capture the raw server
+        # HTML *before* JavaScript (e.g. MathJax) rewrites the DOM.
+        _raw_html: list = []
+
+        async def _on_response(response):
+            try:
+                if (response.request.resource_type == 'document'
+                        and response.ok
+                        and 'text/html' in response.headers.get('content-type', '')):
+                    _raw_html.append(await response.text())
+            except Exception:
+                pass
+
+        page.on('response', _on_response)
         await page.goto(f"https://doi.org/{doi}", wait_until='domcontentloaded', timeout=60000)
+        if _raw_html:
+            handler._raw_server_html = _raw_html[-1]
         try:
             await page.wait_for_load_state('networkidle', timeout=15000)
         except Exception:

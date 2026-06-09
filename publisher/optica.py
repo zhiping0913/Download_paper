@@ -814,12 +814,10 @@ class OpticaHandler(PublisherHandler):
 
     async def extract_metadata(self, page) -> dict:
         """Return metadata dict from HTML meta tags."""
-        html_content = ''
-        if page is not None:
-            try:
-                html_content = await page.content()
-            except Exception:
-                html_content = ''
+        try:
+            html_content = await self.get_page_html(page)
+        except Exception:
+            html_content = ''
 
         meta = self._extract_metadata_from_html_meta(html_content)
 
@@ -891,9 +889,9 @@ class OpticaHandler(PublisherHandler):
         set_actual_base_url(self, page)
 
         try:
-            # Get full HTML
+            # Get full HTML — prefer raw server response (pre-MathJax) if captured
             try:
-                fulltext_html = await page.content()
+                fulltext_html = await self.get_page_html(page)
             except Exception:
                 fulltext_html = ''
 
