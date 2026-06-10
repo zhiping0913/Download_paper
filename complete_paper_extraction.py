@@ -449,6 +449,13 @@ async def _download_all_resources(
             print("=" * 80)
             supp_descriptions = links.get('supplemental_descriptions', {})
 
+            # Use the current page URL (after DOI redirect) as Referer so
+            # publishers like Science.org don't 403-reject direct asset requests.
+            try:
+                _article_url = page.url if page is not None else None
+            except Exception:
+                _article_url = None
+
             count, descriptions = await download_supplemental_materials(
                 supp_urls,
                 output_dir,
@@ -456,6 +463,7 @@ async def _download_all_resources(
                 supp_descriptions,
                 download_page,
                 force_headed,
+                article_url=_article_url,
             )
             downloads['supplemental'] = list(descriptions.keys())
 
@@ -568,6 +576,7 @@ async def download_supplemental_materials(
     descriptions: dict = None,
     page=None,
     force_headed: bool = False,
+    article_url: str = None,
 ) -> tuple:
     """在浏览器中打开新标签页下载补充材料文件（保持登录态）
 
@@ -699,7 +708,10 @@ async def download_supplemental_materials(
                 if _is_direct_download_url(url):
                     direct_ok = False
                     try:
-                        api_response = await context.request.get(url, timeout=60000)
+                        extra_headers = {}
+                        if article_url:
+                            extra_headers['Referer'] = article_url
+                        api_response = await context.request.get(url, timeout=60000, headers=extra_headers)
                         content_type = (api_response.headers.get('content-type') or '').lower()
                         is_html_challenge = 'text/html' in content_type
 
@@ -745,6 +757,9 @@ async def download_supplemental_materials(
 
                 # force-headed mode avoids navigating the article tab.
                 download_page = await context.new_page() if force_headed or page is None else page
+
+                if article_url:
+                    await download_page.set_extra_http_headers({"Referer": article_url})
 
                 # 设置下载事件处理
                 downloaded_file = None
