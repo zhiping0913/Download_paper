@@ -761,6 +761,32 @@ async def download_supplemental_materials(
                 if article_url:
                     await download_page.set_extra_http_headers({"Referer": article_url})
 
+                # Audio files (mp3, wav, …) are often served with
+                # Content-Disposition: inline, so Chrome plays them in-browser
+                # instead of triggering a download event.  Intercept the
+                # response and override the header to force attachment download.
+                _INLINE_AUDIO_EXTS = {'.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac', '.opus'}
+                _url_ext = Path(urllib.parse.urlparse(url).path).suffix.lower()
+                _audio_routed = False
+                if _url_ext in _INLINE_AUDIO_EXTS:
+                    _audio_routed = True
+                    _route_url = url
+                    async def _force_attachment_route(route, _request):
+                        resp = await route.fetch()
+                        ct = (resp.headers.get('content-type') or '').lower()
+                        if resp.ok and 'text/html' not in ct:
+                            hdrs = {k: v for k, v in resp.headers.items()}
+                            _fname = Path(urllib.parse.urlparse(_route_url).path).name
+                            hdrs['content-disposition'] = f'attachment; filename="{_fname}"'
+                            await route.fulfill(
+                                status=resp.status,
+                                headers=hdrs,
+                                body=await resp.body(),
+                            )
+                        else:
+                            await route.fulfill(response=resp)
+                    await download_page.route(url, _force_attachment_route)
+
                 # 设置下载事件处理
                 downloaded_file = None
 
@@ -846,6 +872,12 @@ async def download_supplemental_materials(
                         print(f"    ⚠️  直接保存响应失败: {str(e)[:100]}")
                 else:
                     print(f"    ⚠️  未捕获到下载事件: {chapter_title}")
+
+                if _audio_routed:
+                    try:
+                        await download_page.unroute(url)
+                    except Exception:
+                        pass
 
                 if download_page is not page:
                     await download_page.close()
