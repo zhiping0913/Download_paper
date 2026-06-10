@@ -289,9 +289,26 @@ class AIPHandler(PublisherHandler):
         for idx, latex in enumerate(formulas):
             md = md.replace(f"AIPMATH{idx:03d}MATHEND", latex)
 
-        # Combine header + table
+        # Extract table footnotes from div.table-wrap-foot
+        foot_div = table_wrap.find('div', class_='table-wrap-foot')
+        footnote_lines = []
+        if foot_div:
+            for fn in foot_div.find_all('div', class_='fn'):
+                label_tag = fn.find('span', class_='fn-label')
+                fn_label = label_tag.get_text(strip=True) if label_tag else ''
+                p_tag = fn.find('p')
+                if p_tag:
+                    fn_md = cls._convert_aip_html_fragment_to_markdown(str(p_tag))
+                    if fn_md:
+                        prefix = f"^{fn_label}^ " if fn_label else ''
+                        footnote_lines.append(f"{prefix}{fn_md}")
+
+        # Combine header + table + footnotes
         header = f"**{label}** {caption}" if label else f"**{caption}**"
-        return f"\n{header}\n\n{md}\n"
+        result = f"\n{header}\n\n{md}\n"
+        if footnote_lines:
+            result += "\n" + "\n\n".join(footnote_lines) + "\n"
+        return result
 
     @classmethod
     def _convert_aip_block_child_p(cls, block_div) -> str:
