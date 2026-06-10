@@ -472,28 +472,42 @@ class OpticaHandler(PublisherHandler):
     def _walk_optica_element(cls, element, parts: list, soup_root=None):
         """Process a single element and append markdown lines to parts."""
         if element.name == 'p':
-            # A <p> may embed block-level elements (figure-image, text-plus-thumb)
-            # that pandoc cannot handle inline. Extract them, convert the
-            # remaining text, then render each block element separately.
-            block_classes = ('figure-image', 'text-plus-thumb')
-            block_children = [
+            # A <p> may embed block-level <div> children (display equations,
+            # figures, tables) that pandoc cannot handle when they appear as
+            # nested block content inside an inline element.  Walk children in
+            # document order: buffer inline fragments between block divs, flush
+            # each buffer as a paragraph, then walk each block div normally.
+            from bs4 import NavigableString as _NS
+            _BLOCK_DIV_CLASSES = ('article-math-block', 'figure-image', 'text-plus-thumb')
+            block_divs = [
                 c for c in element.find_all('div', recursive=False)
-                if any(bc in (c.get('class') or []) for bc in block_classes)
+                if any(bc in (c.get('class') or []) for bc in _BLOCK_DIV_CLASSES)
             ]
-            if block_children:
-                # Build a text-only clone by removing block children.
-                # Re-parse so mutations don't affect the original tree.
-                p_clone = BeautifulSoup(str(element), 'html.parser').find()
-                for bc in block_classes:
-                    for div in p_clone.find_all('div', class_=bc):
-                        div.decompose()
-                text_md = cls._convert_paragraph_to_md(str(p_clone)).strip()
-                if text_md:
-                    parts.append(text_md)
-                    parts.append("")
-                # Render each block element in document order.
-                for block in element.find_all('div', recursive=False):
-                    cls._walk_optica_element(block, parts, soup_root=soup_root)
+            if block_divs:
+                inline_buf = []
+                for child in element.children:
+                    if isinstance(child, _NS):
+                        if str(child).strip():
+                            inline_buf.append(str(child))
+                    elif hasattr(child, 'name'):
+                        child_cls = child.get('class') or []
+                        if (child.name == 'div'
+                                and any(bc in child_cls for bc in _BLOCK_DIV_CLASSES)):
+                            if inline_buf:
+                                text_md = cls._convert_paragraph_to_md(
+                                    ''.join(inline_buf)).strip()
+                                if text_md:
+                                    parts.append(text_md)
+                                    parts.append("")
+                                inline_buf = []
+                            cls._walk_optica_element(child, parts, soup_root=soup_root)
+                        else:
+                            inline_buf.append(str(child))
+                if inline_buf:
+                    text_md = cls._convert_paragraph_to_md(''.join(inline_buf)).strip()
+                    if text_md:
+                        parts.append(text_md)
+                        parts.append("")
             else:
                 p_md = cls._convert_paragraph_to_md(str(element))
                 if p_md:
