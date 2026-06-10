@@ -761,11 +761,41 @@ async def download_supplemental_materials(
                 if article_url:
                     await download_page.set_extra_http_headers({"Referer": article_url})
 
-                # Track whether the extension is an audio type that browsers
-                # play inline (no download event fires in that case).
+                # For audio types that Chrome plays inline (no download event),
+                # register a response listener BEFORE goto() so we capture the
+                # bytes from Playwright's network layer regardless of whether
+                # goto() returns None (which it does when Chrome intercepts the
+                # navigation to render an inline audio player).
                 _INLINE_AUDIO_EXTS = {'.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac', '.opus'}
                 _url_ext = Path(urllib.parse.urlparse(url).path).suffix.lower()
                 _is_inline_audio = _url_ext in _INLINE_AUDIO_EXTS
+                _audio_body: bytes | None = None
+                _audio_done = asyncio.Event()
+
+                if _is_inline_audio:
+                    _capture_url = url
+
+                    async def _on_audio_response(resp):
+                        nonlocal _audio_body
+                        if _audio_done.is_set():
+                            return
+                        ct = (resp.headers.get('content-type') or '').lower()
+                        is_ours = (
+                            resp.url == _capture_url
+                            or resp.url.split('?')[0] == _capture_url.split('?')[0]
+                            or ('audio/' in ct and resp.ok)
+                        )
+                        if is_ours:
+                            if resp.ok and 'audio/' in ct:
+                                try:
+                                    body = await resp.body()
+                                    if body:
+                                        _audio_body = body
+                                except Exception:
+                                    pass
+                            _audio_done.set()
+
+                    download_page.on('response', _on_audio_response)
 
                 # 设置下载事件处理
                 downloaded_file = None
@@ -785,16 +815,39 @@ async def download_supplemental_materials(
                     # 下载开始时页面加载会中断，这是正常的
                     pass
 
+                # For inline audio: wait for the response listener to finish
+                # reading the body (up to 60 s for large files).  Then save
+                # directly and skip the download-event path entirely.
+                if _is_inline_audio and not downloaded_file:
+                    try:
+                        await asyncio.wait_for(_audio_done.wait(), timeout=60)
+                    except asyncio.TimeoutError:
+                        pass
+                    try:
+                        download_page.remove_listener('response', _on_audio_response)
+                    except Exception:
+                        pass
+                    if _audio_body:
+                        try:
+                            output_path.write_bytes(_audio_body)
+                            output_path = _detect_and_rename(output_path)
+                            file_size_mb = output_path.stat().st_size / (1024 * 1024)
+                            print(f"    ✓ 已保存: {output_path.name} ({file_size_mb:.2f} MB)")
+                            downloaded_count += 1
+                            saved_name = output_path.name
+                            downloaded_descriptions[saved_name] = desc_value if desc_value else chapter_title
+                        except Exception as e:
+                            print(f"    ⚠️  音频保存失败: {str(e)[:100]}")
+                        if download_page is not page:
+                            await download_page.close()
+                        success = True
+                        break
+
                 # 等待下载事件或超时。
                 # 对于 Cloudflare 等反爬挑战页面，需要给 JS 几秒钟时间通过 challenge
                 # 后才会触发实际的下载，所以等待时间放宽到 ~20 秒。
-                # For inline-audio responses the browser plays the file instead
-                # of triggering a download event — skip the wait and go straight
-                # to response.body() so we don't block for 20 seconds needlessly.
-                _nav_ct = (response.headers.get('content-type') if response else None or '').lower()
-                _skip_download_wait = _is_inline_audio and response and response.ok and 'text/html' not in _nav_ct
                 try:
-                    if not downloaded_file and not _skip_download_wait:
+                    if not downloaded_file:
                         download_event = await asyncio.wait_for(
                             asyncio.create_task(download_page.wait_for_event("download", timeout=20000)),
                             timeout=22
