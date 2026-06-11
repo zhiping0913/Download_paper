@@ -60,13 +60,18 @@ def prepare_mathjax_html_fragment(html_fragment: str, placeholder_prefix: str = 
         return f"{placeholder_prefix}{len(formulas) - 1:03d}MATHEND"
 
     # MathJax 2.x markup (Springer / link.springer.com etc.): a
-    # ``span.mathjax-tex`` wrapper contains an SVG rendering plus the
-    # original LaTeX source in ``<script type="math/tex">``.  Extract the
-    # source BEFORE the generic script-decompose pass below, otherwise
-    # only the SVG remains and pandoc emits a base64 data URI.
+    # ``span.mathjax-tex`` wrapper contains either
+    #   (post-render) an SVG rendering + the original LaTeX in
+    #     ``<script type="math/tex">``, or
+    #   (pre-render)  the raw TeX still in ``\(...\)`` / ``\[...\]`` form
+    #     because MathJax hasn't run yet.
+    # Handle both shapes BEFORE the generic script-decompose pass below,
+    # otherwise post-render leaves only the SVG (→ base64 data URI) and
+    # pre-render leaves raw delimiters pandoc mangles into ``\\(...\\)``.
     for wrapper in soup.select('span.mathjax-tex'):
         latex = ''
         is_display = False
+        # 1. Post-render: prefer the original LaTeX from <script type="math/tex">.
         script_tag = wrapper.find(
             'script',
             attrs={'type': lambda v: v and v.startswith('math/tex')},
@@ -76,16 +81,30 @@ def prepare_mathjax_html_fragment(html_fragment: str, placeholder_prefix: str = 
             type_attr = (script_tag.get('type') or '').lower()
             if 'mode=display' in type_attr:
                 is_display = True
+        # 2. Post-render fallback: data-mathml attribute on MathJax_SVG span.
         if not latex:
             svg_span = wrapper.find('span', class_='MathJax_SVG')
             mathml = svg_span.get('data-mathml', '') if svg_span is not None else ''
             if mathml:
                 latex = mathml_to_latex_pandoc(mathml).strip()
+        # 3. Post-render fallback: MJX_Assistive_MathML's <math>.
         if not latex:
             assistive = wrapper.find('span', class_='MJX_Assistive_MathML')
             math_tag = assistive.find('math') if assistive is not None else None
             if math_tag is not None:
                 latex = mathml_to_latex_pandoc(str(math_tag)).strip()
+        # 4. Pre-render: wrapper text is just ``\(...\)`` or ``\[...\]``.
+        #    No script/SVG/MathML markup is present yet.
+        if not latex:
+            raw_text = wrapper.get_text('', strip=True)
+            if raw_text:
+                inline_match = re.fullmatch(r'\\\((.*)\\\)', raw_text, re.DOTALL)
+                display_match = re.fullmatch(r'\\\[(.*)\\\]', raw_text, re.DOTALL)
+                if inline_match:
+                    latex = inline_match.group(1).strip()
+                elif display_match:
+                    latex = display_match.group(1).strip()
+                    is_display = True
         if latex:
             latex = strip_inline_math_delimiters(latex)
             rendered = (f" $$\n{latex}\n$$ " if is_display
