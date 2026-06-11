@@ -59,6 +59,39 @@ def prepare_mathjax_html_fragment(html_fragment: str, placeholder_prefix: str = 
         formulas.append(latex)
         return f"{placeholder_prefix}{len(formulas) - 1:03d}MATHEND"
 
+    # MathJax 2.x markup (Springer / link.springer.com etc.): a
+    # ``span.mathjax-tex`` wrapper contains an SVG rendering plus the
+    # original LaTeX source in ``<script type="math/tex">``.  Extract the
+    # source BEFORE the generic script-decompose pass below, otherwise
+    # only the SVG remains and pandoc emits a base64 data URI.
+    for wrapper in soup.select('span.mathjax-tex'):
+        latex = ''
+        is_display = False
+        script_tag = wrapper.find(
+            'script',
+            attrs={'type': lambda v: v and v.startswith('math/tex')},
+        )
+        if script_tag is not None:
+            latex = (script_tag.string or script_tag.get_text() or '').strip()
+            type_attr = (script_tag.get('type') or '').lower()
+            if 'mode=display' in type_attr:
+                is_display = True
+        if not latex:
+            svg_span = wrapper.find('span', class_='MathJax_SVG')
+            mathml = svg_span.get('data-mathml', '') if svg_span is not None else ''
+            if mathml:
+                latex = mathml_to_latex_pandoc(mathml).strip()
+        if not latex:
+            assistive = wrapper.find('span', class_='MJX_Assistive_MathML')
+            math_tag = assistive.find('math') if assistive is not None else None
+            if math_tag is not None:
+                latex = mathml_to_latex_pandoc(str(math_tag)).strip()
+        if latex:
+            latex = strip_inline_math_delimiters(latex)
+            rendered = (f" $$\n{latex}\n$$ " if is_display
+                        else f" ${latex}$ ")
+            wrapper.replace_with(NavigableString(f" {stash_formula(rendered)} "))
+
     for tag in soup(['script', 'style', 'noscript']):
         tag.decompose()
 
