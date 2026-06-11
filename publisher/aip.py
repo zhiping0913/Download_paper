@@ -532,9 +532,16 @@ class AIPHandler(PublisherHandler):
 
     @staticmethod
     def _extract_direct_supplemental_links(html_content: str) -> tuple:
-        """Extract supplemental material links directly from class="supplementary-material-link".
+        """Extract supplemental material links directly from the article HTML.
 
-        AIP embeds supplemental links directly in the HTML with class="supplementary-material-link".
+        AIP marks supplemental links in several ways:
+          * class="supplementary-material-link" (older inline links)
+          * data-doctype="dataSupplementDoc" (data supplements widget)
+          * any <a> inside div.widget-ArticleDataSupplements
+          * any <a> following an h2 whose text matches "supplementary material"
+            (some articles have two such h2s — the first is just the
+            descriptive prose, the second wraps the actual download link)
+
         Returns (urls, descriptions) where descriptions maps URL -> text content.
         """
         if not html_content:
@@ -545,30 +552,82 @@ class AIPHandler(PublisherHandler):
         links = []
         descriptions = {}
 
-        # Find all links with class="supplementary-material-link"
-        supp_links = soup.find_all('a', class_='supplementary-material-link')
-
-        for link in supp_links:
-            href = link.get('href', '').strip()
-            if not href:
-                continue
-
-            # Build full URL if relative
+        def _add_link(link_tag):
+            href = (link_tag.get('href') or '').strip()
+            if not href or href.startswith(('javascript:', '#', 'mailto:')):
+                return
             if href.startswith('/'):
                 href = f"https://pubs.aip.org{href}"
             elif not href.startswith('http'):
                 href = f"https://pubs.aip.org/{href}"
-
-            # Deduplicate
             if href in seen_urls:
-                continue
+                return
             seen_urls.add(href)
             links.append(href)
-
-            # Extract link text as description
-            link_text = link.get_text(' ', strip=True)
+            link_text = link_tag.get_text(' ', strip=True)
             if link_text:
                 descriptions[href] = link_text
+
+        # 1) Inline supplementary-material-link anchors
+        for link in soup.find_all('a', class_='supplementary-material-link'):
+            _add_link(link)
+
+        # 2) Data-supplement widget anchors (data-doctype attribute)
+        for link in soup.find_all('a', attrs={'data-doctype': 'dataSupplementDoc'}):
+            _add_link(link)
+
+        # 3) Any <a href> inside the ArticleDataSupplements widget
+        for widget in soup.find_all('div', class_='widget-ArticleDataSupplements'):
+            for link in widget.find_all('a', href=True):
+                _add_link(link)
+
+        # 4) Walk every h2 whose text (or data-section-title) matches
+        #    "supplementary material".  For each match, scan the enclosing
+        #    section container AND the following siblings until the next h2
+        #    for download anchors.  This catches articles where the actual
+        #    link only appears under the second of two "Supplementary
+        #    Material" headings.
+        def _is_supp_heading(tag):
+            if tag.name != 'h2':
+                return False
+            section_title = (tag.get('data-section-title') or '').strip().lower()
+            text = tag.get_text(' ', strip=True).lower()
+            return ('supplementary material' in section_title
+                    or 'supplementary material' in text)
+
+        def _looks_like_download(link_tag) -> bool:
+            href = (link_tag.get('href') or '').strip().lower()
+            if not href or href.startswith(('javascript:', '#', 'mailto:')):
+                return False
+            patterns = (
+                'supplement', 'suppl_material', '/article-supplement/',
+                'datasupplement', 'figshare', 'ndownloader',
+            )
+            if any(pat in href for pat in patterns):
+                return True
+            if link_tag.get('data-doctype') == 'dataSupplementDoc':
+                return True
+            classes = link_tag.get('class') or []
+            if 'supplementary-material-link' in classes:
+                return True
+            return False
+
+        for heading in soup.find_all(_is_supp_heading):
+            # The heading itself may sit inside a wrapper widget; scan that
+            # wrapper as well as the heading's following siblings.
+            scan_roots = []
+            parent = heading.parent
+            if parent is not None:
+                scan_roots.append(parent)
+            for sib in heading.next_siblings:
+                if getattr(sib, 'name', None) == 'h2':
+                    break
+                if hasattr(sib, 'find_all'):
+                    scan_roots.append(sib)
+            for root in scan_roots:
+                for link in root.find_all('a', href=True):
+                    if _looks_like_download(link):
+                        _add_link(link)
 
         return links, descriptions
 
