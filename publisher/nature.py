@@ -866,7 +866,16 @@ class NatureHandler(PublisherHandler):
                 return "\n".join(lines) + "\n"
 
             is_equation = 'c-article-equation' in paragraph_html
-            md = convert_html_to_markdown(paragraph_html)
+            # Preprocess MathJax markup (3/4 mjx-container, 2.x mathjax-tex
+            # wrappers with <script type="math/tex"> source) so pandoc never
+            # sees the SVG rendering — otherwise inline formulas come out as
+            # base64 data: URIs.
+            prepared_html, _math_formulas = prepare_mathjax_html_fragment(
+                paragraph_html, "NATUREMATH"
+            )
+            md = convert_html_to_markdown(prepared_html)
+            for _idx, _latex in enumerate(_math_formulas):
+                md = md.replace(f"NATUREMATH{_idx:03d}MATHEND", _latex)
             md = cleanup_markdown(md)
 
             if is_equation:
