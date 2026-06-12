@@ -765,43 +765,68 @@ class OpticaHandler(PublisherHandler):
     # ------------------------------------------------------------------
 
     @classmethod
-    def _find_supplemental_links_from_html(cls, html_content: str) -> list:
+    def _find_supplemental_links_from_html(cls, html_content: str) -> dict:
         """Find supplemental material links from the article HTML.
 
+        Returns {url: description} so callers can relay file descriptions.
+
         Looks in:
-        1. <h2> containing "Supplemental" → <a href="...figshare...">
-        2. Supplementary Material table → <a class="view_media">
+        1. div#articleSupplMat (h2 or h3 heading) → figshare/DOI links
+        2. <a class="view_media"> rows in the supplemental table — description
+           is pulled from the sibling <td>; these viewmedia.cfm links must
+           be resolved to actual Figshare download URLs by the caller.
         """
         if not html_content:
-            return []
+            return {}
 
         soup = BeautifulSoup(html_content, 'html.parser')
-        links = []
+        links: dict[str, str] = {}
 
-        # 1. Supplemental document section with figshare / DOI links
-        for h2 in soup.find_all('h2'):
-            h2_text = h2.get_text().strip().lower()
-            if 'supplemental' not in h2_text and 'supplement' not in h2_text:
+        # 1. Supplemental section — look for direct figshare/DOI hrefs
+        #    in both h2 and h3 headings (Optica uses h3 in newer layouts).
+        for hx in soup.find_all(['h2', 'h3']):
+            hx_text = hx.get_text().strip().lower()
+            if 'supplemental' not in hx_text and 'supplement' not in hx_text:
                 continue
-            # Walk siblings until next h2
-            cur = h2.find_next_sibling()
-            while cur and cur.name != 'h2':
+            cur = hx.find_next_sibling()
+            while cur and cur.name not in ('h2', 'h3'):
                 for a in (cur.find_all('a', href=True) if hasattr(cur, 'find_all') else []):
                     href = a.get('href', '')
                     if 'figshare' in href or '10.6084' in href or '/m9.figshare' in href:
                         if href not in links:
-                            links.append(href)
+                            links[href] = a.get_text(' ', strip=True) or 'Supplemental document'
                 cur = cur.find_next_sibling() if hasattr(cur, 'find_next_sibling') else None
 
-        # 2. Supplementary Material table (local viewmedia links)
-        for a in soup.find_all('a', class_='view_media'):
-            href = a.get('href', '')
-            if not href:
-                continue
-            if not href.startswith('http'):
-                href = cls.OPTICA_BASE + '/' + href.lstrip('/')
-            if href not in links:
-                links.append(href)
+        # 2. Supplementary Material table inside div#articleSupplMat.
+        #    NOTE: the HTML has duplicate class= attrs on the <a> tags
+        #    (class="view_media" … class="abstract"), so BeautifulSoup's
+        #    class_ filter is unreliable.  Query by href content instead.
+        suppl_div = soup.find('div', id='articleSupplMat')
+        if suppl_div:
+            for a in suppl_div.find_all('a', href=True):
+                href = a.get('href', '')
+                if not href:
+                    continue
+                # Skip figure/image viewmedia links — they carry imagetype= or figure=
+                if 'imagetype' in href or 'figure=' in href:
+                    continue
+                if 'viewmedia.cfm' not in href and 'figshare' not in href and '10.6084' not in href:
+                    continue
+                if not href.startswith('http'):
+                    href = cls.OPTICA_BASE + '/' + href.lstrip('/')
+                if href in links:
+                    continue
+                # Description: link text ("Code 1") + sibling <td> text if available
+                name = re.sub(r'\s+', ' ', a.get_text(' ', strip=True)).strip()
+                desc = name
+                tr = a.find_parent('tr')
+                if tr:
+                    tds = tr.find_all('td')
+                    if len(tds) >= 2:
+                        sibling_text = tds[-1].get_text(' ', strip=True)
+                        if sibling_text and sibling_text != name:
+                            desc = f"{name}: {sibling_text}" if name else sibling_text
+                links[href] = desc
 
         return links
 
@@ -844,6 +869,54 @@ class OpticaHandler(PublisherHandler):
 
         await new_tab.close()
         return figshare_url  # fallback to original DOI link
+
+    @staticmethod
+    async def _resolve_viewmedia_link(page, viewmedia_url: str) -> str:
+        """Navigate to an Optica viewmedia.cfm page and extract the Figshare URL.
+
+        viewmedia.cfm redirects to or embeds the Figshare article page.
+        Return the Figshare article URL (caller will further resolve it to
+        an ndownloader URL via _resolve_figshare_download), or the original
+        URL as a fallback.
+        """
+        print(f"  🔗 解析viewmedia链接: {viewmedia_url}")
+        new_tab = await page.context.new_page()
+        try:
+            try:
+                await new_tab.goto(viewmedia_url, wait_until='networkidle', timeout=30000)
+            except Exception:
+                try:
+                    await new_tab.goto(viewmedia_url, wait_until='domcontentloaded', timeout=30000)
+                except Exception as e:
+                    print(f"  ⚠ viewmedia页面加载失败: {e}")
+                    await new_tab.close()
+                    return viewmedia_url
+
+            # After navigation the page may have redirected to Figshare,
+            # or it may embed a link to the Figshare article page.
+            figshare_url = await new_tab.evaluate("""() => {
+                // Check if we already landed on Figshare
+                if (location.href.includes('figshare.com')) return location.href;
+                // Look for any figshare link in the page
+                const a = document.querySelector(
+                    'a[href*="figshare.com"], a[href*="10.6084"], a[href*="/m9.figshare"]'
+                );
+                return a ? a.href : null;
+            }""")
+
+            await new_tab.close()
+            if figshare_url:
+                print(f"  ✓ 找到Figshare链接: {figshare_url[:80]}")
+                return figshare_url
+            return viewmedia_url
+
+        except Exception as e:
+            print(f"  ⚠ viewmedia解析失败: {e}")
+            try:
+                await new_tab.close()
+            except Exception:
+                pass
+            return viewmedia_url
 
     # ------------------------------------------------------------------
     # Publisher contract: extract_metadata
@@ -963,14 +1036,24 @@ class OpticaHandler(PublisherHandler):
             supp_descriptions = {}
             if fulltext_html:
                 raw_supp = self._find_supplemental_links_from_html(fulltext_html)
-                for link in raw_supp:
-                    if 'figshare' in link or '10.6084' in link:
+                for link, desc in raw_supp.items():
+                    if 'viewmedia.cfm' in link:
+                        # Optica media-viewer page — navigate to it and extract
+                        # the Figshare article URL, then resolve to ndownloader.
+                        figshare_link = await self._resolve_viewmedia_link(page, link)
+                        if 'figshare' in figshare_link or '10.6084' in figshare_link:
+                            resolved = await self._resolve_figshare_download(page, figshare_link)
+                        else:
+                            resolved = figshare_link
+                        supp_urls.append(resolved)
+                        supp_descriptions[resolved] = desc
+                    elif 'figshare' in link or '10.6084' in link:
                         resolved = await self._resolve_figshare_download(page, link)
                         supp_urls.append(resolved)
-                        supp_descriptions[resolved] = 'Supplemental document'
+                        supp_descriptions[resolved] = desc
                     else:
                         supp_urls.append(link)
-                        supp_descriptions[link] = 'Supplemental document'
+                        supp_descriptions[link] = desc
 
             return {
                 'metadata': metadata,
