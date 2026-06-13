@@ -383,6 +383,21 @@ class ScienceDirectHandler(PublisherHandler):
             if not disp.get_text(strip=True):
                 disp.decompose()
 
+        # Footnote refs (<a href="#fnN" ...>†</a>) → pandoc ``[^N]`` markers,
+        # stashed via the restore_map so pandoc doesn't escape the ``[``/``^``.
+        # Must run BEFORE the generic anchor-stripping below, which would
+        # otherwise reduce the anchor to the cycling †/‡ symbol and lose the
+        # link to the actual footnote definition.
+        fn_counter = [0]
+        for a in soup.find_all('a', href=re.compile(r'^#fn\d+$')):
+            m_fn = re.match(r'^#fn(\d+)$', a.get('href', ''))
+            if not m_fn:
+                continue
+            key = f"XSDFNX{fn_counter[0]:04d}XEND"
+            fn_counter[0] += 1
+            restore[key] = f"[^{m_fn.group(1)}]"
+            a.replace_with(soup.new_string(key))
+
         # Drop noisy cross-reference anchors so they don't pollute the MD output.
         for a in soup.find_all('a', class_=re.compile(r'anchor')):
             text = a.get_text(' ', strip=True)
@@ -459,7 +474,62 @@ class ScienceDirectHandler(PublisherHandler):
 
         body_md = "\n".join(parts).strip()
         body_md = re.sub(r'\n{3,}', '\n\n', body_md)
+
+        # Append footnote definitions so pandoc-style ``[^N]`` refs resolve.
+        footnotes = cls._extract_footnotes_from_html(soup)
+        if footnotes:
+            footnote_lines = []
+            for n, text in footnotes:
+                # Indent continuation lines so the definition stays attached.
+                indented = text.replace('\n', '\n    ')
+                footnote_lines.append(f"[^{n}]: {indented}")
+            body_md = body_md.rstrip() + "\n\n" + "\n\n".join(footnote_lines) + "\n"
+
         return combined_abstract, body_md
+
+    @classmethod
+    def _extract_footnotes_from_html(cls, soup) -> list:
+        """Return ``[(n, markdown), ...]`` for footnotes in ``div.Footnotes``.
+
+        Each ``<dl class="footnote">`` pairs a ``<dt class="footnote-label">``
+        (back-anchor like ``<a href="#bfnN">``) with a ``<dd class="footnote-detail">``
+        containing ``<div id="cenotepN">`` — the footnote text.  The number N
+        matches the ``#fnN`` href used by body references.
+        """
+        results = []
+        footnotes_div = soup.find('div', class_='Footnotes')
+        if not footnotes_div:
+            return results
+
+        for dl in footnotes_div.find_all('dl', class_='footnote'):
+            n = None
+            dt = dl.find('dt', class_='footnote-label')
+            if dt:
+                back = dt.find('a', href=re.compile(r'^#bfn\d+$'))
+                if back:
+                    m = re.match(r'^#bfn(\d+)$', back.get('href', ''))
+                    if m:
+                        n = m.group(1)
+            if n is None:
+                # Fallback: derive from the cenotepN id on the detail div.
+                detail_div = dl.find('div', id=re.compile(r'^cenotep\d+$'))
+                if detail_div:
+                    m = re.match(r'^cenotep(\d+)$', detail_div.get('id', ''))
+                    if m:
+                        n = m.group(1)
+            if n is None:
+                continue
+
+            dd = dl.find('dd', class_='footnote-detail')
+            if not dd:
+                continue
+            inner_div = dd.find('div', id=re.compile(r'^cenotep\d+$')) or dd
+            text_md = cls._convert_paragraph_to_md(str(inner_div))
+            if not text_md:
+                continue
+            results.append((n, text_md))
+
+        return results
 
     @classmethod
     def _walk_sd_body(cls, container, parts: list):
