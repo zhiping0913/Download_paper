@@ -996,6 +996,47 @@ class OpticaHandler(PublisherHandler):
         )
         doi = self.doi  # resolve doi from handler after init (may have been None)
 
+        # Optica (2026 redesign): doi.org now lands on abstract.cfm which has
+        # only the abstract — the body and references live on the matching
+        # fulltext.cfm URL (same query string). Navigate there and re-capture
+        # the raw server response so extraction sees the full article.
+        try:
+            current_url = page.url or ''
+            if 'abstract.cfm' in current_url:
+                fulltext_url = current_url.replace('abstract.cfm', 'fulltext.cfm')
+                print(f"  ↪ Optica: 切换到 fulltext 页面 {fulltext_url}")
+                _fulltext_raw: list = []
+
+                async def _capture_fulltext(response):
+                    try:
+                        if (response.request.resource_type == 'document'
+                                and response.ok
+                                and 'text/html' in response.headers.get('content-type', '')
+                                and response.url == fulltext_url):
+                            _fulltext_raw.append(await response.text())
+                    except Exception:
+                        pass
+
+                page.on('response', _capture_fulltext)
+                try:
+                    await page.goto(fulltext_url, wait_until='domcontentloaded', timeout=60000)
+                    try:
+                        await page.wait_for_load_state('networkidle', timeout=15000)
+                    except Exception:
+                        pass
+                finally:
+                    try:
+                        page.remove_listener('response', _capture_fulltext)
+                    except Exception:
+                        pass
+
+                if _fulltext_raw:
+                    # Overwrite the abstract-page raw HTML so page_raw.html and
+                    # all downstream extraction use the fulltext response.
+                    self._raw_server_html = _fulltext_raw[-1]
+        except Exception as e:
+            print(f"  ⚠️  Optica fulltext 切换失败: {e}")
+
         set_actual_base_url(self, page)
 
         try:
