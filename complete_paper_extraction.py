@@ -671,14 +671,28 @@ async def download_supplemental_materials(
                 safe_title = re.sub(r'[<>:"/\\|?*]', '_', chapter_title)
                 safe_title = re.sub(r'_+', '_', safe_title).strip('_')  # 去重下划线并去除边界
 
-                # 生成输出文件名，确保不超过文件系统限制（255字节）
-                if desc_value and isinstance(desc_value, str) and '--' in desc_value:
-                    output_filename = f"supplemental--{desc_value}"
-                else:
-                    output_filename = f"supplemental--{safe_title}"
-                # Truncate to stay within OS filename limit (255 bytes)
-                stem = Path(output_filename).stem[:200]
+                # Always use safe_title (URL basename or short chapter title) for
+                # the filename. Long prose descriptions live in metadata, never
+                # in filenames — APS descriptions can run to 300+ bytes and
+                # commonly contain '--' or '/' (e.g. "reflection/transmission"),
+                # which used to blow past the 255-byte filename limit and break
+                # Path.stem-based truncation.
+                output_filename = f"supplemental--{safe_title}"
+
+                # Truncate to fit ext4's 255-byte per-component limit. Use UTF-8
+                # byte length (not char count) since non-ASCII titles take 2–4
+                # bytes per char. Preserve the extension so the file type stays
+                # recognisable.
                 suffix = Path(output_filename).suffix
+                stem = output_filename[:-len(suffix)] if suffix else output_filename
+                MAX_STEM_BYTES = 200  # leave headroom for suffix + dedup suffix
+                stem_bytes = stem.encode('utf-8')
+                if len(stem_bytes) > MAX_STEM_BYTES:
+                    truncated = stem_bytes[:MAX_STEM_BYTES]
+                    # Drop trailing bytes that would split a multi-byte UTF-8 char
+                    while truncated and (truncated[-1] & 0xC0) == 0x80:
+                        truncated = truncated[:-1]
+                    stem = truncated.decode('utf-8', errors='ignore')
                 output_filename = stem + suffix
                 output_path = output_dir / output_filename
 
