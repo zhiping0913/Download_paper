@@ -337,6 +337,60 @@ class AIPHandler(PublisherHandler):
         return text_md.strip()
 
     @classmethod
+    def _convert_aip_list(cls, list_tag, level: int = 0) -> str:
+        """Convert <ul>/<ol> to markdown, recursing into nested lists.
+
+        Each ``<li>`` may contain a ``<p>`` plus more lists.  The shared
+        fragment converter collapses whitespace, so we process every
+        non-list child of the ``<li>`` as one fragment and recurse into
+        nested ``<ul>``/``<ol>`` separately.
+        """
+        is_ordered = list_tag.name == 'ol'
+        indent = '    ' * level
+        lines = []
+        counter = 0
+        for li in list_tag.find_all('li', recursive=False):
+            counter += 1
+            marker = f"{counter}." if is_ordered else "-"
+
+            nested_lists = [
+                c for c in li.find_all(['ul', 'ol'], recursive=False)
+            ]
+
+            # Build an HTML fragment containing every direct child of the
+            # ``<li>`` that is NOT a nested list, so the formula pipeline
+            # still sees inline MathJax/MathML in the item's prose.
+            inner_html_parts = []
+            for child in li.children:
+                if hasattr(child, 'name') and child.name in ('ul', 'ol'):
+                    continue
+                inner_html_parts.append(str(child))
+            inner_html = ''.join(inner_html_parts).strip()
+
+            text_md = ''
+            if inner_html:
+                # Wrap in a div so the converter sees a block context.
+                text_md = cls._convert_aip_html_fragment_to_markdown(
+                    f"<div>{inner_html}</div>"
+                ).strip()
+
+            if text_md:
+                first_line, *rest = text_md.split('\n')
+                lines.append(f"{indent}{marker} {first_line}")
+                cont_indent = indent + ('   ' if is_ordered else '  ')
+                for rl in rest:
+                    lines.append(f"{cont_indent}{rl}" if rl.strip() else '')
+            else:
+                lines.append(f"{indent}{marker}")
+
+            for nl in nested_lists:
+                nested_md = cls._convert_aip_list(nl, level=level + 1)
+                if nested_md:
+                    lines.append(nested_md)
+
+        return '\n'.join(lines).strip()
+
+    @classmethod
     def extract_article_text_from_html(cls, html_content: str):
         """Extract AIP article text, returning (abstract_md, body_md).
 
@@ -427,11 +481,16 @@ class AIPHandler(PublisherHandler):
                     body_parts.extend([table_md, ""])
                 continue
 
-            paragraphs = node.find_all('p', recursive=False)
-            for paragraph in paragraphs:
-                paragraph_md = cls._convert_aip_html_fragment_to_markdown(str(paragraph))
-                if paragraph_md:
-                    body_parts.extend([paragraph_md, ""])
+            # Walk direct children so paragraphs and lists stay in order.
+            for child in node.find_all(['p', 'ul', 'ol'], recursive=False):
+                if child.name == 'p':
+                    paragraph_md = cls._convert_aip_html_fragment_to_markdown(str(child))
+                    if paragraph_md:
+                        body_parts.extend([paragraph_md, ""])
+                else:
+                    list_md = cls._convert_aip_list(child)
+                    if list_md:
+                        body_parts.extend([list_md, ""])
 
         abstract_md = "\n\n".join(abstract_parts).strip()
         body_md = "\n".join(body_parts).strip()
