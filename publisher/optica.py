@@ -596,27 +596,55 @@ class OpticaHandler(PublisherHandler):
         # Pre-clean: unwrap article-math-block divs so that $$...$$ equations
         # become inline text inside the <p>, preventing pandoc from splitting the
         # paragraph at the nested <div> boundary.
-        # 1. Remove equation label anchors (produces "[]{#e1} (1)" noise).
+        #
+        # Each article-math-block div contains:
+        #   <a name="e02">...</a>                     ← named anchor (drop)
+        #   <a class="math-controls ...">(2)</a>      ← equation number (keep "(2)")
+        #   <math display="block">...</math>          ← MathML → $$...$$
+        # We pull the "(N)" out of the math-controls anchor and re-emit it
+        # AFTER the math element, so the rendered markdown reads "$$...$$ (N)".
+        def _process_math_block(match):
+            inner = match.group(1)
+            # Pull the parenthesised label out of the math-controls anchor
+            eq_number = ''
+            ctrl = re.search(
+                r'<a\s[^>]*class=["\'][^"\']*math-controls[^"\']*["\'][^>]*>([\s\S]*?)</a>',
+                inner,
+                flags=re.IGNORECASE,
+            )
+            if ctrl:
+                num = re.search(r'\(([^)]+)\)', ctrl.group(1))
+                if num:
+                    eq_number = f' ({num.group(1)})'
+            # Strip the math-controls anchor (produces "[]{#e1} (1)" noise otherwise)
+            inner = re.sub(
+                r'<a\s[^>]*class=["\'][^"\']*math-controls[^"\']*["\'][^>]*>[\s\S]*?</a>',
+                '',
+                inner,
+                flags=re.IGNORECASE,
+            )
+            # Strip named anchors like <a name="e02">...</a>
+            inner = re.sub(
+                r'<a\s+name=["\'][^"\']*["\'][^>]*>[\s\S]*?</a>',
+                '',
+                inner,
+                flags=re.IGNORECASE,
+            )
+            return inner + eq_number
+
         fragment = re.sub(
-            r'<a\s[^>]*class=["\'][^"\']*math-controls[^"\']*["\'][^>]*>.*?</a>',
-            '',
+            r'<div[^>]*class=["\'][^"\']*article-math-block[^"\']*["\'][^>]*>([\s\S]*?)</div>',
+            _process_math_block,
             html_fragment,
-            flags=re.IGNORECASE | re.DOTALL,
+            flags=re.IGNORECASE,
         )
-        # 2. Remove named anchors like <a name="e1">...</a>
+        # Also strip named anchors anywhere else in the paragraph (e.g. inline
+        # equation labels next to span.ref refs).
         fragment = re.sub(
             r'<a\s+name=["\'][^"\']*["\'][^>]*>.*?</a>',
             '',
             fragment,
             flags=re.IGNORECASE | re.DOTALL,
-        )
-        # 3. Replace <div class="article-math-block">...</div> with its inner text,
-        #    so $$...$$ sits inline in the paragraph rather than inside a block div.
-        fragment = re.sub(
-            r'<div[^>]*class=["\'][^"\']*article-math-block[^"\']*["\'][^>]*>([\s\S]*?)</div>',
-            r'\1',
-            fragment,
-            flags=re.IGNORECASE,
         )
 
         math_store = {}
