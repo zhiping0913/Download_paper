@@ -194,15 +194,39 @@ class CambridgeHandler(PublisherHandler):
         for a_tag in soup.select('a.xref-fig, a.xref-table'):
             a_tag.replace_with(NavigableString(a_tag.get_text(' ', strip=True)))
 
-        # Inline formulas rendered as MathJax CHTML with assistive MathML
+        # Inline formulas rendered as MathJax CHTML with assistive MathML.
+        # Cambridge has at least three flavours:
+        #   1) <math>…</math>                        — MathML (e.g. 10.1155 hosted papers)
+        #   2) <mjx-math data-latex="…">             — MathJax 3 CHTML output
+        #   3) <span class="tex-math">$…$</span>     — raw TeX text inside an
+        #                                              <span class="alternatives">
+        #                                              that also has the
+        #                                              <img mathjax-alternative>
+        #                                              GIF placeholder (10.1017
+        #                                              and many other CUP DOIs).
+        # All three sit inside <span class="inline-formula">. Try each in turn;
+        # whichever yields LaTeX wins, and the whole inline-formula span (image
+        # and all) gets replaced with the LaTeX placeholder.
         for formula in soup.select('span.inline-formula'):
+            latex = ''
             math_tag = formula.find('math')
             if math_tag:
                 latex = cls._convert_mathml(math_tag)
-            else:
+            if not latex:
                 mjx_math_el = formula.find('mjx-math')
                 data_latex = mjx_math_el.get('data-latex', '') if mjx_math_el else ''
-                latex = f"${data_latex}$" if data_latex else ''
+                if data_latex:
+                    latex = f"${data_latex}$"
+            if not latex:
+                # Raw TeX inside <span class="tex-math"> — already wrapped in $…$
+                tex_el = formula.find('span', class_='tex-math')
+                if tex_el:
+                    tex_text = tex_el.get_text(strip=True)
+                    if tex_text:
+                        # Already has $ delimiters; if missing, add them.
+                        if not (tex_text.startswith('$') and tex_text.endswith('$')):
+                            tex_text = f"${tex_text}$"
+                        latex = tex_text
             if latex:
                 formula.replace_with(NavigableString(f" {stash_formula(latex)} "))
 
