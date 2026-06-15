@@ -31,7 +31,8 @@ from core import (
     fetch_crossref,
     fetch_semanticscholar,
     organize_paper_output,
-    save_metadata_json
+    save_metadata_json,
+    block_mathjax,
 )
 from publisher.orchestrator import (
     detect_publisher_from_url,
@@ -1454,6 +1455,10 @@ async def complete_extraction_workflow(
                 headless_context = await headless_browser.new_context(**context_kwargs)
                 headless_page = await headless_context.new_page()
 
+                # Stop MathJax from running so we keep original \(...\) / <math>
+                # markup in the DOM. Must be registered before the first goto().
+                await block_mathjax(headless_page)
+
                 # Capture raw server HTML (pre-JavaScript) via response interception.
                 _headless_raw_html: list = []
 
@@ -1659,6 +1664,11 @@ async def complete_extraction_workflow(
                 print("✓ 创建新context (accept_downloads=True)\n")
 
             page = await context.new_page()
+
+            # Stop MathJax from running so the rendered DOM (page.content())
+            # also keeps original \(...\) / <math> markup. Must be registered
+            # before the first goto().
+            await block_mathjax(page)
 
             # Intercept the main-document HTTP response to capture the raw server
             # HTML *before* JavaScript (e.g. MathJax) rewrites the DOM.
