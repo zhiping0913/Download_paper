@@ -450,6 +450,49 @@ class CambridgeHandler(PublisherHandler):
     # ------------------------------------------------------------------
 
     @classmethod
+    @staticmethod
+    def _cambridge_img_url(img) -> str:
+        """Resolve the real CDN URL for a Cambridge lazy-load <img>.
+
+        Cambridge's lazy-load <img> has three URL-ish attributes:
+          - src:                  data:image/gif placeholder
+          - data-src:             often a TEMPLATE with empty URN segment,
+                                  e.g. "https://static.cambridge.org/binary/version/id/?pub-status=live"
+                                  — JS fills in the URN at runtime.
+          - data-original-image:  the URN (no host, no querystring),
+                                  e.g. "urn:cambridge.org:id:binary:…/foo_fig1g.gif"
+          - data-optimised-image: optimized JPG URN (alternative)
+
+        Preference order:
+          1) data-src — but only if it actually contains a URN
+          2) data-original-image + the standard static.cambridge.org template
+          3) data-optimised-image + the standard template
+          4) src as last resort
+        """
+        if img is None:
+            return ''
+        TEMPLATE = "https://static.cambridge.org/binary/version/id/{urn}?pub-status=live"
+
+        data_src = (img.get('data-src') or '').strip()
+        # A valid data-src has the URN between /id/ and ?pub-status — if that
+        # segment is empty the JS-injected URN never made it into the DOM.
+        if data_src and 'urn:' in data_src:
+            return data_src
+
+        for attr in ('data-original-image', 'data-optimised-image'):
+            urn = (img.get(attr) or '').strip()
+            if urn:
+                if urn.startswith('http'):
+                    return urn
+                if urn.startswith('urn:'):
+                    return TEMPLATE.format(urn=urn)
+
+        src = (img.get('src') or '').strip()
+        if src and not src.startswith('data:'):
+            return src
+        return ''
+
+    @classmethod
     def extract_figures_from_html(cls, html_content: str) -> dict:
         """Extract figure and table-image URLs and captions from HTML."""
         if not html_content:
@@ -479,7 +522,7 @@ class CambridgeHandler(PublisherHandler):
             if not img:
                 continue
 
-            img_url = img.get('data-src') or img.get('data-original-image') or img.get('src') or ''
+            img_url = cls._cambridge_img_url(img)
             if not img_url:
                 continue
 
@@ -511,7 +554,7 @@ class CambridgeHandler(PublisherHandler):
             img_name = img.get('data-img-name', '')
             if not img_name.startswith('Table'):
                 continue
-            img_url = img.get('data-src') or img.get('data-original-image') or img.get('src') or ''
+            img_url = cls._cambridge_img_url(img)
             if not img_url:
                 continue
             if img_url in {v['url'] for v in figures.values()}:
