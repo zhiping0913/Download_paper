@@ -29,7 +29,10 @@ def detect_publisher_from_url(url: str) -> str:
     url_lower = url.lower()
 
     # Springer Book/Chapter detection (BEFORE general Springer/Nature detection)
-    if 'springer.com/book' in url_lower or 'springer.com/chapter' in url_lower:
+    # Springer book paths include /book/, /chapter/, /referencework/, /referenceworkentry/
+    if ('springer.com/book' in url_lower
+            or 'springer.com/chapter' in url_lower
+            or 'springer.com/referencework' in url_lower):
         return 'springer_book'
 
     # Nature/Springer detection (most specific first)

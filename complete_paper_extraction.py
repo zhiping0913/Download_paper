@@ -59,16 +59,25 @@ _CROSSREF_BOOK_TYPES = {'book', 'monograph', 'book-chapter', 'reference-book',
 
 
 def apply_crossref_type_override(publisher: str, crossref_data: dict) -> str:
-    """Promote `oup` -> `oup_book` when Crossref says the DOI is a book.
+    """Promote generic publishers to a book-specific handler when Crossref says
+    the DOI is a book.
 
-    Returns the (possibly updated) publisher identifier. Other publishers
-    are left alone — only OUP currently has a dedicated book handler.
+    - `oup`     -> `oup_book` for any book-typed Crossref entry.
+    - `nature`  -> `springer_book` when the Crossref publisher is Springer-family
+      (covers reference works whose redirect URL is
+      `link.springer.com/referencework/...` rather than `/book/...`).
     """
-    if publisher != 'oup' or not crossref_data:
+    if not crossref_data:
         return publisher
     crossref_type = (crossref_data.get('type') or '').strip().lower()
-    if crossref_type in _CROSSREF_BOOK_TYPES:
+    if crossref_type not in _CROSSREF_BOOK_TYPES:
+        return publisher
+    if publisher == 'oup':
         return 'oup_book'
+    if publisher == 'nature':
+        crossref_publisher = (crossref_data.get('publisher') or '').strip().lower()
+        if 'springer' in crossref_publisher:
+            return 'springer_book'
     return publisher
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.tif', '.tiff', '.svg'}
 
