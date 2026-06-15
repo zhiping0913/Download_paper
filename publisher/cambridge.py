@@ -249,8 +249,27 @@ class CambridgeHandler(PublisherHandler):
         if not body_div:
             return '', ''
 
-        # Process sections (sec1, sec2, etc.) in order
-        for sec in body_div.find_all('div', class_=re.compile(r'^sec\b')):
+        # Collect section-like blocks from both <div class="body"> (main body)
+        # and <div class="back"> (back matter: Data Availability, Conflicts of
+        # Interest, Acknowledgments, Supplementary Materials).
+        #
+        # Cambridge marks back-matter sections two ways inside div.back:
+        #   <div class="sec other" id="seN">  — sec wrapper with h2 inside
+        #   <div class="ack">                  — h2 + <p class="p"> directly,
+        #                                        no sec wrapper
+        # Treat <div class="ack"> the same as a sec wrapper so its heading and
+        # paragraphs get emitted.
+        section_nodes = list(body_div.find_all('div', class_=re.compile(r'^sec\b')))
+        back_div = soup.find('div', class_='back')
+        if back_div:
+            for child in back_div.children:
+                if not hasattr(child, 'name') or child.name != 'div':
+                    continue
+                classes = child.get('class') or []
+                if any(re.match(r'^sec\b', c) for c in classes) or 'ack' in classes:
+                    section_nodes.append(child)
+
+        for sec in section_nodes:
             sec_id = sec.get('id', '')
 
             # Skip abstract section (sec0)
