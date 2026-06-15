@@ -624,10 +624,18 @@ class CambridgeHandler(PublisherHandler):
             pdf_url = metadata.pop('_pdf_url', None)
             keywords = metadata.pop('_keywords', [])
 
+            # Prefer the raw server HTML (captured pre-JS by the navigation
+            # helpers in wildcard.init_extract_all_page or by the headed /
+            # headless response listener in complete_paper_extraction.py).
+            # When MathJax runs in the browser it rewrites \(...\) and \[...\]
+            # into SVG, which destroys the LaTeX. The raw response still has
+            # the original TeX delimiters.
+            raw_html = getattr(self, '_raw_server_html', None) or ''
             try:
-                fulltext_html = await page.content()
+                rendered_html = await page.content()
             except Exception:
-                fulltext_html = ''
+                rendered_html = ''
+            fulltext_html = raw_html or rendered_html
 
             if fulltext_html and not metadata.get('abstract'):
                 metadata['abstract'] = self.extract_main_abstract_from_html(fulltext_html)
@@ -650,7 +658,10 @@ class CambridgeHandler(PublisherHandler):
                     'supplemental_urls': supp_urls,
                     'supplemental_descriptions': supp_descriptions,
                 },
-                'fulltext_data': fulltext_html,
+                # Save the rendered DOM as fulltext_data → page.html so the
+                # capture directory keeps both views (page_raw.html is the
+                # raw response, written separately by the orchestrator).
+                'fulltext_data': rendered_html or raw_html,
                 'journal_name': 'cambridge',
             }
         finally:

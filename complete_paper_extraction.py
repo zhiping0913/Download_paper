@@ -140,6 +140,12 @@ def is_bot_challenge_page(url: str, html: str = None) -> bool:
 
     if html:
         html_lower = html.lower()
+        # High-confidence markers — these only appear on actual challenge pages.
+        # NB: bare 'cloudflare' and 'cdn-cgi/challenge-platform' substrings also
+        # appear in Cloudflare's harmless JSD tracking script (cdn-cgi/challenge-platform/scripts/jsd/main.js)
+        # which is injected on REAL article pages too. Use stricter markers
+        # to avoid false positives on Cloudflare-protected sites like
+        # cambridge.org and journals.aps.org.
         challenge_markers = [
             'bot manager',
             'request unsuccessful',
@@ -151,19 +157,31 @@ def is_bot_challenge_page(url: str, html: str = None) -> bool:
             'incident id',
             'radware',
             'perfdrive',
-            # Cloudflare
-            'cloudflare',
+            # Cloudflare-challenge-specific markers (NOT the generic JSD tracker)
+            'cf-browser-verification',
+            'cf-chl-bypass',
+            'cf-error-details',
+            '_cf_chl_opt',
+            'just a moment...',
+            'checking your browser before',
+            'cdn-cgi/challenge-platform/h/',  # the challenge HTML path, not /scripts/jsd/
             'turnstile',
-            'ray id',
-            'cdn-cgi/challenge-platform',
             '正在进行安全验证',
             'security verification',
             'enable javascript and cookies to continue',
         ]
         marker_count = sum(1 for m in challenge_markers if m in html_lower)
-        if marker_count >= 2:
-            return True
+        # Large pages with full article content shouldn't be challenge pages
+        # regardless of incidental keyword matches in scripts/analytics.
         html_size = len(html)
+        if html_size > 100_000:
+            # A real article page is typically 100KB+; only treat as challenge
+            # if multiple high-confidence markers and the page looks short on content.
+            if marker_count >= 3:
+                return True
+        else:
+            if marker_count >= 2:
+                return True
         if html_size < 5000 and any(
             m in html_lower for m in ['verify', 'challenge', 'captcha', 'robot', 'bot']
         ):
