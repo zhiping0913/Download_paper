@@ -771,13 +771,19 @@ class CambridgeHandler(PublisherHandler):
                 "",
             ])
 
-        # Body text
+        # Body text — prefer the raw server HTML (pre-JS) over the rendered DOM
+        # that's passed in as article_text. The rendered DOM has MathJax-injected
+        # SVG/PNG fallback images (cambridge.org renders inline math as PNG with
+        # base64 GIF placeholders, then MathJax swaps in tex math); the raw HTML
+        # still carries the original <math> MathML alongside the image fallback,
+        # so extract_article_text_from_html can produce real LaTeX from it.
+        body_source = getattr(self, '_raw_server_html', None) or article_text
         body_md = ''
-        if isinstance(article_text, str) and article_text.strip():
-            if article_text.lstrip().startswith('<'):
-                _, body_md = self.extract_article_text_from_html(article_text)
+        if isinstance(body_source, str) and body_source.strip():
+            if body_source.lstrip().startswith('<'):
+                _, body_md = self.extract_article_text_from_html(body_source)
             else:
-                body_md = article_text.strip()
+                body_md = body_source.strip()
 
         # Replace CDN image URLs with local filenames for downloaded figures and tables
         if kwargs.get('add_figure_refs') and kwargs.get('figure_filenames'):
