@@ -230,6 +230,45 @@ class CambridgeHandler(PublisherHandler):
             if latex:
                 formula.replace_with(NavigableString(f" {stash_formula(latex)} "))
 
+        # Display equations: <div class="disp-formula" id="eqnN">
+        #   <span class="label">(N)</span>
+        #   <span class="alternatives">
+        #     <img class="mathjax-alternative" src="data:image/gif;base64,...">
+        #     <span class="mathjax-tex-wrapper">
+        #       <span class="tex-math">$$\begin{align}…\end{align}$$</span>
+        #     </span>
+        #   </span>
+        # </div>
+        # Same three-flavour fallback as inline-formula, plus a label suffix.
+        for formula in soup.select('div.disp-formula'):
+            label_el = formula.find('span', class_='label')
+            label = label_el.get_text(' ', strip=True) if label_el else ''
+
+            latex = ''
+            math_tag = formula.find('math')
+            if math_tag:
+                latex = cls._convert_mathml(math_tag, display=True)
+            if not latex:
+                mjx_math_el = formula.find('mjx-math')
+                data_latex = mjx_math_el.get('data-latex', '') if mjx_math_el else ''
+                if data_latex:
+                    latex = f"$$\n{data_latex}\n$$"
+            if not latex:
+                tex_el = formula.find('span', class_='tex-math')
+                if tex_el:
+                    tex_text = tex_el.get_text(strip=True)
+                    if tex_text:
+                        # Source is typically already wrapped in $$…$$
+                        if not (tex_text.startswith('$$') and tex_text.endswith('$$')):
+                            tex_text = f"$$\n{tex_text}\n$$"
+                        latex = tex_text
+            if latex:
+                if label:
+                    latex = f"{latex} {label}"
+                # Use a block-level placeholder with surrounding blank lines so
+                # the equation becomes its own paragraph in the markdown.
+                formula.replace_with(NavigableString(f"\n\n{stash_formula(latex)}\n\n"))
+
         for container in soup.find_all('mjx-container'):
             math_tag = container.find('math')
             if math_tag:
@@ -319,6 +358,14 @@ class CambridgeHandler(PublisherHandler):
                     para_md = cls._convert_html_fragment_to_markdown(str(child))
                     if para_md:
                         body_parts.extend([para_md, ""])
+
+                elif child.name == 'div' and 'disp-formula' in (child.get('class') or []):
+                    # Top-level display equation. _prepare_html_fragment will
+                    # extract the TeX, append the (N) label, and stash it as
+                    # a placeholder; pandoc passes the placeholder through.
+                    eq_md = cls._convert_html_fragment_to_markdown(str(child))
+                    if eq_md:
+                        body_parts.extend([eq_md, ""])
 
                 elif child.name == 'section':
                     # Figure block: <section> containing fig-ada + figure-thumb
