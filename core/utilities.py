@@ -393,6 +393,47 @@ def _build_bibtex_from_crossref(crossref_data: dict, doi: str) -> str:
     return "\n".join(lines)
 
 
+# ============================================================================
+# Playwright Helpers
+# ============================================================================
+
+async def block_mathjax(page) -> None:
+    """Route-intercept MathJax script requests so they never execute.
+
+    Many publishers (Cambridge, AIP, IOP, Optica, …) serve their full-text
+    pages with original <math> MathML or \\(...\\) / \\[...\\] TeX delimiters.
+    When MathJax runs in the browser it rewrites those into SVG/CHTML, which
+    destroys the LaTeX source we want for the extracted markdown. Aborting
+    the script requests up-front leaves the DOM untouched, so page.content()
+    and the raw response listener both see the original math markup.
+
+    Call this on every page **before** the first page.goto() — once a script
+    has loaded, route handlers don't apply retroactively.
+    """
+    def _is_mathjax_url(url: str) -> bool:
+        u = url.lower()
+        return (
+            'mathjax' in u                 # generic — covers cdn.mathjax.org, self-hosted MathJax-*.js
+            or 'mml-chtml' in u            # MathJax 3 CHTML build
+            or 'mml-svg' in u              # MathJax 3 SVG build
+            or 'tex-mml' in u              # MathJax 3 TeX + MML build
+            or 'polyfill.io' in u          # MathJax 3 ships with a polyfill.io bootstrap
+        )
+
+    async def _abort(route):
+        try:
+            await route.abort()
+        except Exception:
+            # Page may have been closed by the time the request arrives.
+            pass
+
+    try:
+        await page.route(_is_mathjax_url, _abort)
+    except Exception as e:
+        # Don't let a broken interceptor block extraction — log and continue.
+        print(f"  ⚠️  无法注册 MathJax 拦截器: {e}")
+
+
 def detect_publisher_from_url(url: str) -> str:
     """
     Detect publisher from URL domain
