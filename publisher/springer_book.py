@@ -75,6 +75,18 @@ class SpringerBookHandler(PublisherHandler):
         # Get the actual page URL for correct base_url resolution
         set_actual_base_url(self, page)
 
+        # Detect whether this is a reference work vs a regular book — Springer
+        # uses /referencework/{doi} for reference works and /book/{doi} for
+        # regular books. The TOC pagination URL and entry links differ.
+        try:
+            current_url = (page.url or '').lower()
+        except Exception:
+            current_url = ''
+        self._is_reference_work = '/referencework/' in current_url
+        self._toc_base_path = 'referencework' if self._is_reference_work else 'book'
+        if self._is_reference_work:
+            print(f"  ℹ️  Detected reference work — using /referencework/ TOC paths")
+
         try:
             # Extract page HTML content
             try:
@@ -388,16 +400,25 @@ class SpringerBookHandler(PublisherHandler):
         if heading:
             chapter_info['title'] = heading.get_text(' ', strip=True)
 
-        # Look for chapter page link
-        chapter_link = li_element.find('a', href=lambda x: x and '/chapter/' in x)
+        # Look for chapter / reference-work-entry page link. Springer uses:
+        #   /chapter/{doi}              — regular book chapter
+        #   /referenceworkentry/{doi}   — reference work entry (long form)
+        #   /rwe/{doi}                  — reference work entry (short form, used in TOC)
+        _entry_markers = ('/chapter/', '/referenceworkentry/', '/rwe/')
+        chapter_link = li_element.find(
+            'a',
+            href=lambda x: x and any(m in x for m in _entry_markers),
+        )
         if chapter_link:
             href = chapter_link.get('href', '')
             if href:
                 chapter_info['url'] = href
-                if '/chapter/' in href:
-                    doi_part = href.split('/chapter/')[-1].rstrip('/')
-                    if doi_part:
-                        chapter_info['doi'] = doi_part
+                for marker in _entry_markers:
+                    if marker in href:
+                        doi_part = href.split(marker, 1)[-1].rstrip('/')
+                        if doi_part:
+                            chapter_info['doi'] = doi_part
+                        break
 
         # Find PDF download link
         pdf_link = li_element.find('a', class_='c-pdf-chapter-download__link')
@@ -464,7 +485,8 @@ class SpringerBookHandler(PublisherHandler):
         Returns:
             HTML content string, or empty string on failure
         """
-        book_url = f"https://link.springer.com/book/{self.doi}?page={page_num}"
+        toc_path = getattr(self, '_toc_base_path', 'book')
+        book_url = f"https://link.springer.com/{toc_path}/{self.doi}?page={page_num}"
         nav_page = await page.context.new_page()
         try:
             await nav_page.goto(book_url, wait_until='domcontentloaded', timeout=60000)
