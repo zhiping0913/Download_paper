@@ -314,22 +314,44 @@ class CambridgeHandler(PublisherHandler):
 
         # Collect section-like blocks from both <div class="body"> (main body)
         # and <div class="back"> (back matter: Data Availability, Conflicts of
-        # Interest, Acknowledgments, Supplementary Materials).
+        # Interest, Acknowledgments, Appendices, Notes, Supplementary Materials).
         #
-        # Cambridge marks back-matter sections two ways inside div.back:
-        #   <div class="sec other" id="seN">  — sec wrapper with h2 inside
-        #   <div class="ack">                  — h2 + <p class="p"> directly,
-        #                                        no sec wrapper
-        # Treat <div class="ack"> the same as a sec wrapper so its heading and
-        # paragraphs get emitted.
+        # Direct children of <div class="back"> seen across Cambridge journals:
+        #   <div class="sec other"             id="seN">  generic back section
+        #   <div class="sec data-availability" id="seN">  Data Availability
+        #   <div class="ack">                              Acknowledgments
+        #                                                  (h2 + <p class="p">
+        #                                                  directly, no sec)
+        #   <div class="app-group" id="appgN">             wrapper around one
+        #                                                  or more
+        #                                                  <div class="app">
+        #                                                  appendices
+        #   <div class="notes supplementary-material">    Supplementary Material
+        #
+        # We treat each terminal section-like div as a section (so the per-section
+        # loop emits its heading + paragraphs + display equations) and descend
+        # into <div class="app-group"> to expose each <div class="app"> as its
+        # own appendix section.
         section_nodes = list(body_div.find_all('div', class_=re.compile(r'^sec\b')))
+        _BACK_SECTION_CLASSES = ('ack', 'app', 'notes', 'supplementary-material')
         back_div = soup.find('div', class_='back')
         if back_div:
             for child in back_div.children:
                 if not hasattr(child, 'name') or child.name != 'div':
                     continue
                 classes = child.get('class') or []
-                if any(re.match(r'^sec\b', c) for c in classes) or 'ack' in classes:
+                # Descend into appendix-group wrapper
+                if 'app-group' in classes:
+                    for app in child.find_all('div', class_='app', recursive=False):
+                        section_nodes.append(app)
+                    continue
+                # Section if it's a sec wrapper or any known back-matter class
+                if (any(re.match(r'^sec\b', c) for c in classes)
+                        or any(c in classes for c in _BACK_SECTION_CLASSES)):
+                    section_nodes.append(child)
+                    continue
+                # Fallback: include any direct-child div with an h2/h3 heading
+                if child.find(['h2', 'h3'], recursive=False):
                     section_nodes.append(child)
 
         for sec in section_nodes:
