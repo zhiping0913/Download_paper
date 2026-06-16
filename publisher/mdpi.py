@@ -726,6 +726,73 @@ class MDPIHandler(PublisherHandler):
     async def get_supplemental_url(self, doi: str) -> Optional[str]:
         return None
 
+    @classmethod
+    def _extract_supplemental_links_from_html(cls, html_content: str, base_url: str = None):
+        """Extract supplemental material download links from an MDPI page.
+
+        Strategy: find every <h2> whose text contains 'supp' (case-insensitive)
+        — covers both "Supplementary Materials" (in-article section, usually
+        with the canonical /article/<DOI>/s1 link) and "Supplementary Material"
+        (sidebar accordion, usually with the versioned /<journal-id>/.../s1
+        ZIP link). For each match, walk forward through following siblings
+        (stopping at the next h1/h2) and collect <a href> URLs.
+
+        Returns:
+            (supp_urls: list[str], supp_descriptions: dict[str, str])
+        """
+        from urllib.parse import urljoin
+
+        if not html_content:
+            return [], {}
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        supp_urls = []
+        supp_descriptions = {}
+        seen = set()
+        default_base = base_url or 'https://www.mdpi.com/'
+
+        for h2 in soup.find_all('h2'):
+            heading_text = h2.get_text(' ', strip=True)
+            if 'supp' not in heading_text.lower():
+                continue
+
+            for sib in h2.next_siblings:
+                if not hasattr(sib, 'name') or sib.name is None:
+                    continue
+                # Stop when we cross into another top-level heading.
+                if sib.name in ('h1', 'h2'):
+                    break
+                if not hasattr(sib, 'find_all'):
+                    continue
+                for a in sib.find_all('a', href=True):
+                    href = (a.get('href') or '').strip()
+                    if not href or href.startswith('#'):
+                        continue
+                    # Skip class="html-bibr" cross-reference links — they're
+                    # citations inside the supplementary paragraph, not files.
+                    classes = a.get('class') or []
+                    if 'html-bibr' in classes:
+                        continue
+                    # Resolve relative URLs against the article page.
+                    if href.startswith('//'):
+                        href = 'https:' + href
+                    elif href.startswith('/'):
+                        href = urljoin(default_base, href)
+                    if href in seen:
+                        continue
+                    seen.add(href)
+                    supp_urls.append(href)
+                    # Use the link text if it's meaningful, otherwise fall
+                    # back to the heading text. "ZIP-Document" / "PDF" beats
+                    # the bare URL link-text MDPI sometimes uses.
+                    link_text = a.get_text(' ', strip=True)
+                    is_url_text = link_text.startswith('http')
+                    supp_descriptions[href] = (
+                        heading_text if (not link_text or is_url_text) else link_text
+                    )
+
+        return supp_urls, supp_descriptions
+
     async def extract_references(self, html: str) -> list:
         if not html:
             return []
@@ -766,13 +833,20 @@ class MDPIHandler(PublisherHandler):
                     fulltext_html, base_url=self.actual_base_url
                 )
 
+            supp_urls = []
+            supp_descriptions = {}
+            if fulltext_html:
+                supp_urls, supp_descriptions = self._extract_supplemental_links_from_html(
+                    fulltext_html, base_url=self.actual_base_url
+                )
+
             return {
                 'metadata': metadata,
                 'links': {
                     'pdf_url': pdf_url,
                     'figure_urls': figure_urls,
-                    'supplemental_urls': [],
-                    'supplemental_descriptions': {},
+                    'supplemental_urls': supp_urls,
+                    'supplemental_descriptions': supp_descriptions,
                 },
                 'fulltext_data': fulltext_html,
                 'journal_name': 'mdpi',
