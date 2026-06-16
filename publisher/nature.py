@@ -960,13 +960,123 @@ class NatureHandler(PublisherHandler):
 
         return result
 
-    def extract_acknowledgements_from_html_content(self, html_content: str) -> str:
-        """Extract Nature acknowledgements and convert them to Markdown."""
-        return self.extract_section_paragraphs_from_html_content(html_content, 'Acknowledgements')
+    def _convert_section_block_html_to_markdown(self, container_html: str) -> str:
+        """Convert a section's inner HTML to Markdown in document order.
 
-    def extract_code_availability_from_html_content(self, html_content: str) -> str:
-        """Extract Nature Code availability section and convert to Markdown."""
-        return self.extract_section_paragraphs_from_html_content(html_content, 'Code availability')
+        Handles paragraphs, equations, sub-headings (h3-h6), figures, and
+        tables. The enclosing h2 is emitted by the caller — this routine
+        intentionally skips h2 so we don't double-emit the section title.
+        """
+        figure_matches = list(re.finditer(
+            r'<div[^>]*class="[^"]*c-article-section__figure[^"]*"[^>]*>(.*?)</figure>\s*</div>',
+            container_html,
+            re.DOTALL,
+        ))
+        figure_spans = [(m.start(), m.end()) for m in figure_matches]
+
+        def _inside_figure(pos: int) -> bool:
+            return any(s <= pos < e for s, e in figure_spans)
+
+        paragraph_matches = [
+            m for m in re.finditer(r'<p\b[^>]*>(.*?)</p>', container_html, re.DOTALL)
+            if not _inside_figure(m.start())
+        ]
+        equation_matches = list(re.finditer(
+            r'<div[^>]*class="c-article-equation"[^>]*>(.*?)</div>\s*</div>',
+            container_html,
+            re.DOTALL,
+        ))
+        heading_matches = list(re.finditer(r'<h([3-6])[^>]*>(.*?)</h\1>', container_html, re.DOTALL))
+        table_matches = list(re.finditer(
+            r'<div[^>]*class="c-article-table"[^>]*>(.*?)</figure>\s*</div>',
+            container_html,
+            re.DOTALL,
+        ))
+
+        ordered_items = []
+        for match in paragraph_matches:
+            ordered_items.append((match.start(), match.group(0)))
+        for match in equation_matches:
+            ordered_items.append((match.start(), match.group(0)))
+        for match in heading_matches:
+            ordered_items.append((match.start(), match.group(0)))
+        for match in table_matches:
+            ordered_items.append((match.start(), match.group(0)))
+        for match in figure_matches:
+            ordered_items.append((match.start(), match.group(0)))
+        ordered_items.sort(key=lambda item: item[0])
+
+        md_parts = []
+        for _, block_html in ordered_items:
+            # Emit sub-headings at their natural level — convert_paragraph
+            # downshifts h3→#### for the main-content path (where ## is
+            # already used for "Main"), which double-shifts here because the
+            # caller emits the enclosing h2 as ## already.
+            h_match = re.match(r'<h([3-6])[^>]*>(.*?)</h\1>', block_html.strip(), re.DOTALL)
+            if h_match:
+                level = int(h_match.group(1))
+                text = BeautifulSoup(h_match.group(2), 'html.parser').get_text(' ', strip=True)
+                text = re.sub(r'\s+', ' ', text).strip()
+                if text:
+                    md_parts.append(f"{'#' * level} {text}")
+                continue
+            md = self.convert_paragraph(block_html)
+            if md:
+                md_parts.append(md)
+
+        return "\n\n".join(md_parts).strip()
+
+    def extract_post_main_sections_from_html_content(
+        self, html_content: str, skip_titles=None
+    ) -> List[tuple]:
+        """Walk every <h2> outside the main-content div and convert each
+        section to Markdown.
+
+        Returns a list of (heading_text, markdown_body) tuples in document
+        order. Use this to emit Acknowledgements / Data availability / Notes /
+        Appendices / etc. generically rather than hard-coding section names —
+        sections whose <section> tag has no data-title attribute (e.g. the
+        Appendices block on Springer/Nature reference works) are still picked
+        up because we anchor on the <h2> element itself.
+
+        Pass titles you handle through a different extractor in `skip_titles`
+        to avoid duplicate emission (e.g. References, Extended data, Supp Info).
+        """
+        skip_set = {t.strip().lower() for t in (skip_titles or [])}
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        results = []
+        for h2 in soup.find_all('h2'):
+            # Already emitted by convert_main_content_by_paragraph.
+            if h2.find_parent('div', class_='main-content'):
+                continue
+            # Restrict to the article body — skip nav/sidebar/footer h2s.
+            if not h2.find_parent('div', class_='c-article-body'):
+                continue
+
+            title = self.clean_text(h2.get_text(' ', strip=True))
+            if not title or title.lower() in skip_set:
+                continue
+
+            # Section content is normally the next sibling div, but on some
+            # sections (e.g. Appendices) it sits inside the same wrapper.
+            content_div = h2.find_next_sibling('div', class_='c-article-section__content')
+            if content_div is None:
+                wrapper = (h2.find_parent('section')
+                           or h2.find_parent('div', class_='c-article-section'))
+                if wrapper is not None:
+                    content_div = wrapper.find('div', class_='c-article-section__content')
+            if content_div is None:
+                continue
+
+            section_md = self._convert_section_block_html_to_markdown(str(content_div))
+            if section_md:
+                results.append((title, section_md))
+
+        if results:
+            print(f"  ✅ Post-main h2 sections converted: {len(results)} "
+                  f"({', '.join(title for title, _ in results)})")
+        return results
 
     def extract_supplementary_items_from_html_content(self, html_content: str, section_title: str) -> str:
         """Extract Nature supplementary-style item lists from a named section (exact match)."""
@@ -1419,13 +1529,21 @@ class NatureHandler(PublisherHandler):
                 else:
                     md_content += "## Main\n\n[Article main content not found]\n"
 
-                acknowledgements_md = self.extract_acknowledgements_from_html_content(fulltext_data)
-                if acknowledgements_md:
-                    md_content += f"## Acknowledgements\n\n{acknowledgements_md}\n\n"
-
-                code_availability_md = self.extract_code_availability_from_html_content(fulltext_data)
-                if code_availability_md:
-                    md_content += f"## Code availability\n\n{code_availability_md}\n\n"
+                # Emit every h2 section that lives outside main-content
+                # (Acknowledgements, Code availability, Data availability, Notes,
+                # Appendices, etc.) generically — sections handled by dedicated
+                # extractors below or rendered elsewhere are listed in skip set.
+                _h2_skip = {
+                    'Abstract',
+                    'References',
+                    'Extended data figures and tables',
+                    'Supplementary Information',
+                    'Supplementary information',
+                }
+                for sec_title, sec_md in self.extract_post_main_sections_from_html_content(
+                    fulltext_data, skip_titles=_h2_skip
+                ):
+                    md_content += f"## {sec_title}\n\n{sec_md}\n\n"
 
                 extended_data_md = self.extract_extended_data_from_html_content(fulltext_data)
                 if extended_data_md:
