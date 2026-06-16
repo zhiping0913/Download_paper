@@ -1211,37 +1211,82 @@ class APSHandler(PublisherHandler):
 def extract_figure_assets_from_fulltext(fulltext_data: dict) -> dict:
     """
     从fulltext API响应中提取图片资源信息
-    返回: {fig_id: {"url": "...", "caption": "..."}, ...}
+    返回: {fig_id: {"url": "...", "caption": "...", "original_url": "..."}, ...}
 
-    Note: 确保返回完整的URL（如果是相对路径则自动补全）
+    Handles two response shapes:
+      1) Legacy: figure object has a ``variants`` dict keyed by size name
+         ({'medium': '/.../medium', 'large': '/.../large', …}).
+      2) Current (≈2024+): figure object carries an HTML snippet under
+         ``body`` such as
+             <img class="lazy-fulltext"
+                  data-original="/prb/article/10.1103/.../figures/1/medium" />
+         and has no variants dict at all. The size lives in the last URL
+         path segment, so we swap "/medium" → "/large" to upgrade and keep
+         the original /medium as a fallback (the download path in
+         complete_paper_extraction.py reads ``original_url`` when the
+         primary fails).
+
+    Note: 确保返回完整的URL（如果是相对路径则自动补全）。
     """
     figure_assets = {}
 
     if not fulltext_data:
         return figure_assets
 
+    def _absolutize(url: str) -> str:
+        if url and url.startswith('/'):
+            return f"https://journals.aps.org{url}"
+        return url
+
     def search_assets(obj):
         """递归搜索所有asset对象"""
         if isinstance(obj, dict):
-            # 检查是否是figure asset
-            if obj.get('type') == 'figure' and 'variants' in obj:
+            if obj.get('type') == 'figure':
                 fig_id = obj.get('id', '')
-                variants = obj.get('variants', {})
+                fig_url = None
+                fallback_url = None
 
-                # 优先使用large版本，其次medium
-                fig_url = variants.get('large') or variants.get('medium')
+                # Format 1: explicit variants dict (legacy)
+                variants = obj.get('variants') or {}
+                if isinstance(variants, dict) and variants:
+                    fig_url = variants.get('large') or variants.get('medium')
+                    medium = variants.get('medium')
+                    if medium and medium != fig_url:
+                        fallback_url = medium
+
+                # Format 2: URL embedded in <img class="lazy-fulltext"
+                # data-original="…/figures/N/medium"> inside the body HTML.
+                if not fig_url:
+                    body = obj.get('body', '')
+                    if isinstance(body, str) and 'lazy-fulltext' in body:
+                        m = re.search(
+                            r'data-original=["\']([^"\']+)["\']',
+                            body,
+                        )
+                        if m:
+                            medium_url = m.group(1)
+                            # Upgrade /medium → /large; if the URL ends in
+                            # something else (e.g. /small), leave it alone.
+                            large_url = re.sub(
+                                r'/medium(?=$|[?#])',
+                                '/large',
+                                medium_url,
+                            )
+                            fig_url = large_url
+                            if large_url != medium_url:
+                                fallback_url = medium_url
 
                 if fig_url and fig_id:
-                    # 如果是相对路径，构建完整URL
-                    if fig_url.startswith('/'):
-                        fig_url = f"https://journals.aps.org{fig_url}"
-
-                    figure_assets[fig_id] = {
-                        'url': fig_url,
-                        'caption': obj.get('caption', '')
+                    entry = {
+                        'url': _absolutize(fig_url),
+                        'caption': obj.get('caption', ''),
                     }
+                    if fallback_url:
+                        absolute_fallback = _absolutize(fallback_url)
+                        if absolute_fallback != entry['url']:
+                            entry['original_url'] = absolute_fallback
+                    figure_assets[fig_id] = entry
 
-            # 递归搜索字典中的所有值
             for v in obj.values():
                 search_assets(v)
 
