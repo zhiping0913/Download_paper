@@ -227,6 +227,16 @@ class CambridgeHandler(PublisherHandler):
                         if not (tex_text.startswith('$') and tex_text.endswith('$')):
                             tex_text = f"${tex_text}$"
                         latex = tex_text
+            if not latex:
+                # Old CUP papers (10.1017/...) only ship the GIF rendering of
+                # the formula with the LaTeX in the <img>'s alt attribute.
+                img_el = formula.find('img', alt=True)
+                if img_el:
+                    alt_text = (img_el.get('alt') or '').strip()
+                    if alt_text:
+                        if not (alt_text.startswith('$') and alt_text.endswith('$')):
+                            alt_text = f"${alt_text}$"
+                        latex = alt_text
             if latex:
                 formula.replace_with(NavigableString(f" {stash_formula(latex)} "))
 
@@ -262,6 +272,17 @@ class CambridgeHandler(PublisherHandler):
                         if not (tex_text.startswith('$$') and tex_text.endswith('$$')):
                             tex_text = f"$$\n{tex_text}\n$$"
                         latex = tex_text
+            if not latex:
+                # Old CUP papers (10.1017/...) only ship the GIF rendering of
+                # the formula with the LaTeX in the <img>'s alt attribute.
+                img_el = formula.find('img', alt=True)
+                if img_el:
+                    alt_text = (img_el.get('alt') or '').strip()
+                    if alt_text:
+                        if alt_text.startswith('$$') and alt_text.endswith('$$'):
+                            latex = alt_text
+                        else:
+                            latex = f"$$\n{alt_text}\n$$"
             if latex:
                 if label:
                     latex = f"{latex} {label}"
