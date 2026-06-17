@@ -441,6 +441,55 @@ class CambridgeHandler(PublisherHandler):
                             if img_src and img_name:
                                 body_parts.extend([f"![{img_name}]({img_src})", ""])
 
+                elif (child.name == 'div'
+                      and 'fig' in (child.get('class') or [])
+                      and 'disp-formula' not in (child.get('class') or [])
+                      and 'formula' not in (child.get('class') or [])):
+                    # Old-style Cambridge inline figure (10.1017/S026303460...
+                    # era): <div class="fig fig" id="figNNN"> containing
+                    # <div class="figure-thumb"><img class="aop-lazy-load-image fig">
+                    # and <div class="caption figcapt"><p>...</p></div>.
+                    # The newer <section><fig-ada>... layout above misses these.
+                    fig_id = child.get('id', '')
+                    fig_num_str = ''
+                    if fig_id.startswith('fig'):
+                        num_raw = fig_id[len('fig'):].lstrip('0') or '0'
+                        if num_raw.isdigit():
+                            fig_num_str = num_raw
+                    img_name = f"Figure {fig_num_str}." if fig_num_str else 'Figure'
+
+                    caption_div = child.find('div', class_='caption')
+                    if caption_div:
+                        cap_p = caption_div.find('p')
+                        label_el = caption_div.find('span', class_='label')
+                        label_text = label_el.get_text(' ', strip=True) if label_el else ''
+                        if not label_text and fig_num_str:
+                            label_text = f"Figure {fig_num_str}."
+                        parts = []
+                        if label_text:
+                            parts.append(f"**{label_text}**")
+                        if cap_p:
+                            # The <span class="label"> sits inside <p> — strip
+                            # it so we don't duplicate the label text.
+                            cap_copy = BeautifulSoup(str(cap_p), 'html.parser')
+                            for ls in cap_copy.find_all('span', class_='label'):
+                                ls.decompose()
+                            caption_md = cls._convert_html_fragment_to_markdown(
+                                str(cap_copy)
+                            )
+                            if caption_md:
+                                parts.append(caption_md)
+                        if parts:
+                            body_parts.extend([" ".join(parts), ""])
+
+                    fig_thumb = child.find('div', class_='figure-thumb')
+                    if fig_thumb:
+                        img = fig_thumb.find('img')
+                        if img is not None:
+                            img_url = cls._cambridge_img_url(img)
+                            if img_url:
+                                body_parts.extend([f"![{img_name}]({img_url})", ""])
+
                 elif child.name == 'div' and 'disp-formula' in child.get('class', []):
                     latex_str = ''
                     mjx_container = child.find('mjx-container')
@@ -559,6 +608,57 @@ class CambridgeHandler(PublisherHandler):
                 if cap_p:
                     parts.append(cap_p.get_text(' ', strip=True))
                 caption = ' '.join(parts).strip()
+
+            figures[key] = {
+                'url': img_url.strip(),
+                'caption': caption,
+            }
+
+        # Old-style Cambridge inline figures: <div class="fig fig" id="figNNN">
+        # containing <div class="figure-thumb"><img class="aop-lazy-load-image fig">
+        # — the newer <section>/<fig-ada> layout above misses these.
+        for fig_div in soup.find_all('div', class_='fig'):
+            classes = fig_div.get('class') or []
+            # Skip display equations (class="fig formula") and any disp-formula.
+            if 'formula' in classes or 'disp-formula' in classes:
+                continue
+            fig_id = fig_div.get('id', '')
+            if not fig_id or fig_id in seen_ids:
+                continue
+            if not fig_id.startswith('fig'):
+                continue
+            seen_ids.add(fig_id)
+
+            num_raw = fig_id[len('fig'):].lstrip('0') or '0'
+            fig_num = num_raw if num_raw.isdigit() else fig_id.replace('fig', '')
+            key = f"fig_{fig_num}"
+
+            fig_thumb = fig_div.find('div', class_='figure-thumb')
+            if not fig_thumb:
+                continue
+            img = fig_thumb.find('img')
+            if img is None:
+                continue
+            img_url = cls._cambridge_img_url(img)
+            if not img_url:
+                continue
+
+            caption = ''
+            caption_div = fig_div.find('div', class_='caption')
+            if caption_div:
+                label = caption_div.find('span', class_='label')
+                cap_p = caption_div.find('p')
+                parts = []
+                if label:
+                    label_text = label.get_text(' ', strip=True)
+                    if label_text:
+                        parts.append(label_text)
+                if cap_p:
+                    cap_copy = BeautifulSoup(str(cap_p), 'html.parser')
+                    for ls in cap_copy.find_all('span', class_='label'):
+                        ls.decompose()
+                    parts.append(cap_copy.get_text(' ', strip=True))
+                caption = ' '.join(p for p in parts if p).strip()
 
             figures[key] = {
                 'url': img_url.strip(),
