@@ -402,6 +402,11 @@ class CambridgeHandler(PublisherHandler):
                     if para_md:
                         body_parts.extend([para_md, ""])
 
+                elif child.name in ('ol', 'ul'):
+                    list_md = cls._convert_cambridge_list(child)
+                    if list_md:
+                        body_parts.extend([list_md, ""])
+
                 elif child.name == 'div' and 'disp-formula' in (child.get('class') or []):
                     # Top-level display equation. _prepare_html_fragment will
                     # extract the TeX, append the (N) label, and stash it as
@@ -561,6 +566,68 @@ class CambridgeHandler(PublisherHandler):
         if src and not src.startswith('data:'):
             return src
         return ''
+
+    @classmethod
+    def _convert_cambridge_list(cls, list_tag, level: int = 0) -> str:
+        """Convert Cambridge ``<ol>``/``<ul class="list ...">`` to markdown.
+
+        Each ``<li class="list-item">`` typically contains a ``<p>`` whose
+        first child is a ``<span class="label">(i)</span>`` carrying the
+        custom marker.  We use that marker as the bullet (falling back to
+        a plain ``-`` / ``N.``) and run the rest of the item through the
+        existing fragment pipeline so inline-formula markup is preserved.
+        Nested ``<ol>``/``<ul>`` recurse with an indent.
+        """
+        is_ordered = list_tag.name == 'ol'
+        indent = '    ' * level
+        lines = []
+        counter = 0
+        for li in list_tag.find_all('li', recursive=False):
+            counter += 1
+
+            nested_lists = [
+                c for c in li.children
+                if hasattr(c, 'name') and c.name in ('ol', 'ul')
+            ]
+
+            # Pull the explicit (i)/(ii) label from the first <p>, if any.
+            marker = f"{counter}." if is_ordered else "-"
+            li_copy = BeautifulSoup(str(li), 'html.parser').find('li')
+            if li_copy is not None:
+                label_el = li_copy.find('span', class_='label')
+                if label_el:
+                    label_text = label_el.get_text(' ', strip=True)
+                    if label_text:
+                        marker = label_text
+                    label_el.decompose()
+                # Drop nested lists from the copy; we render them separately.
+                for nl in li_copy.find_all(['ol', 'ul'], recursive=False):
+                    nl.decompose()
+
+            inner_html = ''.join(str(c) for c in li_copy.children) if li_copy else ''
+            inner_html = inner_html.strip()
+
+            text_md = ''
+            if inner_html:
+                text_md = cls._convert_html_fragment_to_markdown(
+                    f"<div>{inner_html}</div>"
+                ).strip()
+
+            if text_md:
+                first_line, *rest = text_md.split('\n')
+                lines.append(f"{indent}{marker} {first_line}")
+                cont_indent = indent + '  '
+                for rl in rest:
+                    lines.append(f"{cont_indent}{rl}" if rl.strip() else '')
+            else:
+                lines.append(f"{indent}{marker}")
+
+            for nl in nested_lists:
+                nested_md = cls._convert_cambridge_list(nl, level=level + 1)
+                if nested_md:
+                    lines.append(nested_md)
+
+        return '\n'.join(lines).strip()
 
     @classmethod
     def extract_figures_from_html(cls, html_content: str) -> dict:
