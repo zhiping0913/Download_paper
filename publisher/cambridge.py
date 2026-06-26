@@ -397,13 +397,14 @@ class CambridgeHandler(PublisherHandler):
                 continue
 
             # Section heading
-            heading_tag = sec.find(['h2', 'h3'])
+            heading_tag = sec.find(['h2', 'h3', 'h4', 'h5'])
             if heading_tag:
-                label_span = heading_tag.find('span', class_='label')
-                heading_text = heading_tag.get_text(' ', strip=True) if not label_span else heading_tag.get_text(' ', strip=True)
+                heading_text = heading_tag.get_text(' ', strip=True)
                 heading_text = re.sub(r'\s+', ' ', heading_text or '').strip()
                 if heading_text:
-                    level = "###" if heading_tag.name == 'h2' else "####"
+                    # h2 → ###, h3 → ####, h4 → #####, h5 → ######
+                    level_map = {'h2': '###', 'h3': '####', 'h4': '#####', 'h5': '######'}
+                    level = level_map.get(heading_tag.name, '####')
                     body_parts.extend([f"{level} {heading_text}", ""])
 
             # Process child elements: paragraphs, figure sections
