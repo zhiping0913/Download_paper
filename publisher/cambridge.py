@@ -194,6 +194,20 @@ class CambridgeHandler(PublisherHandler):
         for a_tag in soup.select('a.xref-fig, a.xref-table'):
             a_tag.replace_with(NavigableString(a_tag.get_text(' ', strip=True)))
 
+        # Footnote refs (<a class="xref fn" href="#fnN">) → pandoc ``[^N]``
+        # markers, stashed via the placeholder mechanism so pandoc doesn't
+        # escape the special characters.  The visible Roman/Arabic label
+        # inside the anchor is discarded; the link target number is what
+        # pairs the ref with the definition.
+        for a_tag in soup.find_all('a', href=re.compile(r'^#fn\d+$')):
+            m_fn = re.match(r'^#fn(\d+)$', a_tag.get('href', ''))
+            if not m_fn:
+                continue
+            formulas.append(f"[^{m_fn.group(1)}]")
+            a_tag.replace_with(
+                NavigableString(f"CAMBMATH{len(formulas) - 1:03d}MATHEND")
+            )
+
         # Inline formulas rendered as MathJax CHTML with assistive MathML.
         # Cambridge has at least three flavours:
         #   1) <math>…</math>                        — MathML (e.g. 10.1155 hosted papers)
@@ -517,8 +531,72 @@ class CambridgeHandler(PublisherHandler):
                             if formula_md:
                                 body_parts.extend([formula_md, ""])
 
+        # Append footnote definitions so the [^N] markers in the body resolve.
+        # Cambridge stores them in <div id="footnotes-list" class="circle-list">
+        # which sits OUTSIDE <div class="body"> / <div class="back">, so the
+        # section walker above never sees it.
+        footnotes = cls._extract_cambridge_footnotes(soup)
+        if footnotes:
+            body_parts.append('')
+            for n, text in footnotes:
+                indented = text.replace('\n', '\n    ')
+                body_parts.append(f"[^{n}]: {indented}")
+                body_parts.append('')
+
         body_md = "\n".join(body_parts).strip()
         return '', body_md
+
+    @classmethod
+    def _extract_cambridge_footnotes(cls, soup) -> list:
+        """Return ``[(n, markdown), ...]`` for footnotes in #footnotes-list.
+
+        Cambridge structure (newer Vue layout):
+            <div id="footnotes-list" class="circle-list">
+              <h2>Footnotes</h2>
+              <div id="fnN" class="circle-list__item" data-type="fulltextNote">
+                <div class="circle-list__item__grouped">
+                  <div class="circle-list__item__grouped__content">
+                    <p class="p">
+                      <span class="label"><sup>N</sup></span> ...text...
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+        """
+        results = []
+        fn_root = soup.find('div', id='footnotes-list')
+        if not fn_root:
+            return results
+
+        for fn_div in fn_root.find_all('div', id=re.compile(r'^fn\d+$')):
+            m = re.match(r'^fn(\d+)$', fn_div.get('id', ''))
+            if not m:
+                continue
+            n = m.group(1)
+
+            content_div = fn_div.find(
+                'div', class_='circle-list__item__grouped__content'
+            ) or fn_div
+            p_tag = content_div.find('p')
+            if not p_tag:
+                continue
+
+            # Strip the leading <span class="label"><sup>N</sup></span> so we
+            # don't duplicate the footnote number in the rendered text.
+            cap_copy = BeautifulSoup(str(p_tag), 'html.parser').find('p')
+            if cap_copy is not None:
+                for ls in cap_copy.find_all('span', class_='label'):
+                    ls.decompose()
+                text_md = cls._convert_html_fragment_to_markdown(str(cap_copy))
+            else:
+                text_md = cls._convert_html_fragment_to_markdown(str(p_tag))
+
+            if not text_md:
+                continue
+            results.append((n, text_md))
+
+        return results
 
     # ------------------------------------------------------------------
     # Figure extraction
