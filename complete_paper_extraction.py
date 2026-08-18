@@ -484,9 +484,12 @@ async def _download_all_resources(
             except Exception:
                 _article_url = None
 
+            # Put supplemental files under <paper_dir>/supplemental/ so they
+            # don't clutter the paper root alongside paper.md / figures.
+            supp_output_dir = output_dir / "supplemental"
             count, descriptions = await download_supplemental_materials(
                 supp_urls,
-                output_dir,
+                supp_output_dir,
                 download_context,
                 supp_descriptions,
                 download_page,
@@ -622,6 +625,19 @@ async def download_supplemental_materials(
 
     import urllib.parse
     import shutil
+
+    # Emit saved filenames RELATIVE to the paper output directory so markdown
+    # links resolve correctly whether files live at the paper root (legacy
+    # layout) or inside a supplemental/ subdirectory (current layout). For a
+    # nested subdir like <paper_dir>/supplemental/, this yields
+    # "supplemental/foo.pdf" — for the legacy flat layout it yields "foo.pdf".
+    _rel_base = output_dir.parent if output_dir.name == 'supplemental' else output_dir
+
+    def _rel_saved_name(p: Path) -> str:
+        try:
+            return p.relative_to(_rel_base).as_posix()
+        except ValueError:
+            return p.name
 
     _MEDIA_EXTENSIONS = {
         '.mp4', '.avi', '.mov', '.wmv', '.mkv', '.webm',
@@ -775,7 +791,7 @@ async def download_supplemental_materials(
                                 file_size_mb = output_path.stat().st_size / (1024 * 1024)
                                 print(f"    ✓ 已保存: {output_path.name} ({file_size_mb:.2f} MB)")
                                 downloaded_count += 1
-                                saved_name = output_path.name
+                                saved_name = _rel_saved_name(output_path)
                                 downloaded_descriptions[saved_name] = desc_value if desc_value else chapter_title
                                 direct_ok = True
                             else:
@@ -876,7 +892,7 @@ async def download_supplemental_materials(
                             file_size_mb = output_path.stat().st_size / (1024 * 1024)
                             print(f"    ✓ 已保存: {output_path.name} ({file_size_mb:.2f} MB)")
                             downloaded_count += 1
-                            saved_name = output_path.name
+                            saved_name = _rel_saved_name(output_path)
                             downloaded_descriptions[saved_name] = desc_value if desc_value else chapter_title
                         except Exception as e:
                             print(f"    ⚠️  音频保存失败: {str(e)[:100]}")
@@ -916,7 +932,7 @@ async def download_supplemental_materials(
                             downloaded_count += 1
 
                             # 记录该文件的描述
-                            saved_name = output_path.name
+                            saved_name = _rel_saved_name(output_path)
                             if desc_value:
                                 downloaded_descriptions[saved_name] = desc_value
                             else:
@@ -939,7 +955,7 @@ async def download_supplemental_materials(
                                 print(f"    ✓ 已保存: {output_path.name} ({file_size_mb:.2f} MB)")
                                 downloaded_count += 1
 
-                                saved_name = output_path.name
+                                saved_name = _rel_saved_name(output_path)
                                 if desc_value:
                                     downloaded_descriptions[saved_name] = desc_value
                                 else:
@@ -1190,6 +1206,29 @@ async def complete_extraction_workflow(
         base_output_dir = output_path
         base_output_dir.mkdir(parents=True, exist_ok=True)
         paper_output_dir = organize_paper_output(base_output_dir, metadata, crossref_data)
+
+        # Move the DOI-named capture dir (raw HTML + API JSON dumps collected
+        # during Phase 0 preflight + handler extract_all) into
+        # <paper_dir>/html/ so every output for this paper lives under one
+        # tree. The capture dir has to exist during extraction under a
+        # DOI-based name because the paper title isn't known yet.
+        import shutil as _shutil
+        html_dir = paper_output_dir / 'html'
+        if (captured_data_dir.exists()
+                and captured_data_dir.resolve() != paper_output_dir.resolve()):
+            html_dir.mkdir(parents=True, exist_ok=True)
+            for src in list(captured_data_dir.iterdir()):
+                dest = html_dir / src.name
+                if dest.exists():
+                    if dest.is_dir():
+                        _shutil.rmtree(dest)
+                    else:
+                        dest.unlink()
+                _shutil.move(str(src), str(dest))
+            try:
+                captured_data_dir.rmdir()
+            except OSError:
+                pass  # not empty (shouldn't happen) — leave it alone
 
         markdown_filename = "paper.md"
         markdown_file = paper_output_dir / markdown_filename
