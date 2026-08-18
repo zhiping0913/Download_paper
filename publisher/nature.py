@@ -700,36 +700,29 @@ class NatureHandler(PublisherHandler):
         if not table:
             return ''
 
-        # Replace MathJax spans with placeholder tokens to avoid pandoc
-        # mangling the LaTeX, then restore after conversion.
-        math_placeholders = {}
-
-        for math_span in table.find_all('span', class_='MathJax_SVG'):
-            mathml = math_span.get('data-mathml', '')
-            latex = mathml_to_latex_pandoc(mathml) if mathml else ''
-            if latex:
-                placeholder = f"MATHPLACEHOLDER{len(math_placeholders):03d}MATHEND"
-                math_placeholders[placeholder] = latex
-                # Replace the outer mathjax-tex wrapper too, keeping only the LaTeX
-                wrapper = math_span.find_parent('span', class_='mathjax-tex')
-                if wrapper:
-                    wrapper.replace_with(BeautifulSoup(placeholder, 'html.parser'))
-                else:
-                    math_span.replace_with(BeautifulSoup(placeholder, 'html.parser'))
-
-        # Remove any remaining MathJax_Preview or mathjax-tex spans
-        for tag in table.find_all('span', class_=['MathJax_Preview', 'mathjax-tex']):
-            tag.decompose()
+        # Use the shared MathJax handler so we cover BOTH the post-render
+        # MathJax 2.x form (span.mathjax-tex wrapping a MathJax_SVG span or a
+        # <script type="math/tex"> source) AND the pre-render form (raw
+        # <span class="mathjax-tex">\(D_t\)</span> — this is what we see now
+        # that page-level MathJax is blocked). The old bespoke pass only
+        # handled MathJax_SVG; on this paper the pre-render path applied to
+        # every <td>, so every math cell got decomposed and the table body
+        # collapsed to empty rows.
+        prepared_html, math_formulas = prepare_mathjax_html_fragment(
+            str(table), placeholder_prefix="MATHPLACEHOLDER"
+        )
 
         # Convert <table> to markdown via pandoc
-        table_html = str(table)
         import pypandoc
-        md = pypandoc.convert_text(table_html, 'md', format='html', extra_args=['--wrap=none'])
+        md = pypandoc.convert_text(
+            prepared_html, 'md', format='html', extra_args=['--wrap=none']
+        )
         md = md.strip()
 
-        # Restore LaTeX placeholders
-        for placeholder, latex in math_placeholders.items():
-            md = md.replace(placeholder, latex)
+        # Restore LaTeX placeholders — prepare_mathjax_html_fragment already
+        # wraps each formula in the placeholder text with $…$ / $$…$$.
+        for idx, latex in enumerate(math_formulas):
+            md = md.replace(f"MATHPLACEHOLDER{idx:03d}MATHEND", latex)
 
         # Collapse whitespace-only rows (pandoc often inserts empty table rows)
         md = re.sub(r'\|\s+\|\s+(\|\s+)*\n', '', md)
