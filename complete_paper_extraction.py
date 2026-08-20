@@ -191,6 +191,127 @@ def is_bot_challenge_page(url: str, html: str = None) -> bool:
     return False
 
 
+# ------------------------------------------------------------------------
+# Cloudflare Turnstile auto-clicker
+# ------------------------------------------------------------------------
+# The "Verify you are human" checkbox on ScienceDirect / Cambridge / etc.
+# is a Cloudflare Turnstile widget delivered in a cross-origin iframe from
+# challenges.cloudflare.com. We can't touch the iframe DOM (same-origin
+# policy), but a synthetic mouse click at the checkbox screen coordinates
+# is often enough for the "managed" and "invisible" Turnstile variants.
+# Interactive "challenge" variants (image puzzle) will still fall through
+# and require a human — but the simple checkbox case succeeds most of the
+# time in headed mode with a persistent Chrome profile.
+
+_TURNSTILE_IFRAME_SELECTORS = (
+    'iframe[src*="challenges.cloudflare.com"]',
+    'iframe[src*="cf-chl-widget"]',
+    'iframe[title*="widget containing a Cloudflare" i]',
+    'iframe[title*="Cloudflare security challenge" i]',
+)
+
+
+async def _find_turnstile_iframe(page):
+    """Return the first visible Cloudflare Turnstile iframe element, or None."""
+    for selector in _TURNSTILE_IFRAME_SELECTORS:
+        try:
+            el = await page.query_selector(selector)
+        except Exception:
+            el = None
+        if el:
+            try:
+                if await el.is_visible():
+                    return el
+            except Exception:
+                return el
+    return None
+
+
+async def auto_solve_bot_challenge(page, timeout_s: float = 30.0) -> bool:
+    """Best-effort auto-click a Cloudflare Turnstile checkbox.
+
+    Polls for a Turnstile iframe up to ``timeout_s`` seconds. When one is
+    found, clicks at (30, height/2) inside its bounding box — that's where
+    the checkbox sits in every widget size Cloudflare currently ships.
+    Waits for the iframe to disappear or for URL navigation, either of
+    which signals the challenge cleared.
+
+    Returns True if a challenge was found AND appears resolved, False
+    otherwise (including "no challenge present" — that's the happy path
+    for pages that don't need a click).
+    """
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout_s
+    click_attempts = 0
+    saw_widget = False
+
+    # Give the page a moment to render any deferred Cloudflare widget.
+    await asyncio.sleep(1)
+
+    while loop.time() < deadline:
+        iframe = await _find_turnstile_iframe(page)
+        if iframe is None:
+            if saw_widget:
+                # Widget was there earlier and is now gone → success.
+                print("  ✓ Cloudflare Turnstile 已通过")
+                return True
+            # No challenge (yet); wait briefly for one to appear.
+            await asyncio.sleep(1)
+            continue
+
+        saw_widget = True
+        try:
+            box = await iframe.bounding_box()
+        except Exception:
+            box = None
+
+        if not box or box['width'] < 1 or box['height'] < 1:
+            await asyncio.sleep(1)
+            continue
+
+        # Click position — the checkbox sits on the left side of the widget
+        # at x≈30 in every Turnstile size (compact/normal/managed). Y is
+        # simply the vertical centre of the iframe.
+        x = box['x'] + 30
+        y = box['y'] + box['height'] / 2
+        click_attempts += 1
+        print(f"  🤖 检测到 Cloudflare 挑战 iframe ({box['width']:.0f}x{box['height']:.0f})，"
+              f"点击 checkbox @ ({x:.0f}, {y:.0f})  [第 {click_attempts} 次]")
+        try:
+            await page.mouse.move(x, y)
+            await asyncio.sleep(0.1)
+            await page.mouse.click(x, y, delay=60)
+        except Exception as e:
+            print(f"  ⚠️  Turnstile 点击失败: {e}")
+
+        # Give Cloudflare a few seconds to validate the click. Success
+        # manifests as either (a) the iframe disappearing, or (b) the
+        # page navigating away (e.g. to the real article).
+        for _ in range(6):
+            await asyncio.sleep(1)
+            if await _find_turnstile_iframe(page) is None:
+                print("  ✓ Cloudflare Turnstile 已通过")
+                # Give the real article page a moment to settle so the
+                # caller can read page.content()/page.url reliably.
+                try:
+                    await page.wait_for_load_state('networkidle', timeout=15000)
+                except Exception:
+                    pass
+                return True
+
+        # Cap total attempts so we don't burn the whole timeout in a loop
+        # on a stuck widget.
+        if click_attempts >= 3:
+            break
+
+    if saw_widget:
+        print(f"  ⚠️  Cloudflare 挑战未在 {timeout_s:.0f}s 内自动通过 — "
+              "可能需要人工点击 (headed 模式下手动完成即可继续)")
+    return False
+
+
 HEADLESS_AUTH_STATE_FILE = Path(
     os.environ.get(
         "DOWNLOAD_PAPER_HEADLESS_AUTH_STATE",
@@ -1745,6 +1866,13 @@ async def complete_extraction_workflow(
                 await page.goto(url, wait_until='networkidle', timeout=60000)
             except:
                 pass
+
+            # If the landing page is a Cloudflare Turnstile "verify you are
+            # human" checkbox, try to click through it automatically.
+            try:
+                await auto_solve_bot_challenge(page, timeout_s=30)
+            except Exception as e:
+                print(f"  ⚠️  auto_solve_bot_challenge 抛异常: {e}")
 
             # Store the raw server HTML on the handler so it can use it instead
             # of page.content() (which returns the post-JS-rendered DOM).
