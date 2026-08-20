@@ -206,13 +206,42 @@ def is_bot_challenge_page(url: str, html: str = None) -> bool:
 _TURNSTILE_IFRAME_SELECTORS = (
     'iframe[src*="challenges.cloudflare.com"]',
     'iframe[src*="cf-chl-widget"]',
+    'iframe[src*="cdn-cgi/challenge-platform"]',  # publisher self-hosted CDN
+    'iframe[src*="turnstile"]',
     'iframe[title*="widget containing a Cloudflare" i]',
     'iframe[title*="Cloudflare security challenge" i]',
+    'iframe[title*="Verify you are human" i]',
+    'iframe[title*="human" i]',
+    'iframe[title*="challenge" i]',
+)
+
+# URL substrings that identify a Cloudflare challenge frame regardless of
+# how it's embedded (top-level iframe, nested iframe, cross-origin).
+_TURNSTILE_URL_MARKERS = (
+    'challenges.cloudflare.com',
+    'cf-chl-widget',
+    'cdn-cgi/challenge-platform',
+    'turnstile',
 )
 
 
+def _looks_like_challenge_frame(frame) -> bool:
+    """True if a Playwright Frame's URL looks like a Cloudflare challenge."""
+    url = (frame.url or '').lower()
+    if not url or url == 'about:blank':
+        return False
+    return any(marker in url for marker in _TURNSTILE_URL_MARKERS)
+
+
 async def _find_turnstile_iframe(page):
-    """Return the first visible Cloudflare Turnstile iframe element, or None."""
+    """Return the first visible Cloudflare Turnstile iframe element and its
+    Frame object, or (None, None). We check the top DOM first (fast path),
+    then fall back to enumerating every frame in the page tree — that
+    catches nested / same-origin-wrapped challenge widgets that
+    ``page.query_selector('iframe[src*=...]')`` misses because their URL
+    lives on the Frame, not on the <iframe> src attribute.
+    """
+    # Fast path: match by <iframe> src attribute or title text.
     for selector in _TURNSTILE_IFRAME_SELECTORS:
         try:
             el = await page.query_selector(selector)
@@ -220,11 +249,32 @@ async def _find_turnstile_iframe(page):
             el = None
         if el:
             try:
-                if await el.is_visible():
-                    return el
+                if not await el.is_visible():
+                    continue
             except Exception:
-                return el
-    return None
+                pass
+            return el, None
+
+    # Fallback: walk the frame tree. Cloudflare's checkbox lives in a
+    # cross-origin frame, and Playwright exposes that as an entry in
+    # page.frames even when we can't find a matching <iframe> element in
+    # the main-frame DOM.
+    for frame in page.frames:
+        if frame == page.main_frame:
+            continue
+        if _looks_like_challenge_frame(frame):
+            try:
+                element = await frame.frame_element()
+                if element:
+                    try:
+                        if not await element.is_visible():
+                            continue
+                    except Exception:
+                        pass
+                    return element, frame
+            except Exception:
+                continue
+    return None, None
 
 
 async def auto_solve_bot_challenge(page, timeout_s: float = 30.0) -> bool:
@@ -251,7 +301,7 @@ async def auto_solve_bot_challenge(page, timeout_s: float = 30.0) -> bool:
     await asyncio.sleep(1)
 
     while loop.time() < deadline:
-        iframe = await _find_turnstile_iframe(page)
+        iframe, frame = await _find_turnstile_iframe(page)
         if iframe is None:
             if saw_widget:
                 # Widget was there earlier and is now gone → success.
@@ -277,8 +327,9 @@ async def auto_solve_bot_challenge(page, timeout_s: float = 30.0) -> bool:
         x = box['x'] + 30
         y = box['y'] + box['height'] / 2
         click_attempts += 1
-        print(f"  🤖 检测到 Cloudflare 挑战 iframe ({box['width']:.0f}x{box['height']:.0f})，"
-              f"点击 checkbox @ ({x:.0f}, {y:.0f})  [第 {click_attempts} 次]")
+        frame_url = (frame.url if frame else '(inline)')[:80]
+        print(f"  🤖 检测到 Cloudflare 挑战 iframe ({box['width']:.0f}x{box['height']:.0f}) "
+              f"[{frame_url}]，点击 @ ({x:.0f}, {y:.0f})  [第 {click_attempts} 次]")
         try:
             await page.mouse.move(x, y)
             await asyncio.sleep(0.1)
@@ -291,7 +342,8 @@ async def auto_solve_bot_challenge(page, timeout_s: float = 30.0) -> bool:
         # page navigating away (e.g. to the real article).
         for _ in range(6):
             await asyncio.sleep(1)
-            if await _find_turnstile_iframe(page) is None:
+            gone, _ = await _find_turnstile_iframe(page)
+            if gone is None:
                 print("  ✓ Cloudflare Turnstile 已通过")
                 # Give the real article page a moment to settle so the
                 # caller can read page.content()/page.url reliably.
@@ -309,6 +361,26 @@ async def auto_solve_bot_challenge(page, timeout_s: float = 30.0) -> bool:
     if saw_widget:
         print(f"  ⚠️  Cloudflare 挑战未在 {timeout_s:.0f}s 内自动通过 — "
               "可能需要人工点击 (headed 模式下手动完成即可继续)")
+    else:
+        # Never spotted a challenge widget. If the page URL and title
+        # still look "challenge-ish", dump the frame tree so a missing
+        # detection can be diagnosed from the log.
+        try:
+            page_url = (page.url or '').lower()
+            page_title = (await page.title()).lower()
+            looks_stuck = (
+                'cdn-cgi' in page_url
+                or 'challenge' in page_url
+                or 'just a moment' in page_title
+                or 'verify you are human' in page_title
+            )
+            if looks_stuck:
+                print(f"  ⚠️  页面仍像挑战页 (title={page_title!r}, url={page_url[:80]!r})")
+                print(f"  🔎 frame tree at timeout:")
+                for i, fr in enumerate(page.frames):
+                    print(f"       [{i}] {(fr.url or '(no url)')[:120]}")
+        except Exception:
+            pass
     return False
 
 
