@@ -337,6 +337,124 @@ class AIPHandler(PublisherHandler):
         return text_md.strip()
 
     @classmethod
+    def _walk_aip_section(cls, section, body_parts: list) -> None:
+        """Walk direct children of an article-section-wrapper in document order.
+
+        Older AIP renderings mix ``<p>``, a multi-``<div class="formula-wrap">``
+        ``<div class="disp-formula">`` group, and loose ``NavigableString`` +
+        inline-formula text (all as siblings of the section wrapper) — the
+        previous select_one / early-return dispatch dropped everything after
+        the first matched block type.
+        """
+        inline_buffer: list[str] = []
+
+        def flush_inline():
+            if not inline_buffer:
+                return
+            joined = ''.join(inline_buffer).strip()
+            inline_buffer.clear()
+            if not joined:
+                return
+            md = cls._convert_aip_html_fragment_to_markdown(f"<p>{joined}</p>")
+            if md:
+                body_parts.extend([md, ""])
+
+        for child in section.children:
+            if isinstance(child, NavigableString):
+                text = str(child)
+                if text.strip():
+                    inline_buffer.append(text)
+                continue
+            if not getattr(child, 'name', None):
+                continue
+
+            classes = child.get('class') or []
+
+            if child.name == 'p':
+                flush_inline()
+                md = cls._convert_aip_html_fragment_to_markdown(str(child))
+                if md:
+                    body_parts.extend([md, ""])
+                continue
+
+            if child.name in ('ul', 'ol'):
+                flush_inline()
+                md = cls._convert_aip_list(child)
+                if md:
+                    body_parts.extend([md, ""])
+                continue
+
+            if child.name == 'div':
+                if 'block-child-p' in classes:
+                    flush_inline()
+                    md = cls._convert_aip_block_child_p(child)
+                    if md:
+                        body_parts.extend([md, ""])
+                    continue
+
+                if 'disp-formula' in classes:
+                    flush_inline()
+                    # A disp-formula may wrap several <div class="formula-wrap">
+                    # under a shared (N) label. Emit each equation on its own,
+                    # attaching the label to the first.
+                    label_el = child.find('span', class_='label')
+                    label_text = label_el.get_text(' ', strip=True) if label_el else ''
+                    wraps = child.find_all('div', class_='formula-wrap', recursive=False)
+                    if not wraps:
+                        wraps = [child]
+                    for i, wrap in enumerate(wraps):
+                        fm = cls._convert_aip_display_formula(wrap)
+                        if not fm:
+                            continue
+                        if i == 0 and label_text and label_text not in fm:
+                            fm = f"{fm}\n\n{label_text}"
+                        body_parts.extend([fm, ""])
+                    continue
+
+                if 'formula-wrap' in classes:
+                    flush_inline()
+                    md = cls._convert_aip_display_formula(child)
+                    if md:
+                        body_parts.extend([md, ""])
+                    continue
+
+                if 'table-wrap' in classes:
+                    flush_inline()
+                    md = cls._convert_aip_table_to_md(child)
+                    if md:
+                        body_parts.extend([md, ""])
+                    continue
+
+                if 'fig-section' in classes:
+                    flush_inline()
+                    fig_label = child.find('div', class_='fig-label')
+                    fig_caption = child.find('div', class_='caption')
+                    parts = []
+                    if fig_label:
+                        lt = fig_label.get_text(' ', strip=True)
+                        if lt:
+                            parts.append(f"**{lt}**")
+                    if fig_caption:
+                        cap_md = cls._convert_aip_html_fragment_to_markdown(str(fig_caption))
+                        if cap_md:
+                            parts.append(cap_md)
+                    if parts:
+                        body_parts.extend([" ".join(parts), ""])
+                    continue
+
+                if 'fig-modal' in classes or 'reveal-modal' in classes:
+                    # Duplicate of the fig-section rendered as a lightbox
+                    # modal — the real figure was already emitted above.
+                    continue
+
+            # Anything else (unknown div, <span>, <a>, <em>, ...) → buffer as
+            # inline so trailing "Here <span>ε</span> is the …" text after a
+            # display formula still ends up in a paragraph.
+            inline_buffer.append(str(child))
+
+        flush_inline()
+
+    @classmethod
     def _convert_aip_list(cls, list_tag, level: int = 0) -> str:
         """Convert <ul>/<ol> to markdown, recursing into nested lists.
 
@@ -453,44 +571,10 @@ class AIPHandler(PublisherHandler):
                         abstract_parts.append(paragraph_md)
                 continue
 
-            figure_md = cls._convert_aip_figure(node)
-            if figure_md:
-                body_parts.extend([figure_md, ""])
-                continue
-
-            # block-child-p contains paragraph text possibly mixed with
-            # embedded display formulas — convert as a single unit.
-            block_p = node.select_one('div.block-child-p')
-            if block_p:
-                block_md = cls._convert_aip_block_child_p(block_p)
-                if block_md:
-                    body_parts.extend([block_md, ""])
-                continue
-
-            formula = node.select_one('div.formula-wrap')
-            if formula:
-                formula_md = cls._convert_aip_display_formula(formula)
-                if formula_md:
-                    body_parts.extend([formula_md, ""])
-                continue
-
-            table = node.select_one('div.table-wrap')
-            if table:
-                table_md = cls._convert_aip_table_to_md(table)
-                if table_md:
-                    body_parts.extend([table_md, ""])
-                continue
-
-            # Walk direct children so paragraphs and lists stay in order.
-            for child in node.find_all(['p', 'ul', 'ol'], recursive=False):
-                if child.name == 'p':
-                    paragraph_md = cls._convert_aip_html_fragment_to_markdown(str(child))
-                    if paragraph_md:
-                        body_parts.extend([paragraph_md, ""])
-                else:
-                    list_md = cls._convert_aip_list(child)
-                    if list_md:
-                        body_parts.extend([list_md, ""])
+            # Walk direct children in document order so a section that mixes
+            # <p>, a multi-formula <div class="disp-formula">, and loose text
+            # (e.g. 10.1063/1.2844352 section 66667746) doesn't drop anything.
+            cls._walk_aip_section(node, body_parts)
 
         abstract_md = "\n\n".join(abstract_parts).strip()
         body_md = "\n".join(body_parts).strip()
