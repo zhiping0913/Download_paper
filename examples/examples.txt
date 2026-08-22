@@ -8,7 +8,7 @@ aps
 nature, springer
 10.1038/s41566-023-01311-z   #nature photonics, article-equation, Supplementary information
 10.1038/nphys2439
-10.1140/epjs/s11734-023-00909-2   #section-title, article-equation, figure, table, nested list, Formula
+10.1140/epjs/s11734-023-00909-2   #section-title, article-equation, figure, table with formula, nested list, Formula
 10.1038/s41598-019-57119-x   #scientific reports, section-title, figure, supplementary
 10.1038/s42005-024-01811-6   #Communications Physics, section-title, article-equation, figure, table, Code availability, supplementary
 10.1038/s41586-026-10400-2   #nature, figure, Formula, supplementary, Extended data figures and tables
