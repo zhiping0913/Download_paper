@@ -659,17 +659,43 @@ class AIPHandler(PublisherHandler):
             img = fig_div.find('img', class_='content-image')
             if not img:
                 continue
-            img_url = img.get('src') or img.get('data-src') or ''
-            if not img_url:
+            thumb_url = (img.get('src') or img.get('data-src') or '').strip()
+            if not thumb_url:
                 continue
+
+            # The <img> shows the "m_" thumbnail (e.g. m_054003_1_….jpeg). The
+            # full-resolution JPEG is embedded as a signed CDN URL in the
+            # "Download slide" link's `image=` query parameter, e.g.
+            #   /DownloadFile/DownloadImage.aspx?image=<CDN URL>&sec=…&ar=…
+            # A naive m_-strip won't work: CloudFront's Signature is bound to
+            # the exact URL, so we must lift the pre-signed high-res URL that
+            # AIP ships with the page. The CDN URL ends at the third
+            # CloudFront param (Key-Pair-Id=<value>) — everything after that
+            # belongs to the aspx handler, not to the JPEG's signed URL.
+            hi_res_url = ''
+            dl_slide = fig_div.find('a', class_='download-slide')
+            if dl_slide:
+                href = dl_slide.get('href', '') or ''
+                m = re.search(
+                    r'[?&]image=(https?://.+?[?&]Key-Pair-Id=[^&]+)',
+                    href,
+                )
+                if m:
+                    hi_res_url = m.group(1).strip()
 
             label = fig_div.find('div', class_='fig-label')
             caption = label.get_text(' ', strip=True) if label else ''
 
-            figures[key] = {
-                'url': img_url.strip(),
+            entry = {
+                'url': hi_res_url or thumb_url,
                 'caption': caption,
             }
+            # Keep the m_-thumbnail as fallback so the download retry logic in
+            # complete_paper_extraction.py can drop back to it if the hi-res
+            # URL 403s (e.g. signature expired between scrape and download).
+            if hi_res_url and thumb_url and hi_res_url != thumb_url:
+                entry['original_url'] = thumb_url
+            figures[key] = entry
 
         return figures
 
