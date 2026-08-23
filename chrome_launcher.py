@@ -134,6 +134,8 @@ def launch_chrome(use_user_config: bool = False, headless: bool = False):
         CHROME_PATH,
         "--remote-debugging-port=9222",
         f"--user-data-dir={user_data_dir}",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
         "--no-first-run",
         "--disable-default-apps",
         "--disable-sync",

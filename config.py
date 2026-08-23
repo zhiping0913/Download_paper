@@ -20,6 +20,13 @@ IS_WINDOWS = platform.system() == 'Windows'
 
 def _detect_chrome_path() -> str:
     """Auto-detect Chrome executable path across Windows and Linux."""
+    env_path = os.environ.get('CHROME_PATH', '').strip()
+    if env_path:
+        env_path = os.path.expanduser(os.path.expandvars(env_path))
+        if os.path.isfile(env_path):
+            return env_path
+        print(f"⚠ CHROME_PATH does not point to a file: {env_path}", file=sys.stderr)
+
     if IS_WINDOWS:
         candidates = []
         program_files_dirs = [
