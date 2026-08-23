@@ -544,8 +544,29 @@ class ScienceDirectHandler(PublisherHandler):
                 dd = dl.find('dd', class_='footnote-detail')
                 if not dd:
                     continue
-                inner_div = dd.find('div', id=re.compile(r'^cenotep\d+$')) or dd
-                text_md = cls._convert_paragraph_to_md(str(inner_div))
+
+                # A single <dd> can hold MULTIPLE <div id="cenotepN"> paragraph
+                # divs — Elsevier assigns cenotepN ids per paragraph, not per
+                # footnote, so a footnote with several equations/paragraphs
+                # renders as e.g. cenotep34 + cenotep35 + … all under one
+                # <dl>/<dd> keyed by the same #bfn33 back-anchor. Iterate every
+                # such div and join their converted markdown with a blank line.
+                inner_divs = dd.find_all(
+                    'div',
+                    id=re.compile(r'^cenotep\d+$'),
+                    recursive=False,
+                )
+                if inner_divs:
+                    parts = []
+                    for div in inner_divs:
+                        md_part = cls._convert_paragraph_to_md(str(div))
+                        if md_part:
+                            parts.append(md_part)
+                    text_md = "\n\n".join(parts).strip()
+                else:
+                    # Legacy shape: no cenotepN wrappers, just prose in the <dd>.
+                    text_md = cls._convert_paragraph_to_md(str(dd))
+
                 if not text_md:
                     continue
                 seen_numbers.add(n)
