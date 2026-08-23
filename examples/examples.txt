@@ -50,10 +50,10 @@ cambridge
 10.1017/hpl.2018.33   #High Power Laser Science and Engineering, figure, mathFormula, table
 
 sciencedirect, Elsevier
-10.1016/j.jcp.2019.109131   #Journal of Computational Physics, figure, formula(matrix in multiple lines), table
-10.1016/j.cocom.2026.e01326   #Supplementary
+10.1016/j.jcp.2019.109131   #Journal of Computational Physics, figure, formula(matrix in multiple lines), table with formula
+10.1016/j.cocom.2026.e01326   #Supplementary, key_image, table with formula
 10.1016/S1369-7021(12)70017-2   #h2,h3
-10.1016/j.cpc.2018.03.018   #Fig. 4 breaks into 4 independent figures.
+10.1016/j.cpc.2018.03.018   #nested list, Fig. 4 breaks into 4 independent figures.
 10.1016/j.cpc.2022.108457   #figure, formula, table, nested list of paragraphs and figures
 10.1016/B978-0-08-030275-1.50008-4   #figure, formula, footnote (multi-line formula)
 
