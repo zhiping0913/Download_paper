@@ -55,6 +55,7 @@ sciencedirect, Elsevier
 10.1016/S1369-7021(12)70017-2   #h2,h3
 10.1016/j.cpc.2018.03.018   #Fig. 4 breaks into 4 independent figures.
 10.1016/j.cpc.2022.108457   #figure, formula, table, nested list of paragraphs and figures
+10.1016/B978-0-08-030275-1.50008-4   #figure, formula, footnote (multi-line formula)
 
 Science
 10.1126/sciadv.aar3761   #figure, display-formula, supplemental
