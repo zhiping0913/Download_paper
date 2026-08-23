@@ -489,46 +489,73 @@ class ScienceDirectHandler(PublisherHandler):
 
     @classmethod
     def _extract_footnotes_from_html(cls, soup) -> list:
-        """Return ``[(n, markdown), ...]`` for footnotes in ``div.Footnotes``.
+        """Return ``[(n, markdown), ...]`` for footnotes in ``div.footnotes``.
 
         Each ``<dl class="footnote">`` pairs a ``<dt class="footnote-label">``
         (back-anchor like ``<a href="#bfnN">``) with a ``<dd class="footnote-detail">``
         containing ``<div id="cenotepN">`` — the footnote text.  The number N
         matches the ``#fnN`` href used by body references.
+
+        Notes on where they live:
+          * Modern ScienceDirect renders footnotes in
+            ``<div class="footnotes text-xs">`` (lowercase, extra utility
+            class), NOT ``<div class="Footnotes">``. A single container is
+            usually a sibling of ``<div id="body">`` inside
+            ``<div class="body-area">``; some templates split them across
+            multiple containers.
+          * Each footnote's contents may include LaTeX / MathJax, so the
+            detail HTML must go through the same paragraph converter as
+            body text — we already do this via
+            ``_convert_paragraph_to_md``, which stashes formulas.
         """
         results = []
-        footnotes_div = soup.find('div', class_='Footnotes')
-        if not footnotes_div:
+        seen_numbers = set()
+        # Match any div whose class list contains 'footnotes' (or the older
+        # capitalised 'Footnotes'). Iterate all matches so multi-container
+        # layouts (some CE-styled papers) are covered.
+        containers = soup.find_all(
+            'div',
+            class_=lambda v: bool(v) and any(c in ('footnotes', 'Footnotes')
+                                             for c in (v if isinstance(v, list) else [v])),
+        )
+        if not containers:
             return results
 
-        for dl in footnotes_div.find_all('dl', class_='footnote'):
-            n = None
-            dt = dl.find('dt', class_='footnote-label')
-            if dt:
-                back = dt.find('a', href=re.compile(r'^#bfn\d+$'))
-                if back:
-                    m = re.match(r'^#bfn(\d+)$', back.get('href', ''))
-                    if m:
-                        n = m.group(1)
-            if n is None:
-                # Fallback: derive from the cenotepN id on the detail div.
-                detail_div = dl.find('div', id=re.compile(r'^cenotep\d+$'))
-                if detail_div:
-                    m = re.match(r'^cenotep(\d+)$', detail_div.get('id', ''))
-                    if m:
-                        n = m.group(1)
-            if n is None:
-                continue
+        for footnotes_div in containers:
+            for dl in footnotes_div.find_all('dl', class_='footnote'):
+                n = None
+                dt = dl.find('dt', class_='footnote-label')
+                if dt:
+                    back = dt.find('a', href=re.compile(r'^#bfn\d+$'))
+                    if back:
+                        m = re.match(r'^#bfn(\d+)$', back.get('href', ''))
+                        if m:
+                            n = m.group(1)
+                if n is None:
+                    # Fallback: derive from the cenotepN id on the detail div.
+                    detail_div = dl.find('div', id=re.compile(r'^cenotep\d+$'))
+                    if detail_div:
+                        m = re.match(r'^cenotep(\d+)$', detail_div.get('id', ''))
+                        if m:
+                            n = m.group(1)
+                if n is None or n in seen_numbers:
+                    continue
 
-            dd = dl.find('dd', class_='footnote-detail')
-            if not dd:
-                continue
-            inner_div = dd.find('div', id=re.compile(r'^cenotep\d+$')) or dd
-            text_md = cls._convert_paragraph_to_md(str(inner_div))
-            if not text_md:
-                continue
-            results.append((n, text_md))
+                dd = dl.find('dd', class_='footnote-detail')
+                if not dd:
+                    continue
+                inner_div = dd.find('div', id=re.compile(r'^cenotep\d+$')) or dd
+                text_md = cls._convert_paragraph_to_md(str(inner_div))
+                if not text_md:
+                    continue
+                seen_numbers.add(n)
+                results.append((n, text_md))
 
+        # Sort by numeric footnote number so [^1] appears before [^2].
+        try:
+            results.sort(key=lambda kv: int(kv[0]))
+        except Exception:
+            pass
         return results
 
     @classmethod
