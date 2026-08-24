@@ -40,7 +40,14 @@ from publisher.orchestrator import (
     extract_metadata_multi_publisher
 )
 
-from config import OUTPUT_DIR_DEFAULT, BATCH_SLEEP_ENABLED, BATCH_SLEEP_MIN, BATCH_SLEEP_MAX, SAVE_WITHOUT_REFERENCES
+from config import (
+    BATCH_SLEEP_ENABLED,
+    BATCH_SLEEP_MAX,
+    BATCH_SLEEP_MIN,
+    CHROME_DEBUG_PORT,
+    OUTPUT_DIR_DEFAULT,
+    SAVE_WITHOUT_REFERENCES,
+)
 
 OUTPUT_DIR = OUTPUT_DIR_DEFAULT
 # Publisher IDs that can be entered from the Phase 0 headless page.
@@ -1522,7 +1529,7 @@ async def complete_extraction_workflow(
             import socket
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(2)
-            result = sock.connect_ex(('127.0.0.1', 9222))
+            result = sock.connect_ex(('127.0.0.1', CHROME_DEBUG_PORT))
             sock.close()
             return result == 0
         except:
@@ -1591,7 +1598,9 @@ async def complete_extraction_workflow(
             return None
 
         try:
-            headed_browser = await playwright.chromium.connect_over_cdp("http://localhost:9222")
+            headed_browser = await playwright.chromium.connect_over_cdp(
+                f"http://localhost:{CHROME_DEBUG_PORT}"
+            )
             if not headed_browser.contexts:
                 print("  ⚠️  有头Chrome没有可用context，Phase 0将使用干净无头context")
                 return None
@@ -1879,10 +1888,12 @@ async def complete_extraction_workflow(
 
     async with async_playwright() as p:
         try:
-            browser = await p.chromium.connect_over_cdp("http://localhost:9222")
+            browser = await p.chromium.connect_over_cdp(
+                f"http://localhost:{CHROME_DEBUG_PORT}"
+            )
             print("✓ 已连接到Chrome\n")
         except Exception as e:
-            print(f"❌ 无法连接到Chrome port 9222: {e}")
+            print(f"❌ 无法连接到Chrome port {CHROME_DEBUG_PORT}: {e}")
             print("   请运行: python chrome_launcher.py\n")
             return None
 

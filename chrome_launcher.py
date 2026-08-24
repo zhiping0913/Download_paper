@@ -14,7 +14,7 @@ from pathlib import Path
 
 # 从 config 导入跨平台配置
 try:
-    from config import CHROME_PATH, CHROME_USER_DATA_DIR, IS_WINDOWS
+    from config import CHROME_DEBUG_PORT, CHROME_PATH, CHROME_USER_DATA_DIR, IS_WINDOWS
 except ImportError:
     IS_WINDOWS = sys.platform == "win32"
     CHROME_PATH = "chrome.exe" if IS_WINDOWS else "google-chrome"
@@ -23,6 +23,7 @@ except ImportError:
         if IS_WINDOWS
         else str(Path.home() / ".config" / "google-chrome")
     )
+    CHROME_DEBUG_PORT = int(os.environ.get("CHROME_DEBUG_PORT", 9222))
 
 
 def ensure_chrome_preferences(user_data_dir: str):
@@ -132,7 +133,7 @@ def launch_chrome(use_user_config: bool = False, headless: bool = False):
     # 构建启动命令
     chrome_args = [
         CHROME_PATH,
-        "--remote-debugging-port=9222",
+        f"--remote-debugging-port={CHROME_DEBUG_PORT}",
         f"--user-data-dir={user_data_dir}",
         "--no-sandbox",
         "--disable-dev-shm-usage",
@@ -163,7 +164,7 @@ def launch_chrome(use_user_config: bool = False, headless: bool = False):
     )
 
     print(f"✓ Chrome 已启动 (PID: {proc.pid})")
-    print(f"✓ 远程调试端口: 9222")
+    print(f"✓ 远程调试端口: {CHROME_DEBUG_PORT}")
 
     # 等待启动
     time.sleep(6)
@@ -173,7 +174,7 @@ def launch_chrome(use_user_config: bool = False, headless: bool = False):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(5)
-        result = sock.connect_ex(('127.0.0.1', 9222))
+        result = sock.connect_ex(('127.0.0.1', CHROME_DEBUG_PORT))
         sock.close()
 
         if result == 0:
