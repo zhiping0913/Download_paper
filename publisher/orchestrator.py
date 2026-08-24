@@ -15,6 +15,7 @@ from publisher.sciencedirect import ScienceDirectHandler
 from publisher.oup import OupHandler
 from publisher.oup_book import OupBookHandler
 from publisher.mdpi import MDPIHandler
+from publisher.acm import ACMHandler
 
 
 def detect_publisher_from_url(url: str) -> str:
@@ -85,6 +86,12 @@ def detect_publisher_from_url(url: str) -> str:
         return 'mdpi'
     elif '10.3390' in url_lower:
         return 'mdpi'
+
+    # ACM Digital Library — abstract-only support, headed access required
+    elif 'dl.acm.org' in url_lower:
+        return 'acm'
+    elif '10.1145' in url_lower:
+        return 'acm'
 
     # Science / AAAS vs ScienceDirect / Elsevier
     # -----------------------------------------
@@ -166,6 +173,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return OupBookHandler(**kwargs)
     elif publisher == 'mdpi':
         return MDPIHandler(**kwargs)
+    elif publisher == 'acm':
+        return ACMHandler(**kwargs)
     elif publisher == 'science':
         return ScienceHandler(**kwargs)
     elif publisher == 'sciencedirect':
