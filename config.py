@@ -81,7 +81,7 @@ CHROME_USER_DATA_DIR = _detect_chrome_user_data_dir()
 CHROME_PROFILE = "Default"
 
 # Chrome远程调试端口（如果使用remote debugging）
-CHROME_DEBUG_PORT = 9222
+CHROME_DEBUG_PORT = int(os.environ.get("CHROME_DEBUG_PORT", 9222))
 
 # ============================================================================
 # 输出目录配置
@@ -132,8 +132,8 @@ SAVE_WITHOUT_REFERENCES = True
 BATCH_SLEEP_ENABLED = True
 
 # 批次处理随机休眠最小/最大秒数
-BATCH_SLEEP_MIN = 30
-BATCH_SLEEP_MAX = 60
+BATCH_SLEEP_MIN = int(os.environ.get("BATCH_SLEEP_MIN", 30))
+BATCH_SLEEP_MAX = int(os.environ.get("BATCH_SLEEP_MAX", 60))
 
 # ============================================================================
 # 脚本配置
