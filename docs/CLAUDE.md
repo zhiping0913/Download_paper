@@ -188,9 +188,13 @@ CHROME_USER_DATA_DIR = "~/.config/google-chrome"  # 用户数据目录
 | `10.1088` / `iopscience.iop.org` | IOPHandler | 有头 | `<script type="math/tex">` |
 | `10.1017` / `cambridge.org` | CambridgeHandler | 无头 | MathJax |
 | `10.1093` / `academic.oup.com` | OupHandler | 无头 | MathJax + MathML twin |
+| `10.3390` / `mdpi.com` | MDPIHandler | 无头 | MathJax |
+| `10.1145` / `dl.acm.org` | ACMHandler | **有头** | — (**abstract-only**) |
 | `10.1016` / `sciencedirect.com` | NatureHandler (回退) | 无头 | MathJax |
 | `10.1051` / `epj-conferences.org` | NatureHandler (回退) | 无头 | MathJax |
 | `arxiv.org` | APSHandler (回退) | 有头 | 取决于源格式 |
+
+**ACM 的覆盖范围说明**: `ACMHandler` 只保证 `paper.md` 里有 `## Abstract` 段。正文 / 图片 / 补充材料在 ACM 上通常需要登录才能拿到，handler 里全部作为 stub 保留（`figure_urls={}`、`supplemental_urls=[]`），将来若要抓时不用改契约。PDF 链接固定构造为 `https://dl.acm.org/doi/pdf/{doi}`；ACM 对 headless Chromium 有 Cloudflare 硬拦截，因此不能加入 `HEADLESS_ACCESSIBLE_PUBLISHERS`。
 
 ---
 

@@ -42,14 +42,23 @@ python batch_process.py --file dois.txt                     # 批量
 
 ## 支持的 Publisher
 
-| DOI 前缀 | Handler | 浏览器 |
-|---|---|---|
-| `10.1038` | NatureHandler | 无头 |
-| `10.1103` | APSHandler | 有头 |
-| `10.1063` | AIPHandler | 无头 |
-| `10.1088` | IOPHandler | 有头 |
-| `10.1017` | CambridgeHandler | 无头 |
-| `10.1093` | OupHandler | 无头 |
+| DOI 前缀 | Handler | 浏览器 | 覆盖范围 |
+|---|---|---|---|
+| `10.1038` | NatureHandler | 无头 | 完整 |
+| `10.1103` | APSHandler | 有头 | 完整 |
+| `10.1063` | AIPHandler | 无头 | 完整 |
+| `10.1088` | IOPHandler | 有头 | 完整 |
+| `10.1017` | CambridgeHandler | 无头 | 完整 |
+| `10.1093` | OupHandler | 无头 | 完整 |
+| `10.1145` | ACMHandler | **有头** | **abstract-only** — 见下 |
+
+### ACM (`10.1145`, dl.acm.org)
+
+- **仅抓 abstract**。ACM 全文对未登录用户 gated，正文/图片/补充材料抓不到
+- 输出的 `paper.md` 保证有 `## Abstract` 段，其余章节尽力而为（Index Terms、References 等在 landing page 上能看到的会被 h2 walker 顺手带出来，但不保证完整）
+- PDF 链接固定构造为 `https://dl.acm.org/doi/pdf/{doi}`（下载可能仍 401，走标准 retry/skip）
+- **必须有头** — ACM 对 headless Chromium 有 Cloudflare 硬拦截。不要把 `'acm'` 加进 `HEADLESS_ACCESSIBLE_PUBLISHERS`
+- 图片 / 补充材料 handler 里保留接口 stub，将来想抓时不用改提取契约
 
 ## 参考
 

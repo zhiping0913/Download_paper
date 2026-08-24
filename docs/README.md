@@ -86,6 +86,8 @@ complete_extraction_workflow(doi, output_file=None, force_headed=False)
 - `10.1088`、`iopscience.iop.org` -> `iop`
 - `10.1017`、`cambridge.org` -> `cambridge`
 - `10.1093`、`academic.oup.com` -> `oup`
+- `10.3390`、`mdpi.com` -> `mdpi`
+- `10.1145`、`dl.acm.org` -> `acm` **(abstract-only — 仅抓 abstract，正文/图片/补充材料不保证；必须有头访问)**
 - `sciencedirect.com`、`10.1016` -> `nature` (Elsevier 回退)
 - `epj-conferences.org`、`10.1051` -> `nature` (EDP Sciences 回退)
 - `arxiv.org` -> `arxiv`
