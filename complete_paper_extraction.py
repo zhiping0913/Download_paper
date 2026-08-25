@@ -18,13 +18,16 @@ import os
 import random
 import re
 import requests
+import shutil
 import sys
 import signal
 import subprocess
+from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime
 from urllib.parse import unquote, urljoin, urlparse
 from playwright.async_api import async_playwright
+from chrome_launcher import launch_chrome
 
 # 导入核心模块 (Phase 2 refactoring)
 from core import (
@@ -398,37 +401,140 @@ HEADLESS_AUTH_STATE_FILE = Path(
     )
 ).expanduser()
 
-# 全局变量：跟踪chrome_launcher子进程
-_chrome_launcher_process = None
+# 全局变量仅用于兼容信号处理；实际生命周期由 SharedBrowserSession 管理。
+_active_browser_session = None
 
 def _cleanup_chrome_launcher():
-    """清理chrome_launcher子进程"""
-    global _chrome_launcher_process
-
-    # 清理记录的subprocess
-    if _chrome_launcher_process and _chrome_launcher_process.poll() is None:
-        try:
-            _chrome_launcher_process.terminate()
-            _chrome_launcher_process.wait(timeout=5)
-        except:
-            try:
-                _chrome_launcher_process.kill()
-            except:
-                pass
-        _chrome_launcher_process = None
-
-    # 直接杀死任何残留的chrome_launcher进程
-    import subprocess as sp
-    try:
-        sp.run(['pkill', '-f', 'chrome_launcher.py'], timeout=2)
-    except:
-        pass
+    """同步兜底：只清理本批次拥有的 Chrome，不误杀其他并发任务。"""
+    if _active_browser_session is not None:
+        _active_browser_session.cleanup_owned_chrome_sync()
 
 def _signal_handler(signum, frame):
     """SIGINT信号处理器 - 清理子进程然后退出"""
     print("\n\n⚠️  收到中断信号，正在清理子进程...")
     _cleanup_chrome_launcher()
     sys.exit(130)  # 标准SIGINT退出码
+
+
+class SharedBrowserSession:
+    """One headed Chrome and one headless context shared by a DOI batch."""
+
+    def __init__(self, playwright):
+        self.playwright = playwright
+        self.headless_browser = None
+        self.headless_context = None
+        self.headed_process = None
+        self.headed_profile_dir = None
+        self.owns_headed_profile = False
+        self.headed_browser = None
+        self.headed_context = None
+        self.latest_headed_state = None
+
+    @staticmethod
+    def _chrome_ready() -> bool:
+        import socket
+        try:
+            with socket.create_connection(("127.0.0.1", CHROME_DEBUG_PORT), timeout=2):
+                return True
+        except OSError:
+            return False
+
+    async def ensure_headed_chrome(self) -> bool:
+        if self._chrome_ready():
+            return True
+        # A previously owned Chrome may have exited after its last page closed.
+        # Reclaim that profile before starting a replacement.
+        if self.headed_process is not None or self.headed_profile_dir is not None:
+            self.cleanup_owned_chrome_sync()
+        try:
+            proc, profile_dir, temporary = await asyncio.to_thread(
+                launch_chrome, False, False, True
+            )
+            self.headed_process = proc
+            self.headed_profile_dir = profile_dir
+            self.owns_headed_profile = temporary
+            return self._chrome_ready()
+        except Exception as exc:
+            print(f"⚠️  启动共享有头Chrome失败: {exc}")
+            return False
+
+    async def ensure_headless_context(self, storage_state=None):
+        if self.headless_context is not None:
+            return self.headless_context
+        self.headless_browser = await self.playwright.chromium.launch(headless=True)
+        kwargs = {"accept_downloads": True}
+        state = self.latest_headed_state or storage_state
+        if state:
+            kwargs["storage_state"] = state
+        self.headless_context = await self.headless_browser.new_context(**kwargs)
+        cookie_count = len((state or {}).get("cookies", []))
+        print(f"  ↔ 共享无头context已创建，载入 {cookie_count} 个cookies")
+        return self.headless_context
+
+    async def ensure_headed_context(self):
+        if (self.headed_browser is not None
+                and self.headed_browser.is_connected()
+                and self.headed_context is not None):
+            return self.headed_browser, self.headed_context
+        if not await self.ensure_headed_chrome():
+            return None
+        self.headed_browser = await self.playwright.chromium.connect_over_cdp(
+            f"http://127.0.0.1:{CHROME_DEBUG_PORT}"
+        )
+        if self.headed_browser.contexts:
+            self.headed_context = self.headed_browser.contexts[0]
+        else:
+            self.headed_context = await self.headed_browser.new_context(accept_downloads=True)
+        return self.headed_browser, self.headed_context
+
+    async def sync_headed_to_headless(self, headed_context):
+        self.latest_headed_state = await headed_context.storage_state()
+        cookies = self.latest_headed_state.get("cookies", [])
+        if self.headless_context is not None:
+            await self.headless_context.add_cookies(cookies)
+        print(f"  ↔ 有头→无头 cookie同步: {len(cookies)}")
+
+    async def sync_headless_to_headed(self, headed_context):
+        if self.headless_context is not None:
+            cookies = await self.headless_context.cookies()
+            await headed_context.add_cookies(cookies)
+            print(f"  ↔ 无头→有头 cookie同步: {len(cookies)}")
+
+    def cleanup_owned_chrome_sync(self):
+        proc = self.headed_process
+        self.headed_process = None
+        if proc is not None and proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                proc.wait(timeout=10)
+            except Exception:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except Exception:
+                    pass
+        if self.owns_headed_profile and self.headed_profile_dir:
+            shutil.rmtree(self.headed_profile_dir, ignore_errors=True)
+        self.headed_profile_dir = None
+        self.owns_headed_profile = False
+        self.headed_context = None
+        self.headed_browser = None
+
+    async def close(self):
+        if self.headless_context is not None:
+            try:
+                await self.headless_context.close()
+            except Exception:
+                pass
+            self.headless_context = None
+        if self.headless_browser is not None:
+            try:
+                await self.headless_browser.close()
+            except Exception:
+                pass
+            self.headless_browser = None
+        self.headed_context = None
+        self.headed_browser = None
+        self.cleanup_owned_chrome_sync()
 
 # ============================================================================
 # Publisher Detection and Handler Factory
@@ -563,6 +669,7 @@ async def _download_all_resources(
     metadata: dict,
     doi: str = None,
     force_headed: bool = False,
+    reuse_context: bool = False,
 ) -> dict:
     """Unified download manager for all resources (PDF, figures, supplemental)
 
@@ -588,7 +695,7 @@ async def _download_all_resources(
     download_context = context
     download_page = page
 
-    if not force_headed:
+    if not force_headed and not reuse_context:
         download_playwright = await async_playwright().start()
         download_browser = await download_playwright.chromium.launch(headless=True)
         download_context = await download_browser.new_context(accept_downloads=True)
@@ -1291,6 +1398,7 @@ async def complete_extraction_workflow(
     output_file: str = None,
     force_headed: bool = False,
     refresh_headless_auth: bool = False,
+    browser_session: SharedBrowserSession = None,
 ):
     """完整提取工作流 - Phase 4/5 重构版本
 
@@ -1442,6 +1550,7 @@ async def complete_extraction_workflow(
             metadata,
             doi,
             force_headed_downloads,
+            reuse_context=browser_session is not None,
         )
 
         # Step 3.5: Check if paper has meaningful content before saving
@@ -1537,9 +1646,15 @@ async def complete_extraction_workflow(
 
     async def ensure_headed_chrome_ready() -> bool:
         """Start the real headed Chrome profile if the CDP endpoint is not ready."""
-        global _chrome_launcher_process
         if check_chrome_ready():
             return True
+
+        if browser_session is not None:
+            print("⚠️  Chrome 未运行，正在启动批次共享实例...")
+            ready = await browser_session.ensure_headed_chrome()
+            if ready:
+                print("✓ 批次共享 Chrome 已就绪\n")
+            return ready
 
         print("⚠️  Chrome 未运行，正在启动...")
         chrome_launcher = Path(__file__).parent / "chrome_launcher.py"
@@ -1548,7 +1663,7 @@ async def complete_extraction_workflow(
             return False
 
         try:
-            _chrome_launcher_process = subprocess.Popen([sys.executable, str(chrome_launcher)])
+            subprocess.Popen([sys.executable, str(chrome_launcher)])
         except Exception as e:
             print(f"⚠️  启动Chrome失败: {e}\n")
             return False
@@ -1591,6 +1706,42 @@ async def complete_extraction_workflow(
             print(f"  ✓ 无头登录态已保存: {HEADLESS_AUTH_STATE_FILE}")
         except Exception as e:
             print(f"  ⚠️  保存无头登录态失败: {type(e).__name__}: {str(e)[:100]}")
+
+    @asynccontextmanager
+    async def playwright_scope():
+        """Reuse the batch Playwright driver when one was supplied."""
+        if browser_session is not None:
+            yield browser_session.playwright
+        else:
+            async with async_playwright() as playwright:
+                yield playwright
+
+    @asynccontextmanager
+    async def headed_connection_scope():
+        """Yield the batch CDP connection, or a temporary one for legacy callers."""
+        if browser_session is not None:
+            try:
+                connection = await browser_session.ensure_headed_context()
+            except Exception as exc:
+                print(f"❌ 无法连接到共享Chrome port {CHROME_DEBUG_PORT}: {exc}")
+                connection = None
+            yield connection
+            return
+
+        async with async_playwright() as playwright:
+            try:
+                browser = await playwright.chromium.connect_over_cdp(
+                    f"http://localhost:{CHROME_DEBUG_PORT}"
+                )
+                if browser.contexts:
+                    context = browser.contexts[0]
+                else:
+                    context = await browser.new_context(accept_downloads=True)
+                connection = (browser, context)
+            except Exception as exc:
+                print(f"❌ 无法连接到Chrome port {CHROME_DEBUG_PORT}: {exc}")
+                connection = None
+            yield connection
 
     async def export_headed_chrome_storage_state(playwright):
         """Export cookies/localStorage from the headed Chrome profile for headless use."""
@@ -1686,14 +1837,17 @@ async def complete_extraction_workflow(
         print("=" * 80)
 
         try:
-            async with async_playwright() as p:
+            async with playwright_scope() as p:
                 storage_state = await load_headless_storage_state(p)
-                context_kwargs = {'accept_downloads': True}
-                if storage_state:
-                    context_kwargs['storage_state'] = storage_state
-
-                headless_browser = await p.chromium.launch(headless=True)
-                headless_context = await headless_browser.new_context(**context_kwargs)
+                if browser_session is not None:
+                    headless_browser = None
+                    headless_context = await browser_session.ensure_headless_context(storage_state)
+                else:
+                    context_kwargs = {'accept_downloads': True}
+                    if storage_state:
+                        context_kwargs['storage_state'] = storage_state
+                    headless_browser = await p.chromium.launch(headless=True)
+                    headless_context = await headless_browser.new_context(**context_kwargs)
                 headless_page = await headless_context.new_page()
 
                 # Stop MathJax from running so we keep original \(...\) / <math>
@@ -1809,8 +1963,9 @@ async def complete_extraction_workflow(
                             captured_data,
                             force_headed,
                         )
-                        await cleanup_context_pages(headless_context)
-                        await headless_browser.close()
+                        await headless_page.close()
+                        if headless_browser is not None:
+                            await headless_browser.close()
                         return result
 
                 except Exception as e:
@@ -1823,10 +1978,11 @@ async def complete_extraction_workflow(
                         await headless_page.close()
                     except:
                         pass
-                    try:
-                        await headless_browser.close()
-                    except:
-                        pass
+                    if headless_browser is not None:
+                        try:
+                            await headless_browser.close()
+                        except:
+                            pass
         except Exception as e:
             print(f"  ⚠️  无头浏览器启动失败: {e}")
 
@@ -1863,48 +2019,61 @@ async def complete_extraction_workflow(
             print(f"  出版商类型: {fallback_publisher.upper()}")
             print("  → 不连接有头Chrome，交给PublisherHandler自行创建无头页面")
 
-            handler = get_publisher_handler(
-                fallback_publisher,
-                captured_data_dir=captured_data_dir,
-                doi=doi,
-            )
-            handler.crossref_data = crossref_data
+            if browser_session is not None:
+                context = await browser_session.ensure_headless_context()
+                page = await context.new_page()
+                try:
+                    handler = get_publisher_handler(
+                        fallback_publisher,
+                        page=page,
+                        captured_data_dir=captured_data_dir,
+                        doi=doi,
+                    )
+                    handler.crossref_data = crossref_data
+                    return await process_with_handler(
+                        page, context, handler, fallback_publisher, None, False
+                    )
+                finally:
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+            else:
+                handler = get_publisher_handler(
+                    fallback_publisher,
+                    captured_data_dir=captured_data_dir,
+                    doi=doi,
+                )
+                handler.crossref_data = crossref_data
 
-            return await process_with_handler(
-                None,
-                None,
-                handler,
-                fallback_publisher,
-                None,
-                False,
-            )
+                return await process_with_handler(
+                    None,
+                    None,
+                    handler,
+                    fallback_publisher,
+                    None,
+                    False,
+                )
 
         print("  🔵 标准路径：使用有头浏览器完整提取")
 
         print()
 
     # 检查Chrome是否就绪
-    await ensure_headed_chrome_ready()
+    if not await ensure_headed_chrome_ready():
+        return None
 
-    async with async_playwright() as p:
-        try:
-            browser = await p.chromium.connect_over_cdp(
-                f"http://localhost:{CHROME_DEBUG_PORT}"
-            )
-            print("✓ 已连接到Chrome\n")
-        except Exception as e:
-            print(f"❌ 无法连接到Chrome port {CHROME_DEBUG_PORT}: {e}")
+    async with headed_connection_scope() as connection:
+        if connection is None:
             print("   请运行: python chrome_launcher.py\n")
             return None
-
+        browser, context = connection
+        print("✓ 已连接到批次共享Chrome\n" if browser_session else "✓ 已连接到Chrome\n")
         try:
-            contexts = browser.contexts
-            if contexts:
-                context = contexts[0]
-                print("✓ 使用现有context\n")
-            else:
-                context = await browser.new_context(accept_downloads=True)
-                print("✓ 创建新context (accept_downloads=True)\n")
+            print("✓ 使用批次共享context\n" if browser_session else "✓ 使用现有context\n")
+
+            if browser_session is not None:
+                await browser_session.sync_headless_to_headed(context)
 
             page = await context.new_page()
 
@@ -2047,21 +2216,29 @@ async def complete_extraction_workflow(
                 print()
                 result = None
 
-            # Clean up pages
+            if browser_session is not None:
+                await browser_session.sync_headed_to_headless(context)
+
+            # Clean up only this DOI's page when using a batch context. Closing
+            # every page makes desktop Chrome exit and loses batch cookies.
             print("\n🧹 清理标签页...")
             print("=" * 80)
-            for p in context.pages:
+            pages_to_close = [page] if browser_session is not None else list(context.pages)
+            for p in pages_to_close:
                 try:
                     await p.close()
                 except:
                     pass
 
-            try:
-                blank_page = await context.new_page()
-                await blank_page.goto("about:blank")
-                print("  ✓ 标签页已清理")
-            except:
-                pass
+            if browser_session is None:
+                try:
+                    blank_page = await context.new_page()
+                    await blank_page.goto("about:blank")
+                    print("  ✓ 标签页已清理")
+                except:
+                    pass
+            else:
+                print("  ✓ 当前DOI标签页已关闭，共享context保留")
 
             print()
             return result
@@ -2072,12 +2249,13 @@ async def complete_extraction_workflow(
             traceback.print_exc()
 
             try:
-                for p in context.pages:
+                pages_to_close = [page] if browser_session is not None else list(context.pages)
+                for p in pages_to_close:
                     try:
                         await p.close()
                     except:
                         pass
-            except:
+            except Exception:
                 pass
 
             return None
@@ -2199,40 +2377,48 @@ async def main():
         output_path.mkdir(parents=True, exist_ok=True)
         print(f"📁 输出目录: {output_path}\n")
 
-        # 处理多个DOI
+        # 处理多个DOI。一个批次共享同一有头 Chrome、无头 context 和 cookies。
         success_count = 0
         fail_count = 0
-
-        for i, doi in enumerate(dois, 1):
-            print(f"\n{'='*80}")
-            print(f"处理论文 {i}/{len(dois)}: {doi}")
-            print(f"{'='*80}\n")
-
+        global _active_browser_session
+        async with async_playwright() as batch_playwright:
+            browser_session = SharedBrowserSession(batch_playwright)
+            _active_browser_session = browser_session
             try:
-                md_path = await complete_extraction_workflow(
-                    doi,
-                    output_file=output_dir,
-                    force_headed=force_headed_mode,
-                    refresh_headless_auth=args.refresh_headless_auth,
-                )
-                if md_path:
-                    success_count += 1
-                    print(f"✅ 成功: {md_path}")
-                else:
-                    fail_count += 1
-            except Exception as e:
-                print(f"❌ 处理失败: {e}")
-                import traceback
-                traceback.print_exc()
-                fail_count += 1
+                for i, doi in enumerate(dois, 1):
+                    print(f"\n{'='*80}")
+                    print(f"处理论文 {i}/{len(dois)}: {doi}")
+                    print(f"{'='*80}\n")
 
-            # 批量处理防拉黑：随机睡眠 (最后一条不需要)
-            if BATCH_SLEEP_ENABLED and i < len(dois):
-                sleep_seconds = random.randint(BATCH_SLEEP_MIN, BATCH_SLEEP_MAX)
-                sleep_minutes = sleep_seconds / 60
-                print(f"\n😴 防拉黑休眠 {sleep_seconds}s ({sleep_minutes:.1f} min)...")
-                await asyncio.sleep(sleep_seconds)
-                print("🚀 继续下一篇文章...\n")
+                    try:
+                        md_path = await complete_extraction_workflow(
+                            doi,
+                            output_file=output_dir,
+                            force_headed=force_headed_mode,
+                            refresh_headless_auth=args.refresh_headless_auth,
+                            browser_session=browser_session,
+                        )
+                        if md_path:
+                            success_count += 1
+                            print(f"✅ 成功: {md_path}")
+                        else:
+                            fail_count += 1
+                    except Exception as e:
+                        print(f"❌ 处理失败: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        fail_count += 1
+
+                    # 批量处理防拉黑：随机睡眠 (最后一条不需要)
+                    if BATCH_SLEEP_ENABLED and i < len(dois):
+                        sleep_seconds = random.randint(BATCH_SLEEP_MIN, BATCH_SLEEP_MAX)
+                        sleep_minutes = sleep_seconds / 60
+                        print(f"\n😴 防拉黑休眠 {sleep_seconds}s ({sleep_minutes:.1f} min)...")
+                        await asyncio.sleep(sleep_seconds)
+                        print("🚀 继续下一篇文章...\n")
+            finally:
+                await browser_session.close()
+                _active_browser_session = None
 
         # 显示统计信息
         if len(dois) > 1:
@@ -2255,6 +2441,8 @@ async def main():
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
