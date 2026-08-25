@@ -71,5 +71,9 @@ oup
 
 mdpi
 10.3390/photonics4020026   #figure, display-formula, nested list
-10.3390/particles3010018   #table, figure, display-formula
+10.3390/particles3010018   #nested list, figure, display-formula
 10.3390/sym17111873   #table, figure, display-formula
+
+acm
+10.1145/3731599.3767493   #figure, nested list, table with footnote, algorithm diagram, supplemental (mp4)
+10.1145/3712285.3771783   #figure, formula, nested list, table with footnote, algorithm diagram, footnote, supplemental (mp4)
