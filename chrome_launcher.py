@@ -108,7 +108,11 @@ def kill_chrome():
         print("✓ Chrome processes killed")
 
 
-def launch_chrome(use_user_config: bool = False, headless: bool = False):
+def launch_chrome(
+    use_user_config: bool = False,
+    headless: bool = False,
+    return_details: bool = False,
+):
     """
     启动Chrome，配合最优设置
 
@@ -124,7 +128,14 @@ def launch_chrome(use_user_config: bool = False, headless: bool = False):
     else:
         # 创建临时目录
         import tempfile
-        user_data_dir = tempfile.mkdtemp(prefix="chrome_")
+        profile_root = os.environ.get("CHROME_PROFILE_ROOT")
+        if profile_root:
+            Path(profile_root).expanduser().mkdir(parents=True, exist_ok=True)
+            profile_root = str(Path(profile_root).expanduser().resolve())
+        user_data_dir = tempfile.mkdtemp(
+            prefix=f"chrome_{CHROME_DEBUG_PORT}_",
+            dir=profile_root,
+        )
         print(f"创建临时配置: {user_data_dir}")
 
     # 应用设置
@@ -143,6 +154,9 @@ def launch_chrome(use_user_config: bool = False, headless: bool = False):
         "--disable-extensions",
         "--disable-gpu",
         "--disable-background-networking",
+        "--disk-cache-size=67108864",
+        "--media-cache-size=16777216",
+        "--disable-application-cache",
     ]
 
     if headless:
@@ -179,13 +193,13 @@ def launch_chrome(use_user_config: bool = False, headless: bool = False):
 
         if result == 0:
             print("✓ Chrome CDP 端口已就绪")
-            return proc
+            return (proc, user_data_dir, not use_user_config) if return_details else proc
         else:
             print("⚠️  CDP 端口未响应，但Chrome已启动")
-            return proc
+            return (proc, user_data_dir, not use_user_config) if return_details else proc
     except Exception as e:
         print(f"⚠️  连接检查失败: {e}")
-        return proc
+        return (proc, user_data_dir, not use_user_config) if return_details else proc
 
 
 if __name__ == "__main__":
