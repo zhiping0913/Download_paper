@@ -287,14 +287,28 @@ async def _find_turnstile_iframe(page):
     return None, None
 
 
-async def auto_solve_bot_challenge(page, timeout_s: float = 30.0) -> bool:
+async def auto_solve_bot_challenge(
+    page,
+    timeout_s: float = 30.0,
+    initial_poll_s: float = 4.0,
+) -> bool:
     """Best-effort auto-click a Cloudflare Turnstile checkbox.
 
-    Polls for a Turnstile iframe up to ``timeout_s`` seconds. When one is
-    found, clicks at (30, height/2) inside its bounding box — that's where
-    the checkbox sits in every widget size Cloudflare currently ships.
-    Waits for the iframe to disappear or for URL navigation, either of
-    which signals the challenge cleared.
+    Polls for a Turnstile iframe. If one is found, clicks at
+    (30, height/2) inside its bounding box — that's where the checkbox
+    sits in every widget size Cloudflare currently ships. Waits for the
+    iframe to disappear or for URL navigation, either of which signals
+    the challenge cleared.
+
+    Two timeouts:
+      * ``initial_poll_s`` — how long to wait for a widget to APPEAR at
+        all. If nothing shows in this window we assume there's no
+        challenge on this page and return False immediately. This keeps
+        the happy path (no challenge) from burning the full ``timeout_s``
+        on every download-page navigation.
+      * ``timeout_s`` — total budget once a widget IS seen (covers the
+        click + validation + navigation-back-to-real-page). Only used
+        after a widget is found in the initial window.
 
     Returns True if a challenge was found AND appears resolved, False
     otherwise (including "no challenge present" — that's the happy path
@@ -304,6 +318,7 @@ async def auto_solve_bot_challenge(page, timeout_s: float = 30.0) -> bool:
 
     loop = asyncio.get_event_loop()
     deadline = loop.time() + timeout_s
+    initial_deadline = loop.time() + initial_poll_s
     click_attempts = 0
     saw_widget = False
 
@@ -317,7 +332,12 @@ async def auto_solve_bot_challenge(page, timeout_s: float = 30.0) -> bool:
                 # Widget was there earlier and is now gone → success.
                 print("  ✓ Cloudflare Turnstile 已通过")
                 return True
-            # No challenge (yet); wait briefly for one to appear.
+            # No widget yet. Give up quickly if we've been in the initial
+            # window for long enough with no widget — most pages have no
+            # challenge and we don't want to hang each PDF/figure download
+            # for 30 s just to prove there's nothing to click.
+            if loop.time() >= initial_deadline:
+                return False
             await asyncio.sleep(1)
             continue
 
@@ -881,6 +901,14 @@ async def download_pdf(
             # 下载开始时页面加载会中断，这是正常的
             pass
 
+        # Cloudflare-protected PDFs (ScienceDirect and friends) throw the
+        # "verify you are human" checkbox before serving the file.
+        # 4s initial poll means no-challenge pages don't stall the download.
+        try:
+            await auto_solve_bot_challenge(download_page, timeout_s=30, initial_poll_s=4)
+        except Exception as e:
+            print(f"    ⚠️  auto_solve_bot_challenge (PDF): {e}")
+
         # 等待下载完成（部分链接需等待5-10秒后才会自动跳转到PDF）
         await asyncio.sleep(10)
 
@@ -1180,6 +1208,14 @@ async def download_supplemental_materials(
                     # 下载开始时页面加载会中断，这是正常的
                     pass
 
+                # Same Cloudflare-Turnstile guard as for the main article
+                # and PDF paths — some publishers wall supplemental
+                # downloads behind the same "verify you are human" checkbox.
+                try:
+                    await auto_solve_bot_challenge(download_page, timeout_s=30, initial_poll_s=4)
+                except Exception as e:
+                    print(f"    ⚠️  auto_solve_bot_challenge (supp): {e}")
+
                 # For inline audio: wait for the response listener to finish
                 # reading the body (up to 60 s for large files).  Then save
                 # directly and skip the download-event path entirely.
@@ -1348,6 +1384,32 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
         response = await download_page.goto(fig_url, wait_until='networkidle', timeout=60000)
         content_type = response.headers.get('content-type', '') if response else ''
 
+        # If the CDN routes the image through a Cloudflare-protected host
+        # (some ScienceDirect / Wiley figures do), the page shows a
+        # "verify you are human" checkbox before the binary is served.
+        # We only need to trigger the check when the response is HTML
+        # (i.e. NOT an image) — content-type "image/*" means we're
+        # already looking at the file itself.
+        if not content_type.startswith('image/'):
+            try:
+                solved = await auto_solve_bot_challenge(
+                    download_page, timeout_s=30, initial_poll_s=4
+                )
+                if solved:
+                    # Re-fetch the same URL: the Cloudflare cookie set by
+                    # the solved challenge lets this second goto through
+                    # and returns the actual image bytes.
+                    try:
+                        response = await download_page.goto(
+                            fig_url, wait_until='networkidle', timeout=30000
+                        )
+                        content_type = (response.headers.get('content-type', '')
+                                        if response else '')
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"    ⚠️  auto_solve_bot_challenge (figure): {e}")
+
         if response and content_type.startswith('image/'):
             # Use browser-side fetch to avoid CDP binary corruption
             image_data = await _fetch_image_as_bytes(download_page, fig_url)
@@ -1368,6 +1430,11 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
                 image_data = await _fetch_image_as_bytes(download_page, img_src)
                 if not image_data:
                     response = await download_page.goto(img_src, wait_until='networkidle', timeout=60000)
+                    # Guard the fallback goto too.
+                    try:
+                        await auto_solve_bot_challenge(download_page, timeout_s=30, initial_poll_s=4)
+                    except Exception:
+                        pass
                     image_data = await response.body()
                 img_filename = original_image_filename(img_src, fig_num)
                 img_path = output_dir / img_filename
