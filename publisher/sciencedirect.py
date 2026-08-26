@@ -1034,6 +1034,39 @@ class ScienceDirectHandler(PublisherHandler):
                 'label': label_text,  # e.g. "Fig. 4(a)" — used to embed in MD
             }
 
+        # Also grab <figure class="inline-figure">: Elsevier renders in-text
+        # program listings, snippets, algorithm cycles etc. as GIFs
+        # (e.g. …/fx001.gif) wrapped in this element. They aren't numbered so
+        # they don't have a caption / label, but the URL-swap safety net in
+        # convert_to_markdown() rewrites the body markdown's inline
+        # ![](https://…) reference to the local filename once the download
+        # finishes. Skip anything without a proper CDN URL to avoid picking
+        # up icon / spinner assets.
+        for fig_elem in soup.find_all('figure', class_='inline-figure'):
+            img = fig_elem.find('img')
+            if not img:
+                continue
+            img_url = (img.get('src') or img.get('data-src') or '').strip()
+            if not img_url or img_url.startswith('data:'):
+                continue
+            # Only pick up hosted content assets; skip UI icons that some
+            # templates render as inline-figures.
+            if not ('ars.els-cdn.com' in img_url or 'els-cdn.com' in img_url):
+                continue
+            # Dedupe against normal figures whose URL might already be listed
+            # (defensive — unlikely but cheap).
+            if any(entry.get('url') == img_url for entry in figures.values()):
+                continue
+
+            key = f"fig_{len(figures) + 1}"
+            figures[key] = {
+                'url': img_url,
+                'caption': '',
+                'label': '',       # No label → won't match ``**Fig. N.**``
+                                    # regex; URL-swap safety net covers it.
+                'inline': True,     # marker for anyone inspecting the dict
+            }
+
         return figures
 
     # ------------------------------------------------------------------
