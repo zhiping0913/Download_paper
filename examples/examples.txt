@@ -55,6 +55,8 @@ sciencedirect, Elsevier
 10.1016/S1369-7021(12)70017-2   #h2,h3
 10.1016/j.cpc.2018.03.018   #nested list, Fig. 4 breaks into 4 independent figures.
 10.1016/j.cpc.2022.108457   #figure, formula, table, nested list of paragraphs and figures
+10.1016/j.cpc.2004.01.008   #figure, formula, algorithm diagram not in figure block
+10.1016/j.cpc.2006.08.002   #figure, formula, table with note, nested list
 10.1016/B978-0-08-030275-1.50008-4   #figure, formula, footnote (multi-line formula)
 
 Science
@@ -75,5 +77,5 @@ mdpi
 10.3390/sym17111873   #table, figure, display-formula
 
 acm
-10.1145/3731599.3767493   #figure, nested list, table with footnote, algorithm diagram, supplemental (mp4)
-10.1145/3712285.3771783   #figure, formula, nested list, table with footnote, algorithm diagram, footnote, supplemental (mp4)
+10.1145/3731599.3767493   #figure, nested list, table with footnote, algorithm diagram not in figure block, supplemental (mp4)
+10.1145/3712285.3771783   #figure, formula, nested list, table with footnote, algorithm diagram not in figure block, footnote, supplemental (mp4)
