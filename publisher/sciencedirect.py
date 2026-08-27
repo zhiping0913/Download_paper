@@ -896,6 +896,25 @@ class ScienceDirectHandler(PublisherHandler):
             if md_table:
                 parts.append("")
                 parts.append(md_table)
+
+        # Table footnote / legend text lives in a sibling <div class="legend">
+        # inside the same <div class="tables"> wrapper — Elsevier uses this
+        # for "explanation of symbols" style notes (e.g. "A boundary field
+        # (BF) 0 means that it is vanishing, while A refers to 'point A' of
+        # Ref. [18]"). Emit each contained paragraph as a "**Note:**" line
+        # below the table so the context isn't lost.
+        legend = tbl_div.find('div', class_='legend')
+        if legend is not None:
+            note_paras = legend.find_all(
+                'div', class_='u-margin-s-bottom', recursive=False,
+            ) or [legend]
+            for note in note_paras:
+                note_md = cls._convert_paragraph_to_md(str(note))
+                note_md = re.sub(r'\s+', ' ', note_md or '').strip()
+                if not note_md:
+                    continue
+                parts.append("")
+                parts.append(f"**Note:** {note_md}")
         parts.append("")
 
     @classmethod
