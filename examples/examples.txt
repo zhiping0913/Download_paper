@@ -55,7 +55,7 @@ sciencedirect, Elsevier
 10.1016/S1369-7021(12)70017-2   #h2,h3
 10.1016/j.cpc.2018.03.018   #nested list, Fig. 4 breaks into 4 independent figures.
 10.1016/j.cpc.2022.108457   #figure, formula, table, nested list of paragraphs and figures
-10.1016/j.cpc.2004.01.008   #figure, formula, algorithm diagram not in figure block
+10.1016/j.cpc.2007.11.004   #figure, formula, multiple algorithm diagrams not in figure block
 10.1016/j.cpc.2006.08.002   #figure, formula, table with note, nested list
 10.1016/B978-0-08-030275-1.50008-4   #figure, formula, footnote (multi-line formula)
 
