@@ -39,8 +39,8 @@ captured_data/
 .auth/
 /downloads/
 *.pdf
-*.json
 *.log
+.recipe/recipe.json
 
 # Temporary files
 tmp/
