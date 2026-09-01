@@ -1551,6 +1551,16 @@ async def complete_extraction_workflow(
         links = extraction_result['links']
         fulltext_data = extraction_result['fulltext_data']
 
+        # Record the browser's landed URL — after doi.org redirect this is
+        # the direct publisher URL. save_metadata_json will surface it as
+        # "link" so future runs can bypass doi.org via the --json input.
+        try:
+            landing_url = (page.url or '') if page is not None else ''
+        except Exception:
+            landing_url = ''
+        if landing_url and not landing_url.startswith('about:'):
+            metadata['_landing_url'] = landing_url
+
         # Save HTML to the per-DOI capture directory.
         # page.html     = post-JS rendered DOM (fulltext_data from handler)
         # page_raw.html = raw server HTTP response (pre-JS, captured by interceptor)

@@ -244,14 +244,30 @@ def organize_paper_output(output_dir: Path, metadata: dict, s2_data: dict) -> Pa
 
 
 def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
-                      pdf_filename: str = None, supplemental_files: list = None):
-    """Save paper metadata as JSON file"""
+                      pdf_filename: str = None, supplemental_files: list = None,
+                      link: str = None):
+    """Save paper metadata as JSON file
+
+    Args:
+        link: The final URL the browser landed on after resolving the DOI
+              (or the explicit ``link`` from the --json input). Useful to
+              cache the direct publisher URL so future runs can bypass
+              doi.org (see --json mode).
+    """
     try:
         year = s2_data.get('year') or metadata.get('year') or '0000'
         title = s2_data.get('title') or metadata.get('title') or 'paper'
 
+        # Prefer explicit link, fall back to whatever the handler stashed on
+        # metadata['_landing_url'] during extraction (see process_with_handler).
+        resolved_link = (link
+                         or metadata.get('_landing_url')
+                         or metadata.get('fulltext_url')
+                         or '')
+
         metadata_json = {
             'doi': doi,
+            'link': resolved_link,
             'title': title,
             'year': year,
             'authors': [item['author'] for item in metadata.get('author_with_affiliations', [])] or metadata.get('authors', []),
