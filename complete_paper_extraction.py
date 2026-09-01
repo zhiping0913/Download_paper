@@ -1466,6 +1466,8 @@ async def complete_extraction_workflow(
     force_headed: bool = False,
     refresh_headless_auth: bool = False,
     browser_session: SharedBrowserSession = None,
+    link: str = None,
+    extra_headers: dict = None,
 ):
     """完整提取工作流 - Phase 4/5 重构版本
 
@@ -1476,6 +1478,13 @@ async def complete_extraction_workflow(
                        - True: 跳过Phase 0，直接使用有头Chrome
                        - False: 先用无头浏览器预检，根据结果决定是否需要有头
         refresh_headless_auth: 是否通过CDP从真实Chrome刷新无头浏览器登录态
+        link: 可选。若提供，会绕过 https://doi.org/{doi} 重定向，直接访问该 URL
+              (headless 预检和有头访问都以此为主 URL)。对于绕过 doi.org
+              redirect 时才会弹的反 bot 校验很有用。
+        extra_headers: 可选。附加到每次导航请求上的 HTTP header dict
+              (例如 {"referer": "https://pubs.aip.org/aip/pop/issue/24/12"})。
+              会 merge 进 headless / headed 两条路径的 context extra headers；
+              cookies 由 SharedBrowserSession 自己维护，不受影响。
 
     New architecture:
     1. Phase 0 (可选): 使用无头浏览器快速预检 (除非force_headed=True)
@@ -1499,11 +1508,21 @@ async def complete_extraction_workflow(
     print(f"📌 DOI: {doi}\n")
 
     # 构建URL
-    url = f"https://doi.org/{doi}"
+    # If the caller supplied an explicit `link`, use it as the primary URL
+    # (skips the doi.org redirect entirely — helpful for publishers whose
+    # doi.org landing triggers a bot check that the direct URL avoids).
+    doi_url = f"https://doi.org/{doi}"
+    url = (link or '').strip() or doi_url
+    if link:
+        print(f"  ↪ 使用 JSON 中提供的 link，跳过 https://doi.org/{doi} 重定向")
+        print(f"    → {url}")
 
     def build_headless_precheck_urls() -> list:
         """Return candidate URLs for Phase 0, avoiding a hard dependency on doi.org."""
         candidates = [url]
+        # doi.org 作为最后 fallback（若 link 就是 doi.org 就不重复）
+        if doi_url not in candidates:
+            candidates.append(doi_url)
         publisher_hint = detect_publisher_from_url(url)
 
         if publisher_hint == 'nature' and '/' in doi:
@@ -1921,6 +1940,17 @@ async def complete_extraction_workflow(
                 # markup in the DOM. Must be registered before the first goto().
                 await block_mathjax(headless_page)
 
+                # Attach any JSON-supplied headers (e.g. Referer). Cookies
+                # continue to be carried by the shared context.
+                if extra_headers:
+                    try:
+                        await headless_page.set_extra_http_headers(
+                            {str(k): str(v) for k, v in extra_headers.items()}
+                        )
+                        print(f"  ↪ 附加 header(s): {list(extra_headers.keys())}")
+                    except Exception as e:
+                        print(f"  ⚠️  set_extra_http_headers 失败: {e}")
+
                 # Capture raw server HTML (pre-JavaScript) via response interception.
                 _headless_raw_html: list = []
 
@@ -2144,6 +2174,19 @@ async def complete_extraction_workflow(
 
             page = await context.new_page()
 
+            # Attach any JSON-supplied headers (e.g. Referer) to the headed
+            # page BEFORE we register the response listener + navigate.
+            # Only applied to this page — the shared context's own headers
+            # / cookies are untouched.
+            if extra_headers:
+                try:
+                    await page.set_extra_http_headers(
+                        {str(k): str(v) for k, v in extra_headers.items()}
+                    )
+                    print(f"  ↪ 附加 header(s): {list(extra_headers.keys())}")
+                except Exception as e:
+                    print(f"  ⚠️  set_extra_http_headers 失败: {e}")
+
             # Stop MathJax from running so the rendered DOM (page.content())
             # also keeps original \(...\) / <math> markup. Must be registered
             # before the first goto().
@@ -2365,15 +2408,29 @@ async def main():
   从文件列表:
     python %(prog)s --file doi_list.txt
 
+  从 JSON 列表 (每项可选 link + header 字典):
+    python %(prog)s --json examples/examples.json
+
   指定输出目录:
     python %(prog)s --doi 10.1103/PhysRevLett.109.245005 --output ~/Downloads
 
   强制使用有头浏览器（跳过无头预检）:
     python %(prog)s --doi 10.1103/PhysRevLett.109.245005 --force-headed
+
+JSON 格式:
+  {
+    "article": [
+      {
+        "doi": "10.1063/1.4994562",                                    # 必填
+        "link": "https://pubs.aip.org/aip/pop/article/24/12/...",       # 可选：绕过 doi.org 重定向
+        "header": {"referer": "https://pubs.aip.org/aip/pop/issue/24/12"} # 可选：附加 HTTP header
+      }
+    ]
+  }
         """
         )
 
-        # 创建互斥组用于--doi和--file
+        # 创建互斥组用于--doi、--file、--json
         input_group = parser.add_mutually_exclusive_group(required=True)
         input_group.add_argument(
             '--doi',
@@ -2385,6 +2442,13 @@ async def main():
             type=str,
             metavar='FILE',
             help='包含DOI列表的文件 (每行一个DOI)'
+        )
+        input_group.add_argument(
+            '--json',
+            type=str,
+            metavar='FILE',
+            help='含 article 列表的 JSON 文件 (每篇必须有 "doi"，可选 "link" 和 '
+                 '"header" 字典)。见 examples/examples.json 的格式。'
         )
 
         parser.add_argument(
@@ -2410,26 +2474,64 @@ async def main():
 
         args = parser.parse_args()
 
-        # 构建DOI列表
-        dois = []
+        # 构建 article 列表 —— 每项是 dict: {"doi", "link"?, "header"?}
+        articles = []
         if args.doi:
-            dois = [args.doi]
+            articles = [{"doi": args.doi}]
             print(f"📌 单个DOI: {args.doi}\n")
         elif args.file:
             try:
                 with open(args.file, 'r', encoding='utf-8') as f:
-                    dois = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
-                print(f"📌 从文件读取 {len(dois)} 个DOI: {args.file}\n")
+                    dois = [line.strip() for line in f
+                            if line.strip() and not line.strip().startswith('#')]
+                articles = [{"doi": d} for d in dois]
+                print(f"📌 从文件读取 {len(articles)} 个DOI: {args.file}\n")
             except FileNotFoundError:
                 print(f"❌ 文件不存在: {args.file}")
                 sys.exit(1)
             except Exception as e:
                 print(f"❌ 读取文件时出错: {e}")
                 sys.exit(1)
+        elif args.json:
+            import json as _json
+            try:
+                with open(args.json, 'r', encoding='utf-8') as f:
+                    payload = _json.load(f)
+                raw_articles = payload.get('article') or payload.get('articles') or []
+                if not isinstance(raw_articles, list):
+                    print(f"❌ JSON 顶层需含 'article' 数组: {args.json}")
+                    sys.exit(1)
+                for idx, item in enumerate(raw_articles, 1):
+                    if not isinstance(item, dict):
+                        print(f"  ⚠️  第 {idx} 项不是 dict，跳过")
+                        continue
+                    doi_val = (item.get('doi') or '').strip()
+                    if not doi_val:
+                        print(f"  ⚠️  第 {idx} 项缺 'doi'，跳过")
+                        continue
+                    entry = {'doi': doi_val}
+                    if item.get('link'):
+                        entry['link'] = str(item['link']).strip()
+                    header = item.get('header')
+                    if isinstance(header, dict) and header:
+                        entry['header'] = header
+                    articles.append(entry)
+                print(f"📌 从 JSON 读取 {len(articles)} 个 article: {args.json}\n")
+            except FileNotFoundError:
+                print(f"❌ 文件不存在: {args.json}")
+                sys.exit(1)
+            except _json.JSONDecodeError as e:
+                print(f"❌ JSON 解析失败: {e}")
+                sys.exit(1)
+            except Exception as e:
+                print(f"❌ 读取 JSON 时出错: {e}")
+                sys.exit(1)
 
-        if not dois:
-            print("❌ 没有有效的DOI")
+        if not articles:
+            print("❌ 没有有效的 article")
             sys.exit(1)
+        # 兼容后续打印/统计仍以 dois 变量命名
+        dois = [a['doi'] for a in articles]
 
         # 处理force_headed参数
         force_headed_mode = args.force_headed
@@ -2452,9 +2554,14 @@ async def main():
             browser_session = SharedBrowserSession(batch_playwright)
             _active_browser_session = browser_session
             try:
-                for i, doi in enumerate(dois, 1):
+                for i, article in enumerate(articles, 1):
+                    doi = article['doi']
                     print(f"\n{'='*80}")
-                    print(f"处理论文 {i}/{len(dois)}: {doi}")
+                    print(f"处理论文 {i}/{len(articles)}: {doi}")
+                    if article.get('link'):
+                        print(f"  ↪ 使用 link: {article['link']}")
+                    if article.get('header'):
+                        print(f"  ↪ 附加 header keys: {list(article['header'].keys())}")
                     print(f"{'='*80}\n")
 
                     try:
@@ -2464,6 +2571,8 @@ async def main():
                             force_headed=force_headed_mode,
                             refresh_headless_auth=args.refresh_headless_auth,
                             browser_session=browser_session,
+                            link=article.get('link'),
+                            extra_headers=article.get('header'),
                         )
                         if md_path:
                             success_count += 1
