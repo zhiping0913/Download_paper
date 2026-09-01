@@ -53,6 +53,73 @@ from config import (
 )
 
 OUTPUT_DIR = OUTPUT_DIR_DEFAULT
+
+
+# ============================================================================
+# Timeout / wait knobs — configurable via environment variables
+# ============================================================================
+# Each knob controls a family of related waits. Values are in SECONDS.
+# All timeout= arguments passed to Playwright below are computed as
+# ``<knob> * 1000`` internally (Playwright expects milliseconds).
+#
+#   DP_PAGE_LOAD_TIMEOUT       page.goto / wait_for_load_state / API GET
+#                              (both headed and headless preflight)
+#   DP_CLOUDFLARE_TIMEOUT      Cloudflare Turnstile auto-solve budget
+#                              (initial-poll fraction fixed at ~13% below)
+#   DP_PDF_WAIT                sleep after PDF navigation (browser tab
+#                              needs time to trigger the download event)
+#   DP_SUPPLEMENTAL_TIMEOUT    supplemental download navigation +
+#                              download-event wait
+#   DP_FIGURE_TIMEOUT          figure navigation (both primary and
+#                              fallback img re-fetch)
+#
+# Missing / unparseable env vars fall through to the hardcoded defaults
+# that were in place before this refactor.
+
+def _env_seconds(name: str, default: float) -> float:
+    """Read a positive float number of seconds from environment.
+
+    Returns ``default`` if the var is unset, empty, or unparseable.
+    """
+    raw = os.environ.get(name, '').strip()
+    if not raw:
+        return float(default)
+    try:
+        val = float(raw)
+        if val <= 0:
+            return float(default)
+        return val
+    except ValueError:
+        return float(default)
+
+
+# Page-load family — covers the initial article navigation (headed + headless),
+# every intermediate wait_for_load_state('networkidle'), and the direct
+# APIRequestContext GET used for asset fetches. Default: 60 s.
+DP_PAGE_LOAD_TIMEOUT = _env_seconds('DP_PAGE_LOAD_TIMEOUT', 60)
+
+# Cloudflare Turnstile family — total budget once a widget is seen.
+# The initial-poll window (how long to wait for a widget to APPEAR) is
+# a fixed fraction of this so no-challenge pages exit fast.
+DP_CLOUDFLARE_TIMEOUT = _env_seconds('DP_CLOUDFLARE_TIMEOUT', 30)
+DP_CLOUDFLARE_INITIAL_POLL = max(2.0, DP_CLOUDFLARE_TIMEOUT / 7.5)  # ~4 s at default
+
+# PDF post-navigation wait — the browser tab needs some time after
+# goto(pdf_url) to fire the download event. Default: 10 s.
+DP_PDF_WAIT = _env_seconds('DP_PDF_WAIT', 10)
+
+# Supplemental download family — both the initial page.goto(url) and the
+# download-event wait for each supplemental link. Also covers inline-audio
+# body-fetch waits. Default: 60 s.
+DP_SUPPLEMENTAL_TIMEOUT = _env_seconds('DP_SUPPLEMENTAL_TIMEOUT', 60)
+
+# Figure download family — the CDN goto for each figure image (and the
+# fallback img_src re-fetch if the first response wasn't image/*).
+# Default: 60 s.
+DP_FIGURE_TIMEOUT = _env_seconds('DP_FIGURE_TIMEOUT', 60)
+
+
+
 # Publisher IDs that can be entered from the Phase 0 headless page.
 # Phase 0 substring matches against the Crossref `publisher` field, so each
 # entry must appear *inside* the publisher's display name. Crossref returns
@@ -378,7 +445,7 @@ async def auto_solve_bot_challenge(
                 # Give the real article page a moment to settle so the
                 # caller can read page.content()/page.url reliably.
                 try:
-                    await page.wait_for_load_state('networkidle', timeout=15000)
+                    await page.wait_for_load_state('networkidle', timeout=int(DP_PAGE_LOAD_TIMEOUT * 1000))
                 except Exception:
                     pass
                 return True
@@ -896,7 +963,7 @@ async def download_pdf(
         download_page.on("download", handle_download)
 
         try:
-            await download_page.goto(pdf_url, timeout=15000, wait_until='commit')
+            await download_page.goto(pdf_url, timeout=int(DP_PAGE_LOAD_TIMEOUT * 1000), wait_until='commit')
         except:
             # 下载开始时页面加载会中断，这是正常的
             pass
@@ -905,12 +972,12 @@ async def download_pdf(
         # "verify you are human" checkbox before serving the file.
         # 4s initial poll means no-challenge pages don't stall the download.
         try:
-            await auto_solve_bot_challenge(download_page, timeout_s=30, initial_poll_s=4)
+            await auto_solve_bot_challenge(download_page, timeout_s=DP_CLOUDFLARE_TIMEOUT, initial_poll_s=DP_CLOUDFLARE_INITIAL_POLL)
         except Exception as e:
             print(f"    ⚠️  auto_solve_bot_challenge (PDF): {e}")
 
         # 等待下载完成（部分链接需等待5-10秒后才会自动跳转到PDF）
-        await asyncio.sleep(10)
+        await asyncio.sleep(DP_PDF_WAIT)
 
         download_page.remove_listener("download", handle_download)
         if download_page is not page:
@@ -1104,7 +1171,7 @@ async def download_supplemental_materials(
                         extra_headers = {}
                         if article_url:
                             extra_headers['Referer'] = article_url
-                        api_response = await context.request.get(url, timeout=60000, headers=extra_headers)
+                        api_response = await context.request.get(url, timeout=int(DP_PAGE_LOAD_TIMEOUT * 1000), headers=extra_headers)
                         content_type = (api_response.headers.get('content-type') or '').lower()
                         is_html_challenge = 'text/html' in content_type
 
@@ -1203,7 +1270,7 @@ async def download_supplemental_materials(
                 # 导航到链接（会自动触发下载）
                 response = None
                 try:
-                    response = await download_page.goto(url, timeout=30000, wait_until='commit')
+                    response = await download_page.goto(url, timeout=int(DP_SUPPLEMENTAL_TIMEOUT * 1000), wait_until='commit')
                 except:
                     # 下载开始时页面加载会中断，这是正常的
                     pass
@@ -1212,7 +1279,7 @@ async def download_supplemental_materials(
                 # and PDF paths — some publishers wall supplemental
                 # downloads behind the same "verify you are human" checkbox.
                 try:
-                    await auto_solve_bot_challenge(download_page, timeout_s=30, initial_poll_s=4)
+                    await auto_solve_bot_challenge(download_page, timeout_s=DP_CLOUDFLARE_TIMEOUT, initial_poll_s=DP_CLOUDFLARE_INITIAL_POLL)
                 except Exception as e:
                     print(f"    ⚠️  auto_solve_bot_challenge (supp): {e}")
 
@@ -1221,7 +1288,7 @@ async def download_supplemental_materials(
                 # directly and skip the download-event path entirely.
                 if _is_inline_audio and not downloaded_file:
                     try:
-                        await asyncio.wait_for(_audio_done.wait(), timeout=60)
+                        await asyncio.wait_for(_audio_done.wait(), timeout=DP_SUPPLEMENTAL_TIMEOUT)
                     except asyncio.TimeoutError:
                         pass
                     try:
@@ -1249,9 +1316,12 @@ async def download_supplemental_materials(
                 # 后才会触发实际的下载，所以等待时间放宽到 ~20 秒。
                 try:
                     if not downloaded_file:
+                        # 期望下载事件在 DP_SUPPLEMENTAL_TIMEOUT 内触发；
+                        # 外层 asyncio.wait_for 额外多 2 s 让 Playwright 有余量正常抛超时。
+                        _dl_ms = int(DP_SUPPLEMENTAL_TIMEOUT * 1000)
                         download_event = await asyncio.wait_for(
-                            asyncio.create_task(download_page.wait_for_event("download", timeout=20000)),
-                            timeout=22
+                            asyncio.create_task(download_page.wait_for_event("download", timeout=_dl_ms)),
+                            timeout=DP_SUPPLEMENTAL_TIMEOUT + 2
                         )
                         if download_event:
                             downloaded_file = await download_event.path()
@@ -1381,7 +1451,7 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
         download_page = await context.new_page() if force_headed and context is not None else page
 
         # Navigate to the figure URL so auth cookies are active on this origin
-        response = await download_page.goto(fig_url, wait_until='networkidle', timeout=60000)
+        response = await download_page.goto(fig_url, wait_until='networkidle', timeout=int(DP_FIGURE_TIMEOUT * 1000))
         content_type = response.headers.get('content-type', '') if response else ''
 
         # If the CDN routes the image through a Cloudflare-protected host
@@ -1393,7 +1463,7 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
         if not content_type.startswith('image/'):
             try:
                 solved = await auto_solve_bot_challenge(
-                    download_page, timeout_s=30, initial_poll_s=4
+                    download_page, timeout_s=DP_CLOUDFLARE_TIMEOUT, initial_poll_s=DP_CLOUDFLARE_INITIAL_POLL
                 )
                 if solved:
                     # Re-fetch the same URL: the Cloudflare cookie set by
@@ -1401,7 +1471,7 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
                     # and returns the actual image bytes.
                     try:
                         response = await download_page.goto(
-                            fig_url, wait_until='networkidle', timeout=30000
+                            fig_url, wait_until='networkidle', timeout=int(DP_FIGURE_TIMEOUT * 1000)
                         )
                         content_type = (response.headers.get('content-type', '')
                                         if response else '')
@@ -1429,10 +1499,10 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
                 img_src = normalize_image_url(img_src, download_page.url)
                 image_data = await _fetch_image_as_bytes(download_page, img_src)
                 if not image_data:
-                    response = await download_page.goto(img_src, wait_until='networkidle', timeout=60000)
+                    response = await download_page.goto(img_src, wait_until='networkidle', timeout=int(DP_FIGURE_TIMEOUT * 1000))
                     # Guard the fallback goto too.
                     try:
-                        await auto_solve_bot_challenge(download_page, timeout_s=30, initial_poll_s=4)
+                        await auto_solve_bot_challenge(download_page, timeout_s=DP_CLOUDFLARE_TIMEOUT, initial_poll_s=DP_CLOUDFLARE_INITIAL_POLL)
                     except Exception:
                         pass
                     image_data = await response.body()
@@ -1980,9 +2050,9 @@ async def complete_extraction_workflow(
                     for precheck_url in build_headless_precheck_urls():
                         print(f"  ↪ 预检访问: {precheck_url}")
                         try:
-                            await headless_page.goto(precheck_url, wait_until='domcontentloaded', timeout=60000)
+                            await headless_page.goto(precheck_url, wait_until='domcontentloaded', timeout=int(DP_PAGE_LOAD_TIMEOUT * 1000))
                             try:
-                                await headless_page.wait_for_load_state('networkidle', timeout=15000)
+                                await headless_page.wait_for_load_state('networkidle', timeout=int(DP_PAGE_LOAD_TIMEOUT * 1000))
                             except:
                                 print("  ℹ️  页面主文档已加载，后台资源未完全静默，继续预检")
                             last_precheck_error = None
@@ -2235,14 +2305,14 @@ async def complete_extraction_workflow(
                 print("✓ 网络监听已启动\n")
 
             try:
-                await page.goto(url, wait_until='networkidle', timeout=60000)
+                await page.goto(url, wait_until='networkidle', timeout=int(DP_PAGE_LOAD_TIMEOUT * 1000))
             except:
                 pass
 
             # If the landing page is a Cloudflare Turnstile "verify you are
             # human" checkbox, try to click through it automatically.
             try:
-                await auto_solve_bot_challenge(page, timeout_s=30)
+                await auto_solve_bot_challenge(page, timeout_s=DP_CLOUDFLARE_TIMEOUT, initial_poll_s=DP_CLOUDFLARE_INITIAL_POLL)
             except Exception as e:
                 print(f"  ⚠️  auto_solve_bot_challenge 抛异常: {e}")
 
