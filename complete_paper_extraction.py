@@ -28,6 +28,11 @@ from datetime import datetime
 from urllib.parse import unquote, urljoin, urlparse
 from playwright.async_api import async_playwright
 from chrome_launcher import launch_chrome
+try:
+    from cf_bypass_cdp import bypass_cloudflare_cdp, has_cf_clearance_cdp
+    _CF_BYPASS_AVAILABLE = True
+except ImportError:
+    _CF_BYPASS_AVAILABLE = False
 
 # 导入核心模块 (Phase 2 refactoring)
 from core import (
@@ -96,12 +101,12 @@ def _env_seconds(name: str, default: float) -> float:
 # Page-load family — covers the initial article navigation (headed + headless),
 # every intermediate wait_for_load_state('networkidle'), and the direct
 # APIRequestContext GET used for asset fetches. Default: 60 s.
-DP_PAGE_LOAD_TIMEOUT = _env_seconds('DP_PAGE_LOAD_TIMEOUT', 60)
+DP_PAGE_LOAD_TIMEOUT = _env_seconds('DP_PAGE_LOAD_TIMEOUT', 120)
 
 # Cloudflare Turnstile family — total budget once a widget is seen.
 # The initial-poll window (how long to wait for a widget to APPEAR) is
 # a fixed fraction of this so no-challenge pages exit fast.
-DP_CLOUDFLARE_TIMEOUT = _env_seconds('DP_CLOUDFLARE_TIMEOUT', 30)
+DP_CLOUDFLARE_TIMEOUT = _env_seconds('DP_CLOUDFLARE_TIMEOUT', 600)
 DP_CLOUDFLARE_INITIAL_POLL = max(2.0, DP_CLOUDFLARE_TIMEOUT / 7.5)  # ~4 s at default
 
 # PDF post-navigation wait — the browser tab needs some time after
@@ -404,7 +409,9 @@ async def auto_solve_bot_challenge(
             # challenge and we don't want to hang each PDF/figure download
             # for 30 s just to prove there's nothing to click.
             if loop.time() >= initial_deadline:
-                return False
+                # No Turnstile widget in initial window — break out and
+                # let the JS-challenge detection block below take over.
+                break
             await asyncio.sleep(1)
             continue
 
@@ -458,27 +465,103 @@ async def auto_solve_bot_challenge(
     if saw_widget:
         print(f"  ⚠️  Cloudflare 挑战未在 {timeout_s:.0f}s 内自动通过 — "
               "可能需要人工点击 (headed 模式下手动完成即可继续)")
-    else:
-        # Never spotted a challenge widget. If the page URL and title
-        # still look "challenge-ish", dump the frame tree so a missing
-        # detection can be diagnosed from the log.
-        try:
+        return False
+
+    # No Turnstile checkbox found — check if this is a newer-style
+    # Cloudflare JS challenge ("Just a moment..." page without a
+    # clickable widget). These resolve automatically when the browser
+    # passes the JS fingerprinting check, indicated by a cf_clearance
+    # cookie appearing and/or the page navigating away.
+    try:
+        page_url = (page.url or '').lower()
+        page_title = (await page.title()).lower()
+        # Wait a moment for the challenge page JS to execute and render the title.
+        # Cloudflare's JS challenge often starts with an empty/blank page
+        # and the title updates after the orchestrator script runs.
+        for _ in range(15):
+            await asyncio.sleep(1)
+            try:
+                page_title = (await page.title()).lower()
+                if any(w in page_title for w in ['just a moment', 'challenge', 'verify you are human', 'security']):
+                    break
+            except Exception:
+                pass
             page_url = (page.url or '').lower()
-            page_title = (await page.title()).lower()
-            looks_stuck = (
-                'cdn-cgi' in page_url
-                or 'challenge' in page_url
-                or 'just a moment' in page_title
-                or 'verify you are human' in page_title
+            if any(w in page_url for w in ['cdn-cgi', '__cf_chl', 'challenge']):
+                break
+        is_challenge_page = (
+            'cdn-cgi' in page_url
+            or 'challenge' in page_url
+            or 'just a moment' in page_title
+            or 'verify you are human' in page_title
+            or '__cf_chl' in page_url
+            or 'security verification' in page_title
+        )
+        if not is_challenge_page:
+            print(f"DEBUG: is_challenge_page=False, url={page_url[:80]!r}, title={page_title!r}")
+            return False
+
+        print(f"  🤖 检测到 Cloudflare JS 挑战页 (title={page_title!r})，等待自动通过 (最长 {timeout_s:.0f}s)...")
+        cf_deadline = loop.time() + timeout_s
+        check_interval = max(5.0, min(30.0, timeout_s / 40))
+        print(f"  ⏱️   轮询间隔: {check_interval:.1f}s")
+        while loop.time() < cf_deadline:
+            await asyncio.sleep(check_interval)
+            # Most reliable signal: page title is no longer a challenge title.
+            # URL-based checks fail for sites like AIP that serve the challenge
+            # directly on the article URL (same URL, 403 + challenge body).
+            try:
+                current_title = (await page.title()).lower()
+            except Exception:
+                current_title = ''
+            challenge_keywords = ['just a moment', 'verify you are human',
+                                  'security verification', 'attention required']
+            still_challenge = any(kw in current_title for kw in challenge_keywords)
+
+            # Also require cf_clearance cookie (proves CF JS actually ran)
+            cookies = await page.context.cookies()
+            has_cf_clearance = any(
+                c.get('name', '') == 'cf_clearance' and c.get('value')
+                for c in cookies
             )
-            if looks_stuck:
-                print(f"  ⚠️  页面仍像挑战页 (title={page_title!r}, url={page_url[:80]!r})")
-                print(f"  🔎 frame tree at timeout:")
-                for i, fr in enumerate(page.frames):
-                    print(f"       [{i}] {(fr.url or '(no url)')[:120]}")
+
+            # Check body text for 'Verification successful' signal.
+            # Cloudflare's challenge page sometimes shows this text when
+            # the JS challenge has passed but the page hasn't auto-
+            # redirected yet (e.g. when challenge iframe's postMessage
+            # fails due to origin issues).
+            try:
+                body_text = await page.evaluate('document.body?.innerText || ""')
+            except Exception:
+                body_text = ''
+            verification_successful = 'verification successful' in body_text.lower()
+
+            if has_cf_clearance and (not still_challenge or verification_successful):
+                # Real page loaded — wait for network to settle
+                try:
+                    await page.wait_for_load_state('networkidle', timeout=int(DP_PAGE_LOAD_TIMEOUT * 1000))
+                except Exception:
+                    pass
+                reason = "title changed" if not still_challenge else "verification successful"
+                print(f"  ✓ Cloudflare JS 挑战已通过 ({reason})")
+                return True
+
+        # Timed out — still on challenge page
+        current_title = ''
+        try:
+            current_title = (await page.title()).lower()
         except Exception:
             pass
-    return False
+        print(f"  ⚠️  Cloudflare JS 挑战未在 {timeout_s}s 内自动通过 "
+              f"(title={current_title!r})")
+        print(f"  🔎 frame tree at timeout:")
+        for i, fr in enumerate(page.frames):
+            print(f"       [{i}] {(fr.url or '(no url)')[:120]}")
+        return False
+    except Exception as e:
+        print(f"  ⚠️  Cloudflare JS 挑战检测异常: {e}")
+        return False
+
 
 
 HEADLESS_AUTH_STATE_FILE = Path(
@@ -526,24 +609,64 @@ class SharedBrowserSession:
         except OSError:
             return False
 
-    async def ensure_headed_chrome(self) -> bool:
-        if self._chrome_ready():
-            return True
-        # A previously owned Chrome may have exited after its last page closed.
-        # Reclaim that profile before starting a replacement.
-        if self.headed_process is not None or self.headed_profile_dir is not None:
-            self.cleanup_owned_chrome_sync()
+    def _check_cdp_port(self) -> bool:
+        import socket
         try:
-            proc, profile_dir, temporary = await asyncio.to_thread(
-                launch_chrome, False, False, True
-            )
-            self.headed_process = proc
-            self.headed_profile_dir = profile_dir
-            self.owns_headed_profile = temporary
-            return self._chrome_ready()
-        except Exception as exc:
-            print(f"⚠️  启动共享有头Chrome失败: {exc}")
+            with socket.create_connection(("127.0.0.1", CHROME_DEBUG_PORT), timeout=2):
+                return True
+        except OSError:
             return False
+
+    async def launch_headed_chrome(self) -> bool:
+        """只启动独立 Chrome，不连接 Playwright。
+        目的：cf_bypass_cdp 过 Cloudflare 之前，避免 Playwright 注入自动化指纹。"""
+        if self._check_cdp_port():
+            print("  ✓ Chrome 已在运行 (CDP 端口就绪)")
+            return True
+        print("  启动独立 Chrome...")
+        try:
+            proc = launch_chrome(use_user_config=True)
+            self.headed_process = proc
+            for _ in range(30):
+                await asyncio.sleep(1)
+                if self._check_cdp_port():
+                    break
+            if self._check_cdp_port():
+                print("✓ Chrome 已启动 (CDP 端口就绪)")
+                return True
+            print("⚠️  Chrome 启动但 CDP 端口未响应")
+            return False
+        except Exception as exc:
+            print(f"⚠️  启动Chrome失败: {exc}")
+            return False
+
+    async def connect_headed_browser(self) -> bool:
+        """将 Playwright connect 到已启动的 Chrome。
+        注意：必须在 cf_bypass_cdp 之后调用，否则 Playwright 指纹会导致 Cloudflare 403。"""
+        if self.headed_browser is not None and self.headed_browser.is_connected():
+            return True
+        try:
+            self.headed_browser = await self.playwright.chromium.connect_over_cdp(
+                f"http://localhost:{CHROME_DEBUG_PORT}"
+            )
+            print("✓ Playwright 已连接到 Chrome (CDP)")
+            return True
+        except Exception as exc:
+            print(f"⚠️  Playwright 连接Chrome失败: {exc}")
+            return False
+
+    async def ensure_headed_chrome(self) -> bool:
+        # 使用独立启动的 Chrome + CDP 连接。
+        # 原因：Playwright 自带的 chromium 过不了 Cloudflare（用户确认），
+        # 且 Playwright 连接 CDP 会留下自动化指纹。
+        # 解决方案：先用 chrome_launcher 启动独立 Chrome，
+        # 再用纯 CDP WebSocket 过 Cloudflare 挑战（cf_bypass_cdp），
+        # 最后 Playwright 才 connect_over_cdp 接棒抓论文。
+        if self.headed_browser is not None and self.headed_browser.is_connected():
+            return True
+        if not await self.launch_headed_chrome():
+            return False
+        return await self.connect_headed_browser()
 
     async def ensure_headless_context(self, storage_state=None):
         if self.headless_context is not None:
@@ -559,19 +682,77 @@ class SharedBrowserSession:
         return self.headless_context
 
     async def ensure_headed_context(self):
+        # 快速路径：browser 已连接 + context 非空 + context 仍然有效
         if (self.headed_browser is not None
                 and self.headed_browser.is_connected()
                 and self.headed_context is not None):
-            return self.headed_browser, self.headed_context
+            # 校验 context 是否真的还活着（关闭最后一个 tab 后 Chrome 会销毁 context）
+            try:
+                _ = self.headed_context.pages
+                return self.headed_browser, self.headed_context
+            except Exception:
+                # context 已失效，清空缓存重走创建流程
+                self.headed_context = None
         if not await self.ensure_headed_chrome():
             return None
-        self.headed_browser = await self.playwright.chromium.connect_over_cdp(
-            f"http://127.0.0.1:{CHROME_DEBUG_PORT}"
-        )
+        _stealth_js = """
+            // Hide webdriver flag
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined,
+            });
+            // Restore missing plugins (headless/automated Chrome has 0)
+            if (navigator.plugins && navigator.plugins.length === 0) {
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [
+                        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+                        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+                        { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+                    ],
+                });
+            }
+            if (navigator.languages && navigator.languages.length === 0) {
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['en-US', 'en'],
+                });
+            }
+            // Fix permissions query
+            const originalQuery = window.navigator.permissions.query;
+            if (originalQuery) {
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications'
+                        ? Promise.resolve({ state: Notification.permission })
+                        : originalQuery(parameters)
+                );
+            }
+            // Hide CDP-specific global
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_;
+        """
+
         if self.headed_browser.contexts:
             self.headed_context = self.headed_browser.contexts[0]
+            # Inject stealth into the default context too
+            await self.headed_context.add_init_script(_stealth_js)
         else:
-            self.headed_context = await self.headed_browser.new_context(accept_downloads=True)
+            self.headed_context = await self.headed_browser.new_context(
+                accept_downloads=True,
+                user_agent=(
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1440, "height": 900},
+                locale="en-US",
+            )
+            await self.headed_context.add_init_script(_stealth_js)
+        # Apply undetected-playwright stealth patches for Cloudflare evasion
+        try:
+            from undetected_playwright import stealth_async
+            self.headed_context = await stealth_async(self.headed_context)
+            print("  🥷 undetected-playwright stealth 已应用")
+        except ImportError:
+            print("  ⚠️  undetected-playwright 未安装，使用基础 stealth")
+        except Exception as e:
+            print(f"  ⚠️  undetected-playwright 应用失败: {e}")
+
         return self.headed_browser, self.headed_context
 
     async def sync_headed_to_headless(self, headed_context):
@@ -959,6 +1140,29 @@ async def download_pdf(
             print(f"    ✓ 保存: {filename} ({pdf_size_mb:.2f} MB)")
             pdf_downloaded = True
 
+        # ── 纯CDP预告：PDF 页面同样会被 Cloudflare 拦截 ──
+        # 先用 CDP 在共享 Chrome 里打开 PDF URL 并过挑战（拿到 cf_clearance），
+        # 避免 Playwright 注入指纹触发顽固挑战；之后再让 Playwright 下载。
+        # 注意：PDF 模式通过判定不依赖 DOI/正文，只看 cf_clearance cookie。
+        _pdf_cf_ok = False
+        if _CF_BYPASS_AVAILABLE:
+            try:
+                print(f"  🛡️  [纯CDP] 打开PDF页面并过Cloudflare...")
+                _pdf_cf = await bypass_cloudflare_cdp(
+                    url=pdf_url,
+                    debug_port=CHROME_DEBUG_PORT,
+                    timeout_s=int(DP_CLOUDFLARE_TIMEOUT),
+                    wait_for_content=False,
+                    pdf_mode=True,
+                )
+                if _pdf_cf.get("success"):
+                    print(f"  ✅ PDF页 Cloudflare 已通过（cf_clearance 已下发）")
+                    _pdf_cf_ok = True
+                else:
+                    print(f"  ⚠️  PDF页 CDP 过挑战未通过，回退 Playwright 方式重试")
+            except Exception as _e:
+                print(f"  ⚠️  PDF页 CDP 预告异常: {_e}")
+
         download_page = await context.new_page() if force_headed and context is not None else page
         download_page.on("download", handle_download)
 
@@ -971,8 +1175,13 @@ async def download_pdf(
         # Cloudflare-protected PDFs (ScienceDirect and friends) throw the
         # "verify you are human" checkbox before serving the file.
         # 4s initial poll means no-challenge pages don't stall the download.
+        # 若 CDP 预告已通过，这里通常直接触发下载；否则仍尽力 auto_solve。
         try:
-            await auto_solve_bot_challenge(download_page, timeout_s=DP_CLOUDFLARE_TIMEOUT, initial_poll_s=DP_CLOUDFLARE_INITIAL_POLL)
+            if not _pdf_cf_ok:
+                await auto_solve_bot_challenge(download_page, timeout_s=DP_CLOUDFLARE_TIMEOUT, initial_poll_s=DP_CLOUDFLARE_INITIAL_POLL)
+            else:
+                # CDP 已通过，等几秒让下载事件触发即可（不重复注 Playwright 点击）
+                await asyncio.sleep(2)
         except Exception as e:
             print(f"    ⚠️  auto_solve_bot_challenge (PDF): {e}")
 
@@ -1798,6 +2007,76 @@ async def complete_extraction_workflow(
         print("  ✓ 标签页已清理")
         print()
 
+    def _cleanup_via_cdp(debug_port: int, current_doi_url: str = ""):
+        """通过纯 CDP 协议关闭论文页面标签页，保留至少一个空白页。
+        不依赖 Playwright 的 page/context 对象，避免状态不一致导致挂死。
+        同步函数，使用 requests 直接调用 CDP HTTP endpoint。"""
+        import json
+        import urllib.request
+        try:
+            # 获取所有 target
+            resp = urllib.request.urlopen(f"http://127.0.0.1:{debug_port}/json", timeout=5)
+            targets = json.loads(resp.read().decode())
+            # 筛选页面类型的 target（排除 background_page、service_worker 等）
+            # 只算真实网页 tab，排除 Chrome 内部页面
+            # （Omnibox Popup、settings 等不算，不能阻止 Chrome 退出）
+            internal_url_prefixes = ("chrome://omnibox", "chrome://settings", 
+                                      "chrome://history", "chrome://bookmarks",
+                                      "chrome://extensions", "chrome://flags")
+            page_targets = [
+                t for t in targets
+                if t.get("type") == "page"
+                and not any(t.get("url", "").startswith(p) for p in internal_url_prefixes)
+            ]
+            # 关闭所有非系统页（保留 chrome://newtab / about:blank）
+            # 不按出版社区分，避免 ScienceDirect 等其他域名的 tab 泄漏
+            to_close = []
+            for t in page_targets:
+                t_url = t.get("url", "")
+                # 系统白名单：这些页面保留
+                if t_url in ("chrome://newtab/", "about:blank", "chrome://newtab"):
+                    continue
+                # 其他全部关掉（AIP、ScienceDirect、DOI 跳转页等）
+                to_close.append(t["id"])
+            # 如果关完之后就没页面了，就少关一个（保留最后一个）
+            if len(to_close) >= len(page_targets) and len(to_close) > 0:
+                to_close = to_close[:-1]
+            closed = 0
+            for tid in to_close:
+                try:
+                    req = urllib.request.Request(
+                        f"http://127.0.0.1:{debug_port}/json/close/{tid}",
+                        method="GET"
+                    )
+                    urllib.request.urlopen(req, timeout=3)
+                    closed += 1
+                except Exception:
+                    pass
+            # 如果现在没有 page target 了，新建一个
+            resp2 = urllib.request.urlopen(f"http://127.0.0.1:{debug_port}/json", timeout=5)
+            targets2 = json.loads(resp2.read().decode())
+            # 只算真实网页 tab，排除 Chrome 内部页面
+            page_targets2 = [
+                t for t in targets2
+                if t.get("type") == "page"
+                and not any(t.get("url", "").startswith(p) for p in internal_url_prefixes)
+            ]
+            if not page_targets2:
+                try:
+                    req = urllib.request.Request(
+                        f"http://127.0.0.1:{debug_port}/json/new",
+                        method="PUT"
+                    )
+                    urllib.request.urlopen(req, timeout=3)
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                print(f"  ⚠️  CDP 清理标签页异常: {e}")
+            except:
+                pass
+
+
     def check_chrome_ready():
         """Check whether the headed Chrome CDP endpoint is available."""
         try:
@@ -1810,14 +2089,21 @@ async def complete_extraction_workflow(
         except:
             return False
 
-    async def ensure_headed_chrome_ready() -> bool:
-        """Start the real headed Chrome profile if the CDP endpoint is not ready."""
+    async def ensure_headed_chrome_ready(connect_playwright: bool = True) -> bool:
+        """Start the real headed Chrome profile if the CDP endpoint is not ready.
+        connect_playwright=False 时只启动 Chrome 不连接 Playwright，
+        避免 Playwright 注入自动化指纹影响 Cloudflare 挑战。"""
         if check_chrome_ready():
+            if connect_playwright and browser_session is not None:
+                await browser_session.connect_headed_browser()
             return True
 
         if browser_session is not None:
             print("⚠️  Chrome 未运行，正在启动批次共享实例...")
-            ready = await browser_session.ensure_headed_chrome()
+            # 先只启动 Chrome（不过早连接 Playwright，避免自动化指纹）
+            ready = await browser_session.launch_headed_chrome()
+            if ready and connect_playwright:
+                await browser_session.connect_headed_browser()
             if ready:
                 print("✓ 批次共享 Chrome 已就绪\n")
             return ready
@@ -2236,9 +2522,34 @@ async def complete_extraction_workflow(
 
         print()
 
-    # 检查Chrome是否就绪
-    if not await ensure_headed_chrome_ready():
+    # 检查Chrome是否就绪（先只启动不连 Playwright，避免指纹影响 cf_bypass）
+    if not await ensure_headed_chrome_ready(connect_playwright=False):
         return None
+
+    # ── 预加载：先用纯 CDP 过 Cloudflare + 加载页面（Playwright 还没连，无指纹） ──
+    _cf_preloaded = False
+    _cf_pre_url = url
+    if _CF_BYPASS_AVAILABLE:
+        print("🛡️  预载：纯CDP过 Cloudflare 并加载页面（Playwright未连接，无自动化指纹）...")
+        try:
+            _cf_pre_result = await bypass_cloudflare_cdp(
+                url=url,
+                debug_port=CHROME_DEBUG_PORT,
+                timeout_s=DP_CLOUDFLARE_TIMEOUT,
+                wait_for_content=True,
+                expected_doi=doi,
+            )
+            if _cf_pre_result["success"]:
+                print(f"  ✅ 预载成功：挑战通过，页面已加载")
+                _cf_preloaded = True
+            else:
+                print(f"  ⚠️  预载失败（挑战未通过），将走 Playwright 路径重试")
+        except Exception as _e:
+            print(f"  ⚠️  预载异常: {_e}")
+
+    # 现在才让 Playwright 连接（如果挑战已通过，即使有指纹也不影响了）
+    if browser_session is not None:
+        await browser_session.connect_headed_browser()
 
     async with headed_connection_scope() as connection:
         if connection is None:
@@ -2287,6 +2598,96 @@ async def complete_extraction_workflow(
 
             page.on('response', _headed_on_response)
 
+            # ── 纯 CDP 过 Cloudflare 挑战 + 预加载页面 ──
+            # 如果预载阶段（Playwright 连接前）已经成功过了挑战，直接复用页面。
+            # 否则用 Playwright 连接后的 CDP 再试一次（作为 fallback）。
+            _cf_loaded = False  # 纯CDP是否已成功加载页面
+            _cf_raw_html = None  # 纯CDP获取的原始HTML
+
+            if _cf_preloaded:
+                # 预载已成功：在 Playwright pages 中找到对应页面复用
+                print("🛡️  复用预载页面（Playwright连接前已通过 Cloudflare）...")
+                _cf_page_obj = None
+                for _ctx in browser.contexts:
+                    for _pg in _ctx.pages:
+                        try:
+                            _pg_url = _pg.url
+                        except Exception:
+                            _pg_url = ''
+                        if _pg_url and (url in _pg_url or _pg_url == url):
+                            _cf_page_obj = _pg
+                            break
+                    if _cf_page_obj:
+                        break
+                if _cf_page_obj is not None:
+                    print(f"  ✓ 找到预载页面，直接复用")
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+                    page = _cf_page_obj
+                    try:
+                        _cf_raw_html = await page.content()
+                        _headed_raw_html.append(_cf_raw_html)
+                        print(f"  ✓ 已捕获原始 HTML ({len(_cf_raw_html)} bytes)")
+                    except Exception as _e2:
+                        print(f"  ⚠️  获取 raw HTML 失败: {_e2}")
+                    _cf_loaded = True
+                else:
+                    print(f"  ⚠️  未找到预载页面，将重新尝试")
+            
+            if not _cf_loaded and _CF_BYPASS_AVAILABLE:
+                # Fallback：Playwright 已连接后再用纯 CDP 试一次
+                print("🛡️  Fallback：纯CDP模式过 Cloudflare 并预加载页面...")
+                try:
+                    _cf_result = await bypass_cloudflare_cdp(
+                        url=url,
+                        debug_port=CHROME_DEBUG_PORT,
+                        timeout_s=DP_CLOUDFLARE_TIMEOUT,
+                        wait_for_content=True,
+                        expected_doi=doi,
+                    )
+                    if _cf_result["success"]:
+                        print(f"  ✅ 纯CDP挑战通过")
+                        # 在 Playwright 中找到这个 page 并复用
+                        _cf_page_obj = None
+                        for _ctx in browser.contexts:
+                            for _pg in _ctx.pages:
+                                try:
+                                    _pg_url = _pg.url
+                                except Exception:
+                                    _pg_url = ''
+                                if url in _pg_url or _pg_url == url:
+                                    _cf_page_obj = _pg
+                                    break
+                            if _cf_page_obj:
+                                break
+                        
+                        if _cf_page_obj is not None:
+                            print(f"  ✓ 找到对应 Playwright page，将直接复用")
+                            # 关闭原来的 page（纯CDP开了新tab，原page没用了）
+                            try:
+                                await page.close()
+                            except Exception:
+                                pass
+                            page = _cf_page_obj
+                            # 用 CDP 获取原始 HTML（作为 _headed_raw_html 的替代）
+                            try:
+                                _cf_raw_html = await page.content()
+                                _headed_raw_html.append(_cf_raw_html)
+                                print(f"  ✓ 已捕获原始 HTML ({len(_cf_raw_html)} bytes)")
+                            except Exception as _e2:
+                                print(f"  ⚠️  获取 raw HTML 失败: {_e2}")
+                            _cf_loaded = True
+                        else:
+                            print(f"  ⚠️  未找到对应 page，将用 Playwright 重新导航")
+                    else:
+                        print(f"  ⚠️  纯CDP挑战未通过，仍将尝试Playwright路径")
+                except Exception as _e:
+                    print(f"  ⚠️  纯CDP挑战模块异常: {_e}")
+            else:
+                print("  ℹ️  cf_bypass_cdp 模块不可用，跳过纯CDP预检查")
+
             # Step 1: Navigate and detect publisher
             print("Step 1️⃣  导航到DOI并检测出版商...")
             print("=" * 80)
@@ -2304,17 +2705,37 @@ async def complete_extraction_workflow(
                 captured_data = handler.setup_network_capture()
                 print("✓ 网络监听已启动\n")
 
-            try:
-                await page.goto(url, wait_until='networkidle', timeout=int(DP_PAGE_LOAD_TIMEOUT * 1000))
-            except:
-                pass
+            if _cf_loaded:
+                # 纯 CDP 已加载页面，跳过 goto 和 Cloudflare 处理
+                print("  ✓ 页面已由纯CDP预加载，跳过 goto")
+            else:
+                print("DEBUG: about to page.goto")
+                try:
+                    resp = await page.goto(url, wait_until='networkidle', timeout=int(DP_PAGE_LOAD_TIMEOUT * 1000))
+                    print(f"DEBUG: page.goto done, status={resp.status if resp else None}, url={page.url[:80]}")
+                except Exception as e:
+                    print(f"DEBUG: page.goto exception: {e}")
 
-            # If the landing page is a Cloudflare Turnstile "verify you are
-            # human" checkbox, try to click through it automatically.
-            try:
-                await auto_solve_bot_challenge(page, timeout_s=DP_CLOUDFLARE_TIMEOUT, initial_poll_s=DP_CLOUDFLARE_INITIAL_POLL)
-            except Exception as e:
-                print(f"  ⚠️  auto_solve_bot_challenge 抛异常: {e}")
+                # If the landing page is a Cloudflare Turnstile "verify you are
+                # human" checkbox, try to click through it automatically.
+                try:
+                    cf_solved = await auto_solve_bot_challenge(page, timeout_s=DP_CLOUDFLARE_TIMEOUT, initial_poll_s=DP_CLOUDFLARE_INITIAL_POLL)
+                    # If Cloudflare was solved and the page navigated to the real
+                    # content, the on-response listener already captured the new
+                    # document HTML — but if the challenge was JS-only (same URL
+                    # returning 403 then 200 after cookie is set), we need to
+                    # reload to get the real content into _headed_raw_html.
+                    if cf_solved:
+                        # Always reload after challenge resolution to ensure we
+                        # capture the real article HTML.
+                        print("  🔄 挑战已通过，重新加载页面以获取论文内容...")
+                        try:
+                            await page.goto(page.url, wait_until='networkidle', timeout=int(DP_PAGE_LOAD_TIMEOUT * 1000))
+                            print(f"     ✓ 重新加载完成, status check: {len(_headed_raw_html)} document(s) captured")
+                        except Exception as e:
+                            print(f"     ⚠️  重新加载异常: {e}")
+                except Exception as e:
+                    print(f"  ⚠️  auto_solve_bot_challenge 抛异常: {e}")
 
             # Store the raw server HTML on the handler so it can use it instead
             # of page.content() (which returns the post-JS-rendered DOM).
@@ -2413,22 +2834,27 @@ async def complete_extraction_workflow(
             # every page makes desktop Chrome exit and loses batch cookies.
             print("\n🧹 清理标签页...")
             print("=" * 80)
-            pages_to_close = [page] if browser_session is not None else list(context.pages)
-            for p in pages_to_close:
-                try:
-                    await p.close()
-                except:
-                    pass
-
-            if browser_session is None:
+            if browser_session is not None:
+                # 批次共享模式：用 CDP 协议直接关 tab，不走 Playwright
+                # 原因：Playwright connect_over_cdp 的 context/page 状态可能与 Chrome 不一致，
+                # 导致 page.close() 挂死或报 TargetClosedError
+                _cleanup_via_cdp(CHROME_DEBUG_PORT, current_doi_url=url)
+                # 重置 Playwright 端的 context 缓存，下一篇重新 connect 获取最新状态
+                browser_session.headed_context = None
+                print("  ✓ 当前DOI标签页已关闭（CDP方式），Playwright context已重置")
+            else:
+                pages_to_close = list(context.pages)
+                for p in pages_to_close:
+                    try:
+                        await p.close()
+                    except:
+                        pass
                 try:
                     blank_page = await context.new_page()
                     await blank_page.goto("about:blank")
                     print("  ✓ 标签页已清理")
                 except:
                     pass
-            else:
-                print("  ✓ 当前DOI标签页已关闭，共享context保留")
 
             print()
             return result
@@ -2439,12 +2865,17 @@ async def complete_extraction_workflow(
             traceback.print_exc()
 
             try:
-                pages_to_close = [page] if browser_session is not None else list(context.pages)
-                for p in pages_to_close:
-                    try:
-                        await p.close()
-                    except:
-                        pass
+                if browser_session is not None:
+                    # 批次共享模式：CDP 方式关 tab，避免 Playwright 状态不一致挂死
+                    _cleanup_via_cdp(CHROME_DEBUG_PORT, current_doi_url=url)
+                    browser_session.headed_context = None
+                else:
+                    pages_to_close = list(context.pages)
+                    for p in pages_to_close:
+                        try:
+                            await p.close()
+                        except:
+                            pass
             except Exception:
                 pass
 
