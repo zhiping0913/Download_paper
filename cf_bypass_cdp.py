@@ -19,6 +19,8 @@ Playwright 连接 CDP 后会注入自动化指纹，导致 Cloudflare 挑战进�
 """
 
 import asyncio
+import os
+import glob
 import json
 import urllib.request
 from typing import Optional
@@ -257,6 +259,7 @@ async def bypass_cloudflare_cdp(
     wait_for_content: bool = True,
     expected_doi: str = "",
     pdf_mode: bool = False,
+    download_dir: str = "",
 ) -> dict:
     """
     用纯 CDP WebSocket 打开 URL 并等待 Cloudflare 挑战通过。
@@ -343,6 +346,20 @@ async def bypass_cloudflare_cdp(
             challenge_rounds = 0  # 挑战页已经过了多少轮（用于判断 iframe 是否延迟加载）
             turnstile_tried = False
             last_status = ""
+
+            # ── PDF 模式：监控下载目录新文件作为「挑战真正通过」的实体判据 ──
+            # Chrome 已配置 always_open_pdf_externally=True + prompt_for_download=False，
+            # 只有真正绕过挑战拿到 PDF 才会自动落盘新文件（.pdf / .crdownload ）。
+            # 相比 cf_clearance cookie（会被正文页提前写入同一 profile 而污染），
+            # 下载文件落盘是「实体证据」，绝不误判。调用方传入 download_dir 时启用。
+            _dl_baseline = set()
+            if pdf_mode and download_dir:
+                try:
+                    if os.path.isdir(download_dir):
+                        _dl_baseline = set(os.listdir(download_dir))
+                        print(f"  📁 监控下载目录: {download_dir} (基线 {len(_dl_baseline)} 文件)")
+                except Exception as _e:
+                    print(f"  ⚠️  下载目录初始化异常: {_e}")
 
             while asyncio.get_event_loop().time() < deadline:
                 try:
@@ -492,19 +509,52 @@ async def bypass_cloudflare_cdp(
                         return result
 
                     # ── PDF 模式通过判定 ──
-                    # PDF 页面 body 没有 DOI、也没有长正文（<5000字），
-                    # 用「cf_clearance cookie 已下发」作为通过依据：
-                    # 只有 Cloudflare 挑战通过后才会回写 cf_clearance cookie，
-                    # 一旦出现且页面不再是挑战页，即视为 PDF 可访问。
-                    if pdf_mode and has_cf and not is_challenge and not doi_passed:
-                        # PDF 可能以 attachment 下载，页面 title/body 可能为空，
-                        # 只要 cookie 就绪且不再处于挑战页即通过
-                        print(f"  ✅ [PDF模式] cf_clearance 已获取，挑战通过")
-                        target_id = _current_ws_url.rstrip("/").split("/")[-1]
-                        result["success"] = True
-                        result["target_id"] = target_id
-                        result["ws_url"] = _current_ws_url
-                        return result
+                    # PDF 页面 body 没有 DOI、也没有长正文（<5000字）。
+                    # 首选判据：监控下载目录是否出现新文件（实体证据）。
+                    #   Chrome 配了 always_open_pdf_externally=True + prompt_for_download=False，
+                    #   只有真正绕过挑战拿到 PDF 才会落盘新文件（.pdf/.crdownload/.download/无扩展名）。
+                    #   它不像 cf_clearance cookie 会被正文页提前写入同一 profile 而误判。
+                    # 退路判据（未传 download_dir 时）：cf_clearance + 非挑战页。
+                    if pdf_mode and not doi_passed:
+                        _new_dl = None
+                        if download_dir:
+                            try:
+                                _cur = set(os.listdir(download_dir)) if os.path.isdir(download_dir) else set()
+                                _cands = _cur - _dl_baseline
+                                # 过滤掉临时/无关文件，只认看起来像下载产物的
+                                _cands = {f for f in _cands if not f.endswith('.tmp') and not f.endswith('.partial')}
+                                # 去掉浏览器未完成下载标记，但仍视为"下载事件已触发"
+                                _has_pdfish = any(
+                                    f.lower().endswith(('.pdf', '.crdownload', '.download'))
+                                    or ('.' not in f and len(f) < 64)  # 无扩展名的新文件也可能是
+                                    for f in _cands
+                                )
+                                if _cands:
+                                    # 只要基线之后多了文件，就说明下载已经真实开始/完成
+                                    _new_dl = sorted(_cands)[0]
+                                    _dl_baseline = _cur
+                            except Exception as _e:
+                                print(f"    ⚠️  下载目录检测异常: {_e}")
+                        if _new_dl is not None:
+                            print(f"  ✅ [PDF模式] 检测到下载事件（新文件: {_new_dl}），挑战真实通过")
+                            target_id = _current_ws_url.rstrip("/").split("/")[-1]
+                            result["success"] = True
+                            result["target_id"] = target_id
+                            result["ws_url"] = _current_ws_url
+                            result["downloaded_file"] = os.path.join(download_dir, _new_dl) if download_dir else _new_dl
+                            return result
+                        # 未检测到下载文件：即使 cookie 在也不判成功（避免误判），继续等
+                        if not has_cf and not is_challenge:
+                            # 无下载监控且 cookie 也没有，保持等待
+                            pass
+                        # 退路：无 download_dir 时沿用 cookie 判据（向后兼容）
+                        if has_cf and not is_challenge and not download_dir:
+                            print(f"  ✅ [PDF模式] cf_clearance 已获取，挑战通过")
+                            target_id = _current_ws_url.rstrip("/").split("/")[-1]
+                            result["success"] = True
+                            result["target_id"] = target_id
+                            result["ws_url"] = _current_ws_url
+                            return result
 
                     # 回退判定：body > 5000 字且标题无挑战关键词
                     # 只有长论文才会触发这个兜底；短论文必须等 DOI 出现才算通过

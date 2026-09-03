@@ -1,0 +1,25 @@
+{
+  "article": [
+    {
+      "title": "Numerical simulations of the nonlinear quantum vacuum in the Heisenberg-Euler weak-field expansion",
+      "authors": "Andreas Lindner, Baris Ölmez, Hartmut Ruhl",
+      "doi": "10.1016/j.jcpx.2023.100124",
+      "access": "Open access",
+      "link": "https://www.sciencedirect.com/science/article/pii/S2590055223000021"
+    },
+    {
+      "title": "Corrected ALE-ISPH with novel Neumann boundary condition and density-based particle shifting technique",
+      "authors": "Daniel Shigueo Morikawa, Kumpei Tsuji, Mitsuteru Asai",
+      "doi": "10.1016/j.jcpx.2023.100125",
+      "access": "Open access",
+      "link": "https://www.sciencedirect.com/science/article/pii/S2590055223000033"
+    },
+    {
+      "title": "A computational model of self-organized shape dynamics of active surfaces in fluids",
+      "authors": "Lucas D. Wittwer, Sebastian Aland",
+      "doi": "10.1016/j.jcpx.2023.100126",
+      "access": "Open access",
+      "link": "https://www.sciencedirect.com/science/article/pii/S2590055223000045"
+    }
+  ]
+}

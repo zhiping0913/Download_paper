@@ -58,6 +58,10 @@ def _detect_chrome_path() -> str:
 
 def _detect_chrome_user_data_dir() -> str:
     """Auto-detect Chrome user data directory across platforms."""
+    # 优先使用环境变量覆盖（脚本以非 profile 所有者运行时很有用）
+    env_dir = os.environ.get('CHROME_USER_DATA_DIR', '')
+    if env_dir:
+        return env_dir
     if IS_WINDOWS:
         local_appdata = os.environ.get('LOCALAPPDATA', '')
         if local_appdata:
