@@ -918,6 +918,25 @@ def original_image_filename(image_url: str, fig_num: int, default_ext: str = '.p
 # Phase 4: Unified Download Manager with Retry Logic
 # ============================================================================
 
+async def _find_pw_page_by_cdp_target(browser, target_id):
+    """在 Playwright 连接的 browser 中按 CDP targetId 精确定位 page。
+    targetId 是 tab 的唯一标识，页面重定向（doi.org -> 文章页）后不变，
+    与 URL 内容无关 —— 适用于任何 publisher（含 SD 这类 URL 里不带 doi 的）。"""
+    if not target_id or browser is None:
+        return None
+    for _ct in browser.contexts:
+        for _pg in _ct.pages:
+            try:
+                _sess = await _ct.new_cdp_session(_pg)
+                _info = await _sess.send("Target.getTargetInfo")
+                _tid = _info.get("targetInfo", {}).get("targetId", "")
+                if _tid == target_id:
+                    return _pg
+            except Exception:
+                continue
+    return None
+
+
 async def retry_download(download_func, *args, max_retries=5, retry_delay=1.0, **kwargs):
     """Retry a download function with automatic retries on network failures."""
     for attempt in range(max_retries):
@@ -2601,18 +2620,20 @@ async def complete_extraction_workflow(
             if _cf_preloaded:
                 # 预载已成功：在 Playwright pages 中找到对应页面复用
                 print("🛡️  复用预载页面（Playwright连接前已通过 Cloudflare）...")
-                _cf_page_obj = None
-                for _ctx in browser.contexts:
-                    for _pg in _ctx.pages:
-                        try:
-                            _pg_url = _pg.url
-                        except Exception:
-                            _pg_url = ''
-                        if _pg_url and (url in _pg_url or _pg_url == url):
-                            _cf_page_obj = _pg
+                _cf_pre_target_id = _cf_pre_result.get("target_id")
+                _cf_page_obj = await _find_pw_page_by_cdp_target(browser, _cf_pre_target_id)
+                if _cf_page_obj is None:
+                    for _ctx in browser.contexts:
+                        for _pg in _ctx.pages:
+                            try:
+                                _pg_url = _pg.url
+                            except Exception:
+                                _pg_url = ''
+                            if _pg_url and (url in _pg_url or _pg_url == url):
+                                _cf_page_obj = _pg
+                                break
+                        if _cf_page_obj:
                             break
-                    if _cf_page_obj:
-                        break
                 if _cf_page_obj is not None:
                     print(f"  ✓ 找到预载页面，直接复用")
                     try:
@@ -2643,19 +2664,21 @@ async def complete_extraction_workflow(
                     )
                     if _cf_result["success"]:
                         print(f"  ✅ 纯CDP挑战通过")
-                        # 在 Playwright 中找到这个 page 并复用
-                        _cf_page_obj = None
-                        for _ctx in browser.contexts:
-                            for _pg in _ctx.pages:
-                                try:
-                                    _pg_url = _pg.url
-                                except Exception:
-                                    _pg_url = ''
-                                if url in _pg_url or _pg_url == url:
-                                    _cf_page_obj = _pg
+                        # 在 Playwright 中找到这个 page 并复用（优先按 CDP targetId，与 URL 无关）
+                        _cf_target_id = _cf_result.get("target_id")
+                        _cf_page_obj = await _find_pw_page_by_cdp_target(browser, _cf_target_id)
+                        if _cf_page_obj is None:
+                            for _ctx in browser.contexts:
+                                for _pg in _ctx.pages:
+                                    try:
+                                        _pg_url = _pg.url
+                                    except Exception:
+                                        _pg_url = ''
+                                    if url in _pg_url or _pg_url == url:
+                                        _cf_page_obj = _pg
+                                        break
+                                if _cf_page_obj:
                                     break
-                            if _cf_page_obj:
-                                break
                         
                         if _cf_page_obj is not None:
                             print(f"  ✓ 找到对应 Playwright page，将直接复用")
