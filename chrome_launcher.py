@@ -149,14 +149,10 @@ def launch_chrome(
         "--no-sandbox",
         "--disable-dev-shm-usage",
         "--no-first-run",
-        "--disable-default-apps",
-        "--disable-sync",
-        "--disable-extensions",
-        "--disable-gpu",
-        "--disable-background-networking",
-        "--disk-cache-size=67108864",
-        "--media-cache-size=16777216",
-        "--disable-application-cache",
+        # 注意：故意不添加 --disable-extensions / --disable-sync / --disable-gpu /
+        # --disable-blink-features=AutomationControlled 等"反检测"参数。
+        # 这些参数会让浏览器指纹变得不自然，反而更容易被 Cloudflare 识别为自动化。
+        # 越接近真实用户的 Chrome，过挑战的概率越高。
     ]
 
     if headless:

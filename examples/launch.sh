@@ -28,11 +28,11 @@ cd "$(dirname "$0")/.."
 
 # 页面加载超时：headed / headless page.goto、每处 wait_for_load_state('networkidle')、
 # APIRequestContext.get、PDF goto 都用这个。
-export DP_PAGE_LOAD_TIMEOUT=60          # 默认 60
+export DP_PAGE_LOAD_TIMEOUT=120          # 默认 60
 
 # Cloudflare Turnstile 自动点击的总预算。派生的 initial-poll = max(2, total/7.5)，
 # 保证没挑战的页面在 initial-poll 秒内快速返回。
-export DP_CLOUDFLARE_TIMEOUT=30         # 默认 30 (initial-poll ≈ 4)
+export DP_CLOUDFLARE_TIMEOUT=600         # 默认 30 (initial-poll ≈ 4)
 
 # PDF 导航后 asyncio.sleep 的时长，等浏览器 tab 触发 download 事件。
 export DP_PDF_WAIT=10                   # 默认 10
@@ -62,6 +62,14 @@ export BATCH_SLEEP_MAX=60               # 默认 60
 
 # Chrome CDP 调试端口 (headed 复用 profile 用)。默认 9222
 # export CHROME_DEBUG_PORT=9222
+
+# Chrome 真实用户数据目录（有头模式使用真实 profile 过 Cloudflare 更稳）
+# 默认自动检测当前用户 ~/.config/google-chrome；如脚本以非 profile 所有者运行需手动指定
+# Chrome 真实用户数据目录：默认走当前用户 ~/.config/google-chrome
+# 注意：必须与运行脚本的用户一致，否则权限不对导致 profile 加载失败
+# Chrome 专用 profile 目录（非默认路径才能开 CDP 调试端口）
+# 环境变量优先，默认使用 root 下的专用 scraping profile
+export CHROME_USER_DATA_DIR="${CHROME_USER_DATA_DIR:-/root/.config/google-chrome-scraping}"
 
 # Chrome 临时 profile 目录的父目录 (chrome_launcher.py 生成 --user-data-dir=… 时用)
 # 默认 → 系统 tmp
@@ -93,7 +101,7 @@ echo "────────────────────────�
 for v in DP_PAGE_LOAD_TIMEOUT DP_CLOUDFLARE_TIMEOUT DP_PDF_WAIT \
          DP_SUPPLEMENTAL_TIMEOUT DP_FIGURE_TIMEOUT \
          BATCH_SLEEP_MIN BATCH_SLEEP_MAX \
-         CHROME_PATH CHROME_DEBUG_PORT CHROME_PROFILE_ROOT \
+         CHROME_PATH CHROME_DEBUG_PORT CHROME_USER_DATA_DIR CHROME_PROFILE_ROOT \
          DOWNLOAD_PAPER_HEADLESS_AUTH_STATE; do
     val="${!v:-<default>}"
     printf "  %-38s = %s\n" "$v" "$val"
@@ -115,7 +123,12 @@ echo "────────────────────────�
 #                             .auth/headless_storage_state.json
 # ---------------------------------------------------------------------------
 
-python complete_paper_extraction.py --json examples/examples.json
+# 如果传了参数就用参数，否则默认跑 examples/examples.json
+if [ $# -gt 0 ]; then
+    python complete_paper_extraction.py "$@"
+else
+    python complete_paper_extraction.py --json examples/examples.json --force-headed
+fi
 
 # 其它示例（改成你要的那条即可）：
 # python complete_paper_extraction.py --doi 10.1103/PhysRevLett.109.245005

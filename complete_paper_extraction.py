@@ -1154,14 +1154,39 @@ async def download_pdf(
                     timeout_s=int(DP_CLOUDFLARE_TIMEOUT),
                     wait_for_content=False,
                     pdf_mode=True,
+                    # 关键：监控 Chrome 默认下载目录，用「新文件落盘」判断挑战是否真实通过
+                    download_dir=str(Path.home() / "Downloads"),
                 )
                 if _pdf_cf.get("success"):
-                    print(f"  ✅ PDF页 Cloudflare 已通过（cf_clearance 已下发）")
+                    _cl_f = _pdf_cf.get("downloaded_file")
+                    if _cl_f:
+                        print(f"  ✅ PDF页 Cloudflare 已通过，且检测到下载文件: {Path(_cl_f).name}")
+                    else:
+                        print(f"  ✅ PDF页 Cloudflare 已通过（下载事件确认）")
                     _pdf_cf_ok = True
+                    _pdf_cf_file = _cl_f
                 else:
                     print(f"  ⚠️  PDF页 CDP 过挑战未通过，回退 Playwright 方式重试")
             except Exception as _e:
                 print(f"  ⚠️  PDF页 CDP 预告异常: {_e}")
+                _pdf_cf_ok = False
+                _pdf_cf_file = None
+
+        # 若 CDP 已成功把 PDF 落盘到下载目录，直接复制为最终文件（不再走 Playwright 二次下载）
+        if _pdf_cf_ok and _pdf_cf_file:
+            try:
+                import shutil as _sh
+                _src = Path(_pdf_cf_file)
+                if _src.exists() and _src.stat().st_size > 0:
+                    _final = output_dir / filename
+                    _sh.copy(str(_src), str(_final))
+                    _mb = _final.stat().st_size / (1024 * 1024)
+                    print(f"    ✓ 保存(CDP直接): {filename} ({_mb:.2f} MB)")
+                    return filename
+                else:
+                    print(f"  ⚠️  CDP下载文件 {_src} 不存在或为空，走 Playwright 兜底")
+            except Exception as _e:
+                print(f"  ⚠️  复制CDP下载文件失败: {_e}")
 
         download_page = await context.new_page() if force_headed and context is not None else page
         download_page.on("download", handle_download)

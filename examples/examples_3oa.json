@@ -1,0 +1,25 @@
+{
+  "article": [
+    {
+      "doi": "10.1063/5.0162457",
+      "link": "https://pubs.aip.org/aip/pop/article/30/9/090601/2909870/SPARC-as-a-platform-to-advance-tokamak-science",
+      "header": {
+        "referer": "https://pubs.aip.org/aip/pop/issue/30/9"
+      }
+    },
+    {
+      "doi": "10.1063/5.0083990",
+      "link": "https://pubs.aip.org/aip/pop/article/29/6/062103/2847827/Progress-toward-fusion-energy-breakeven-and-gain",
+      "header": {
+        "referer": "https://pubs.aip.org/aip/pop/issue/29/6"
+      }
+    },
+    {
+      "doi": "10.1063/5.0188822",
+      "link": "https://pubs.aip.org/aip/pop/article/31/3/032107/3269864/Linear-gyrokinetic-theory-of-two-dimensional-ion",
+      "header": {
+        "referer": "https://pubs.aip.org/aip/pop/issue/31/3"
+      }
+    }
+  ]
+}
