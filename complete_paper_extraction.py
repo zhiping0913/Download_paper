@@ -1163,6 +1163,67 @@ async def download_pdf(
         print(f"  📥 下载 PDF...")
         print(f"     链接: {pdf_url}")
 
+        # ── AIP/Cloudflare PDF：先用纯 CDP 预载+下载，避免 Playwright 指纹触发高难度挑战 ──
+        # CDP 模式下浏览器自己下载到默认目录；若成功可直接落盘，Playwright 只需兜底。
+        cdp_downloaded_path: str = None
+        if pdf_url and ('pubs.aip.org' in pdf_url or 'aip.org' in pdf_url):
+            try:
+                from cf_bypass_cdp import bypass_cloudflare_cdp
+                _chrome_download_dir = '/root/Downloads'
+                print(f"  🛡️  AIP PDF 先用纯 CDP 过 Cloudflare（监控 {_chrome_download_dir}）...")
+                _cf_result = await bypass_cloudflare_cdp(
+                    url=pdf_url,
+                    debug_port=9222,
+                    timeout_s=int(DP_CLOUDFLARE_TIMEOUT),
+                    pdf_mode=True,
+                    download_dir=_chrome_download_dir,
+                )
+                if _cf_result.get('success'):
+                    _dl_file = _cf_result.get('downloaded_file')
+                    if _dl_file and os.path.isfile(_dl_file):
+                        cdp_downloaded_path = _dl_file
+                        print(f"  ✓ CDP 已触发下载: {cdp_downloaded_path}")
+                    else:
+                        print(f"  ✓ CDP Cloudflare 已通过，但未检测到下载文件，回退 Playwright 导航")
+                else:
+                    print(f"  ⚠️  CDP 模式未通过，回退 Playwright 导航")
+            except Exception as _e:
+                print(f"  ⚠️  CDP 绕过 PDF 异常: {_e}，回退 Playwright 导航")
+
+        # 若 CDP 已直接拿到下载文件（可能是 .crdownload），等其落盘后复制到目标目录
+        if cdp_downloaded_path:
+            _final_pdf = output_dir / filename
+            _waited = 0
+            _src = cdp_downloaded_path
+            _base, _ext = os.path.splitext(_src)
+            # 若 Chrome 还没下载完，文件名以 .crdownload 结尾；循环等它完成
+            if _src.endswith('.crdownload'):
+                print(f"  ⏳ 等待 CDP 下载完成（源文件仍为 .crdownload）...")
+                while _src.endswith('.crdownload') and _waited < DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT:
+                    await asyncio.sleep(2)
+                    _waited += 2
+                    # Chrome 完成后会把 .crdownload 重命名为原扩展名
+                    if os.path.isfile(_base):
+                        _src = _base
+                        break
+                    if not os.path.isfile(_src):
+                        # 文件消失且没出现目标文件：下载失败
+                        break
+                if _src.endswith('.crdownload'):
+                    print(f"    ⏰  CDP 下载文件在 {DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT}s 内未完成")
+            if os.path.isfile(_src) and not _src.endswith('.crdownload'):
+                shutil.copy(str(_src), str(_final_pdf))
+                _size_mb = _final_pdf.stat().st_size / (1024 * 1024)
+                print(f"    ✓ 保存: {filename} ({_size_mb:.2f} MB) [CDP 直接下载]")
+                if _src.startswith('/root/Downloads') or _src.startswith('/tmp/'):
+                    try:
+                        os.remove(_src)
+                    except Exception:
+                        pass
+                return filename
+            else:
+                print(f"    ⚠️  CDP 下载文件异常，回退 Playwright 导航")
+
         pdf_downloaded = False
         # ── 单次导航 + context级 download 事件 作为「真实拿到 PDF」的实体判据 ──
         # 说明：共享 Chrome 被 Playwright(accept_downloads=True) 接管后，无论哪个 tab 触发
