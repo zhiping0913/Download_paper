@@ -113,6 +113,13 @@ DP_CLOUDFLARE_INITIAL_POLL = max(2.0, DP_CLOUDFLARE_TIMEOUT / 7.5)  # ~4 s at de
 # goto(pdf_url) to fire the download event. Default: 10 s.
 DP_PDF_WAIT = _env_seconds('DP_PDF_WAIT', 10)
 
+# PDF download hard cap — 判据为「下载事件」的等待上限。
+# 分享 Chrome 被 Playwright(accept_downloads=True) 接管后，文件落入 playwright-artifacts
+# 临时目录而非 /root/Downloads，故不能再靠“目录新文件”判通过；
+# 改为监听 Playwright download 事件。部分网站下载慢，故单独可配。默认 30 s。
+# 超时则如实判定 PDF 下载失败（不误判、不无限等待、不硬点挑战框）。
+DP_PDF_DOWNLOAD_TIMEOUT = _env_seconds('DP_PDF_DOWNLOAD_TIMEOUT', 30)
+
 # Supplemental download family — both the initial page.goto(url) and the
 # download-event wait for each supplemental link. Also covers inline-audio
 # body-fetch waits. Default: 60 s.
@@ -1126,19 +1133,28 @@ async def download_pdf(
         print(f"     链接: {pdf_url}")
 
         pdf_downloaded = False
+        # 判据=「下载事件」：分享 Chrome 可能被 Playwright(accept_downloads=True) 接管，
+        # 下载会落到 playwright-artifacts 临时目录而非 /root/Downloads，故不再靠目录扫描。
+        # 此处以 Playwright download 事件触发 + path() 落盘作为「真实拿到 PDF」的实体判据。
+        _pdf_dl_event = asyncio.Event()
 
         async def handle_download(download):
-            """处理下载事件"""
+            """处理下载事件 —— 下载事件触发即视为挑战真正通过"""
             nonlocal pdf_downloaded
-            pdf_path_temp = await download.path()
-            final_path = output_dir / filename
+            try:
+                pdf_path_temp = await download.path()
+                final_path = output_dir / filename
 
-            import shutil
-            shutil.copy(str(pdf_path_temp), str(final_path))
+                import shutil
+                shutil.copy(str(pdf_path_temp), str(final_path))
 
-            pdf_size_mb = final_path.stat().st_size / (1024 * 1024)
-            print(f"    ✓ 保存: {filename} ({pdf_size_mb:.2f} MB)")
-            pdf_downloaded = True
+                pdf_size_mb = final_path.stat().st_size / (1024 * 1024)
+                print(f"    ✓ 保存: {filename} ({pdf_size_mb:.2f} MB) [下载事件]")
+                pdf_downloaded = True
+            except Exception as _e:
+                print(f"    ⚠️  下载事件处理异常: {_e}")
+            finally:
+                _pdf_dl_event.set()
 
         # ── 纯CDP预告：PDF 页面同样会被 Cloudflare 拦截 ──
         # 先用 CDP 在共享 Chrome 里打开 PDF URL 并过挑战（拿到 cf_clearance），
@@ -1151,22 +1167,22 @@ async def download_pdf(
                 _pdf_cf = await bypass_cloudflare_cdp(
                     url=pdf_url,
                     debug_port=CHROME_DEBUG_PORT,
-                    timeout_s=int(DP_CLOUDFLARE_TIMEOUT),
+                    # 预热只负责把 cookie 拿到手即可；真正“下载成功”判据是下方 Playwright download 事件。
+                    # 不给过长预算（下载由浏览器接管，落 playwright-artifacts，无需在此等的实体文件）。
+                    timeout_s=int(min(DP_CLOUDFLARE_TIMEOUT, max(DP_PDF_DOWNLOAD_TIMEOUT * 2, 60))),
                     wait_for_content=False,
                     pdf_mode=True,
-                    # 关键：监控 Chrome 默认下载目录，用「新文件落盘」判断挑战是否真实通过
-                    download_dir=str(Path.home() / "Downloads"),
+                    # 不再传 download_dir：下载已交由 Playwright(accept_downloads) 接管到临时目录，
+                    # 目录扫描会空转误判。改用 download 事件作为实体判据。
+                    # download_dir=str(Path.home() / "Downloads"),
                 )
                 if _pdf_cf.get("success"):
-                    _cl_f = _pdf_cf.get("downloaded_file")
-                    if _cl_f:
-                        print(f"  ✅ PDF页 Cloudflare 已通过，且检测到下载文件: {Path(_cl_f).name}")
-                    else:
-                        print(f"  ✅ PDF页 Cloudflare 已通过（下载事件确认）")
+                    # CDP 预热只要 cookie 就绪即可，不再要求 download_dir 中出现新文件
                     _pdf_cf_ok = True
-                    _pdf_cf_file = _cl_f
+                    _pdf_cf_file = None
+                    print(f"  ✅ PDF页 CDP 预热通过（cookie 就绪，交由下载事件确认）")
                 else:
-                    print(f"  ⚠️  PDF页 CDP 过挑战未通过，回退 Playwright 方式重试")
+                    print(f"  ⚠️  PDF页 CDP 预热未通过，回退 Playwright 方式重试（仍会尝试下载）")
             except Exception as _e:
                 print(f"  ⚠️  PDF页 CDP 预告异常: {_e}")
                 _pdf_cf_ok = False
@@ -1210,9 +1226,15 @@ async def download_pdf(
         except Exception as e:
             print(f"    ⚠️  auto_solve_bot_challenge (PDF): {e}")
 
-        # 等待下载完成（部分链接需等待5-10秒后才会自动跳转到PDF）
-        await asyncio.sleep(DP_PDF_WAIT)
+        # 判据=「下载事件」：等待 Playwright download 事件触发（浏览器已把文件
+        # 接管到临时下载目录）。部分网站下载较慢，用 DP_PDF_DOWNLOAD_TIMEOUT（默认30s）
+        # 作为硬上限；超时则如实判定失败（不误判、不无限等待、不硬点挑战框）。
+        try:
+            await asyncio.wait_for(_pdf_dl_event.wait(), timeout=float(DP_PDF_DOWNLOAD_TIMEOUT))
+        except asyncio.TimeoutError:
+            print(f"    ⏰  等待下载事件超时（>{DP_PDF_DOWNLOAD_TIMEOUT}s）")
 
+        # 移除监听并关闭下载页
         download_page.remove_listener("download", handle_download)
         if download_page is not page:
             await download_page.close()
@@ -1220,7 +1242,7 @@ async def download_pdf(
         if pdf_downloaded:
             return filename
         else:
-            print(f"    ⚠️  未成功下载PDF")
+            print(f"    ⚠️  未成功下载PDF（下载事件未触发，已等待 {DP_PDF_DOWNLOAD_TIMEOUT}s）")
             return None
 
     except Exception as e:
