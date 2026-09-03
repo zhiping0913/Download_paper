@@ -131,6 +131,12 @@ DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT = _env_seconds('DP_PDF_DOWNLOAD_COMPLETE_TIMEOU
 # body-fetch waits. Default: 60 s.
 DP_SUPPLEMENTAL_TIMEOUT = _env_seconds('DP_SUPPLEMENTAL_TIMEOUT', 60)
 
+# Supplemental download completion wait — after the download event fires
+# (file transfer in progress), how long to wait for download.path() to
+# resolve before giving up. Slow networks may need 10+ minutes for large
+# DOCX/MP4 files. Default: 600 s (10 min).
+DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT = _env_seconds('DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT', 600)
+
 # Figure download family — the CDN goto for each figure image (and the
 # fallback img_src re-fetch if the first response wasn't image/*).
 # Default: 60 s.
@@ -1173,6 +1179,7 @@ async def download_pdf(
         # 只有「根本没触发下载事件」（页面未落到下载）才算失败，交给 retry_download 重试。
         _dl_started = asyncio.Event()   # 下载事件已触发（真实开始）
         _dl_done = asyncio.Event()      # 文件已完整落盘到 output_dir
+        _dl_failed = asyncio.Event()    # 下载中途失败（网络波动、cancel等）
         _ctx = context if context is not None else (page.context if page is not None else None)
 
         async def _ctx_handle_download(download):
@@ -1191,7 +1198,7 @@ async def download_pdf(
                 _dl_done.set()
             except Exception as _e:
                 print(f"    ⚠️  context下载事件处理异常: {_e}")
-                _dl_done.set()
+                _dl_failed.set()  # 标记失败，让 retry_download 重试
 
         # 注册 context 级监听（能捕获 context 下任意 tab 的下载，含 CDP 导航触发的）
         if _ctx is not None:
@@ -1239,20 +1246,44 @@ async def download_pdf(
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     pass
 
-        # 阶段B：已开始下载 → 只等它完成（慢网速也不重开）。
+        # 阶段B：已开始下载 → 等完成或失败，慢网速只等不重开。
         done = False
         if started:
+            _done_t = asyncio.ensure_future(_dl_done.wait())
+            _fail_t = asyncio.ensure_future(_dl_failed.wait())
             try:
-                await asyncio.wait_for(_dl_done.wait(), timeout=float(DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT))
-                done = True
+                await asyncio.wait_for(
+                    asyncio.wait([_done_t, _fail_t], return_when=asyncio.FIRST_COMPLETED),
+                    timeout=float(DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT)
+                )
+                if _dl_done.is_set():
+                    # 验证文件真实存在且非空
+                    _fp = output_dir / filename
+                    if _fp.exists() and _fp.stat().st_size > 0:
+                        done = True
+                    else:
+                        print(f"    ⚠️  下载回调标记完成但文件不存在或为空，判定失败")
+                elif _dl_failed.is_set():
+                    print(f"    ⚠️  下载中途失败（网络波动），交由 retry 重试")
+                else:
+                    print(f"    ⏰  下载已开始但 {DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT}s 内未完成")
             except asyncio.TimeoutError:
                 print(f"    ⏰  下载已开始但 {DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT}s 内未完成（继续等待完成）")
-                # 下载已真实开始，慢就多等——再给它缓冲，不重开页面
+                # 下载已真实开始，慢就多给缓冲，不重开页面
                 try:
                     await asyncio.wait_for(_dl_done.wait(), timeout=float(max(DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT, 120)))
-                    done = True
+                    _fp = output_dir / filename
+                    if _fp.exists() and _fp.stat().st_size > 0:
+                        done = True
+                    else:
+                        print(f"    ⚠️  二次等待后文件仍不存在或为空")
                 except asyncio.TimeoutError:
                     print(f"    ⏰  二次等待仍超时，放弃本次（不重开，避免叠加）")
+            finally:
+                if not _done_t.done():
+                    _done_t.cancel()
+                if not _fail_t.done():
+                    _fail_t.cancel()
 
         # 移除监听并关闭下载页（page 级 + context 级都移除）
         try:
@@ -1600,7 +1631,13 @@ async def download_supplemental_materials(
                             timeout=DP_SUPPLEMENTAL_TIMEOUT + 2
                         )
                         if download_event:
-                            downloaded_file = await download_event.path()
+                            try:
+                                downloaded_file = await asyncio.wait_for(
+                                    download_event.path(),
+                                    timeout=float(DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT)
+                                )
+                            except asyncio.TimeoutError:
+                                print(f"    ⏰  补充材料下载未在 {DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT}s 内完成")
                 except asyncio.TimeoutError:
                     # 如果等待超时，继续使用response方法
                     pass
