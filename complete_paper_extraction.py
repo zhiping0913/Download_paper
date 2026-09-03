@@ -1199,6 +1199,12 @@ async def download_pdf(
 
         # 复用当前页或新建页，单次导航到 PDF
         download_page = await context.new_page() if force_headed and context is not None else page
+        # 实证：download 事件派发到「触发下载的那个 page」层（而非 context/browser 层），
+        # 故在本次将导航的 page 上也注册监听（双保险），确保能捕获下载开始信号。
+        try:
+            download_page.on("download", _ctx_handle_download)
+        except Exception as _e:
+            print(f"    ⚠️  page 级下载监听注册失败: {_e}")
         try:
             await download_page.goto(pdf_url, timeout=int(DP_PAGE_LOAD_TIMEOUT * 1000), wait_until='commit')
         except:
@@ -1248,7 +1254,11 @@ async def download_pdf(
                 except asyncio.TimeoutError:
                     print(f"    ⏰  二次等待仍超时，放弃本次（不重开，避免叠加）")
 
-        # 移除监听并关闭下载页
+        # 移除监听并关闭下载页（page 级 + context 级都移除）
+        try:
+            download_page.remove_listener("download", _ctx_handle_download)
+        except Exception:
+            pass
         if _ctx is not None:
             _ctx.remove_listener("download", _ctx_handle_download)
         if download_page is not page:
