@@ -82,7 +82,7 @@ CHROME_PATH = _detect_chrome_path()
 CHROME_USER_DATA_DIR = _detect_chrome_user_data_dir()
 
 # Chrome Default Profile（如果使用特定profile）
-CHROME_PROFILE = "Default"
+CHROME_PROFILE = os.environ.get("CHROME_PROFILE", "Default")
 
 # Chrome远程调试端口（如果使用remote debugging）
 CHROME_DEBUG_PORT = int(os.environ.get("CHROME_DEBUG_PORT", 9222))
@@ -92,13 +92,13 @@ CHROME_DEBUG_PORT = int(os.environ.get("CHROME_DEBUG_PORT", 9222))
 # ============================================================================
 
 # 捕获数据保存目录
-CAPTURED_DATA_DIR = "captured_data"
+CAPTURED_DATA_DIR = os.environ.get("CAPTURED_DATA_DIR", "captured_data")
 
 # Markdown输出目录
 MARKDOWN_OUTPUT_DIR = "markdown_output"
 
 # 默认输出目录（相对于脚本位置）
-OUTPUT_DIR_DEFAULT = str(Path(__file__).resolve().parent / "captured_data")
+OUTPUT_DIR_DEFAULT = os.environ.get("OUTPUT_DIR_DEFAULT", str(Path(__file__).resolve().parent / CAPTURED_DATA_DIR))
 
 # ============================================================================
 # 输出格式配置
@@ -134,11 +134,11 @@ BATCH_SLEEP_MAX = int(os.environ.get("BATCH_SLEEP_MAX", 60))
 # ============================================================================
 
 # 脚本是否使用有头浏览器
-HEADLESS = False
+HEADLESS = os.environ.get("HEADLESS", "false").lower() in ("1", "true", "yes", "on")
 
 # 默认使用持久化Chrome还是remote debugging
 # 可选值: "persistent" 或 "remote"
-USE_CHROME_MODE = "persistent"  # 使用持久化用户数据目录
+USE_CHROME_MODE = os.environ.get("USE_CHROME_MODE", "persistent")  # 使用持久化用户数据目录
 
 print("✓ 配置已加载")
 print(f"  - Chrome: {CHROME_PATH}")
