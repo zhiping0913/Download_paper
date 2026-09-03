@@ -1205,19 +1205,33 @@ async def download_pdf(
             # 下载开始时页面加载会中断，这是正常的
             pass
 
-        # 反爬挑战尽力自动处理仍在的单页（无新 tab、同一页面内）
+        # 反爬挑战与「等待下载开始」并行：下载事件一旦触发（真实开始）就立即确认，
+        # 不再被 auto_solve 空转阻塞；仅当下载未触发时，才用挑战处理兜底去解验证。
+        solve_task = None
         try:
-            await auto_solve_bot_challenge(download_page, timeout_s=DP_CLOUDFLARE_TIMEOUT, initial_poll_s=DP_CLOUDFLARE_INITIAL_POLL)
+            solve_task = asyncio.ensure_future(
+                auto_solve_bot_challenge(download_page, timeout_s=DP_CLOUDFLARE_TIMEOUT, initial_poll_s=DP_CLOUDFLARE_INITIAL_POLL)
+            )
         except Exception as e:
             print(f"    ⚠️  auto_solve_bot_challenge (PDF): {e}")
+            solve_task = None
 
-        # 阶段A：等待「下载已开始」。超时说明根本没触发下载 → 判失败，交给 retry。
+        # 阶段A：与挑战处理并行，等待「下载已开始」。超时说明没触发下载 → 交给 retry。
         started = False
         try:
             await asyncio.wait_for(_dl_started.wait(), timeout=float(DP_PDF_DOWNLOAD_TIMEOUT))
             started = True
+            # 下载已真实开始：取消仍在空转的挑战处理，避免拖住保存逻辑
+            if solve_task is not None and not solve_task.done():
+                solve_task.cancel()
         except asyncio.TimeoutError:
-            print(f"    ⏰  未触发下载事件（>{DP_PDF_DOWNLOAD_TIMEOUT}s），判定未开始下载")
+            print(f"    ⏰  未触发下载事件（>{DP_PDF_DOWNLOAD_TIMEOUT}s），判定未开始下载，交由挑战处理兜底")
+            # 给 auto_solve 更充分时间去解挑战（它可能正是触发下载的关键一步）
+            if solve_task is not None:
+                try:
+                    await asyncio.wait_for(solve_task, timeout=float(DP_CLOUDFLARE_TIMEOUT))
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
 
         # 阶段B：已开始下载 → 只等它完成（慢网速也不重开）。
         done = False
