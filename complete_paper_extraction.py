@@ -142,6 +142,12 @@ DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT = _env_seconds('DP_SUPPLEMENTAL_DOWNLO
 # Default: 60 s.
 DP_FIGURE_TIMEOUT = _env_seconds('DP_FIGURE_TIMEOUT', 60)
 
+# Retry knobs — configurable via environment variables
+DP_MAX_RETRIES = int(_env_seconds('DP_MAX_RETRIES', 5))          # generic downloads
+DP_RETRY_DELAY = _env_seconds('DP_RETRY_DELAY', 1.0)             # seconds between retries
+DP_IMG_MAX_RETRIES = int(_env_seconds('DP_IMG_MAX_RETRIES', 3))  # figure/image downloads
+DP_SUPP_MAX_RETRIES = int(_env_seconds('DP_SUPP_MAX_RETRIES', 5)) # supplemental downloads
+
 
 
 # Publisher IDs that can be entered from the Phase 0 headless page.
@@ -949,7 +955,7 @@ async def _find_pw_page_by_cdp_target(browser, target_id):
     return None
 
 
-async def retry_download(download_func, *args, max_retries=5, retry_delay=1.0, **kwargs):
+async def retry_download(download_func, *args, max_retries=DP_MAX_RETRIES, retry_delay=DP_RETRY_DELAY, **kwargs):
     """Retry a download function with automatic retries on network failures."""
     for attempt in range(max_retries):
         try:
@@ -1020,7 +1026,7 @@ async def _download_all_resources(
                 pdf_result = await retry_download(
                     download_pdf,
                     download_page, pdf_url, output_dir, pdf_filename, download_context, force_headed,
-                    max_retries=5, retry_delay=1.0
+                    max_retries=DP_MAX_RETRIES, retry_delay=DP_RETRY_DELAY
                 )
                 downloads['pdf'] = pdf_result
             except Exception as e:
@@ -1045,7 +1051,7 @@ async def _download_all_resources(
                     img_filename = await retry_download(
                         download_figure,
                         download_page, fig_url, int(fig_num), output_dir, download_context, force_headed,
-                        max_retries=5, retry_delay=1.0
+                        max_retries=DP_MAX_RETRIES, retry_delay=DP_RETRY_DELAY
                     )
                     # Fall back to the original (lower-res) URL if the high-res fetch failed
                     if not img_filename and fallback_url and fallback_url != fig_url:
@@ -1053,7 +1059,7 @@ async def _download_all_resources(
                         img_filename = await retry_download(
                             download_figure,
                             download_page, fallback_url, int(fig_num), output_dir, download_context, force_headed,
-                            max_retries=3, retry_delay=1.0
+                            max_retries=DP_IMG_MAX_RETRIES, retry_delay=DP_RETRY_DELAY
                         )
                     if img_filename:
                         downloads['figures'][fig_num] = img_filename
@@ -1166,14 +1172,16 @@ async def download_pdf(
         # ── AIP/Cloudflare PDF：先用纯 CDP 预载+下载，避免 Playwright 指纹触发高难度挑战 ──
         # CDP 模式下浏览器自己下载到默认目录；若成功可直接落盘，Playwright 只需兜底。
         cdp_downloaded_path: str = None
+        # 对已知使用 Cloudflare 保护的出版商 PDF 先用纯 CDP 预载，避免 Playwright 指纹
         if pdf_url and ('pubs.aip.org' in pdf_url or 'aip.org' in pdf_url):
             try:
                 from cf_bypass_cdp import bypass_cloudflare_cdp
-                _chrome_download_dir = '/root/Downloads'
-                print(f"  🛡️  AIP PDF 先用纯 CDP 过 Cloudflare（监控 {_chrome_download_dir}）...")
+                _chrome_download_dir = os.environ.get('CHROME_DOWNLOAD_DIR', '/root/Downloads')
+                _cdp_port = int(os.environ.get('CHROME_DEBUG_PORT', CHROME_DEBUG_PORT))
+                print(f"  🛡️  AIP PDF 先用纯 CDP 过 Cloudflare（端口 {_cdp_port}, 监控 {_chrome_download_dir}）...")
                 _cf_result = await bypass_cloudflare_cdp(
                     url=pdf_url,
-                    debug_port=9222,
+                    debug_port=_cdp_port,
                     timeout_s=int(DP_CLOUDFLARE_TIMEOUT),
                     pdf_mode=True,
                     download_dir=_chrome_download_dir,
@@ -1428,8 +1436,8 @@ async def download_supplemental_materials(
 
     for i, link in enumerate(supplemental_links, 1):
         # 为每个补充材料添加重试逻辑
-        max_retries_supp = 5
-        retry_delay_supp = 1.0
+        max_retries_supp = DP_SUPP_MAX_RETRIES
+        retry_delay_supp = DP_RETRY_DELAY
 
         for retry_attempt in range(max_retries_supp):
             success = False
