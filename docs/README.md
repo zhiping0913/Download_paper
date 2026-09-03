@@ -26,6 +26,67 @@
 
 本文档说明 `complete_paper_extraction.py` 的主工作流、各个 publisher 的接口契约，以及新增 publisher 时需要遵守的边界。
 
+## 环境变量快速配置
+
+程序所有设备相关的路径、端口、超时、重试等参数都支持通过环境变量覆盖。在新机器上运行时，先根据本机情况 `export` 以下变量，再启动脚本即可，无需修改源码。
+
+**Chrome / 浏览器相关：**
+
+```bash
+export CHROME_PATH=/opt/google/chrome/chrome          # Chrome 可执行文件路径
+export CHROME_USER_DATA_DIR=/root/.config/google-chrome-scraping  # 持久化 profile（含 cookies）
+export CHROME_PROFILE=Default                          # profile 名称
+export CHROME_DEBUG_PORT=9222                          # CDP 远程调试端口
+export CHROME_DOWNLOAD_DIR=/root/Downloads             # Chrome 默认下载目录
+export CHROME_PROFILE_ROOT=/tmp/chrome-profiles        # 临时 profile 根目录（可选）
+export USE_CHROME_MODE=persistent                      # persistent 或 remote
+export HEADLESS=false                                  # true/false；Cloudflare 站点建议 false
+```
+
+**输出目录：**
+
+```bash
+export CAPTURED_DATA_DIR=captured_data                 # 捕获数据子目录名
+export OUTPUT_DIR_DEFAULT=/home/coze/Download_paper/captured_data  # 完整输出目录路径
+```
+
+**超时配置（单位：秒）：**
+
+```bash
+export DP_PAGE_LOAD_TIMEOUT=120
+export DP_CLOUDFLARE_TIMEOUT=600
+export DP_PDF_DOWNLOAD_TIMEOUT=30
+export DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT=180   # 慢网速 PDF 完成等待
+export DP_SUPPLEMENTAL_TIMEOUT=60
+export DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT=600  # 大文件 DOCX/MP4 完成等待
+export DP_FIGURE_TIMEOUT=60
+```
+
+**重试配置：**
+
+```bash
+export DP_MAX_RETRIES=5
+export DP_RETRY_DELAY=1.0
+export DP_IMG_MAX_RETRIES=3
+export DP_SUPP_MAX_RETRIES=5
+```
+
+**启动示例：**
+
+```bash
+cd /path/to/Download_paper
+export CHROME_USER_DATA_DIR=/root/.config/google-chrome-scraping
+export CHROME_DEBUG_PORT=9222
+export DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT=600
+export DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT=1200
+python3 -u complete_paper_extraction.py --doi 10.1063/5.0256231
+```
+
+> **提示**：
+> - 涉及 Cloudflare / AIP / Radware 等反爬验证的站点，建议先按 `CHROME_USER_DATA_DIR` 启动 Chrome 并手动过一次验证，让 cookies 落入 profile，再运行脚本。
+> - 路径类变量建议使用绝对路径，避免 relative path 在不同工作目录下解析错误。
+> - 未设置的变量会自动使用上表中的默认值。
+
 ## 主工作流
 
 入口函数是：
