@@ -120,6 +120,12 @@ DP_PDF_WAIT = _env_seconds('DP_PDF_WAIT', 10)
 # 超时则如实判定 PDF 下载失败（不误判、不无限等待、不硬点挑战框）。
 DP_PDF_DOWNLOAD_TIMEOUT = _env_seconds('DP_PDF_DOWNLOAD_TIMEOUT', 30)
 
+# PDF 下载「完成」等待 — 慢网速专用。
+# 与 DP_PDF_DOWNLOAD_TIMEOUT（判“是否开始了下载”）分离：
+# 一旦 download 事件已触发（下载真实开始），就只等它完成，不因慢而重开页面/retry。
+# 默认 180 s，可通过 DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT 覆盖。
+DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT = _env_seconds('DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT', 180)
+
 # Supplemental download family — both the initial page.goto(url) and the
 # download-event wait for each supplemental link. Also covers inline-audio
 # body-fetch waits. Default: 60 s.
@@ -1160,12 +1166,18 @@ async def download_pdf(
         #   2) download 事件挂在 context 层，捕获任意 tab 的下载回调，避免"事件派发到
         #      非监听 page"导致判空。
         #   3) 等待上限 DP_PDF_DOWNLOAD_TIMEOUT（默认30s），超时如实判定失败。
-        _pdf_dl_event = asyncio.Event()
+        # 判据一：「下载已开始」→ 用 DP_PDF_DOWNLOAD_TIMEOUT 判定（默认30s）
+        # 判据二：「下载已完成」→ 用 DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT 判定（默认180s，慢网速专用）
+        # 拆成两个信号：download 事件一旦触发（浏览器已开始接收响应）立即视为“已开始”；
+        # 之后无论下载多慢，都只等它完成，绝不因为慢而重开页面 / 触发 retry 叠加。
+        # 只有「根本没触发下载事件」（页面未落到下载）才算失败，交给 retry_download 重试。
+        _dl_started = asyncio.Event()   # 下载事件已触发（真实开始）
+        _dl_done = asyncio.Event()      # 文件已完整落盘到 output_dir
         _ctx = context if context is not None else (page.context if page is not None else None)
 
         async def _ctx_handle_download(download):
-            """context 层下载事件回调 —— 拿到文件就视为挑战真正通过"""
-            nonlocal pdf_downloaded
+            """context 层下载事件回调 —— 事件一触发即视为下载已开始"""
+            _dl_started.set()  # 第一时间标记已开始，不等 path()（path 可能因慢网速阻塞）
             try:
                 pdf_path_temp = await download.path()
                 if not pdf_path_temp:
@@ -1176,11 +1188,10 @@ async def download_pdf(
                 shutil.copy(str(pdf_path_temp), str(final_path))
                 pdf_size_mb = final_path.stat().st_size / (1024 * 1024)
                 print(f"    ✓ 保存: {filename} ({pdf_size_mb:.2f} MB) [context下载事件]")
-                pdf_downloaded = True
+                _dl_done.set()
             except Exception as _e:
                 print(f"    ⚠️  context下载事件处理异常: {_e}")
-            finally:
-                _pdf_dl_event.set()
+                _dl_done.set()
 
         # 注册 context 级监听（能捕获 context 下任意 tab 的下载，含 CDP 导航触发的）
         if _ctx is not None:
@@ -1200,23 +1211,42 @@ async def download_pdf(
         except Exception as e:
             print(f"    ⚠️  auto_solve_bot_challenge (PDF): {e}")
 
-        # 判据=「下载事件」：等待 context download 事件触发（浏览器已把文件接管到临时目录）。
-        # 部分网站下载慢，用 DP_PDF_DOWNLOAD_TIMEOUT（默认30s）作硬上限；超时如实判定失败。
+        # 阶段A：等待「下载已开始」。超时说明根本没触发下载 → 判失败，交给 retry。
+        started = False
         try:
-            await asyncio.wait_for(_pdf_dl_event.wait(), timeout=float(DP_PDF_DOWNLOAD_TIMEOUT))
+            await asyncio.wait_for(_dl_started.wait(), timeout=float(DP_PDF_DOWNLOAD_TIMEOUT))
+            started = True
         except asyncio.TimeoutError:
-            print(f"    ⏰  等待下载事件超时（>{DP_PDF_DOWNLOAD_TIMEOUT}s）")
+            print(f"    ⏰  未触发下载事件（>{DP_PDF_DOWNLOAD_TIMEOUT}s），判定未开始下载")
+
+        # 阶段B：已开始下载 → 只等它完成（慢网速也不重开）。
+        done = False
+        if started:
+            try:
+                await asyncio.wait_for(_dl_done.wait(), timeout=float(DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT))
+                done = True
+            except asyncio.TimeoutError:
+                print(f"    ⏰  下载已开始但 {DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT}s 内未完成（继续等待完成）")
+                # 下载已真实开始，慢就多等——再给它缓冲，不重开页面
+                try:
+                    await asyncio.wait_for(_dl_done.wait(), timeout=float(max(DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT, 120)))
+                    done = True
+                except asyncio.TimeoutError:
+                    print(f"    ⏰  二次等待仍超时，放弃本次（不重开，避免叠加）")
 
         # 移除监听并关闭下载页
         if _ctx is not None:
             _ctx.remove_listener("download", _ctx_handle_download)
         if download_page is not page:
-            await download_page.close()
+            try:
+                await download_page.close()
+            except Exception:
+                pass
 
-        if pdf_downloaded:
+        if done:
             return filename
         else:
-            print(f"    ⚠️  未成功下载PDF（下载事件未触发，已等待 {DP_PDF_DOWNLOAD_TIMEOUT}s）")
+            print(f"    ⚠️  未成功下载PDF")
             return None
 
     except Exception as e:
