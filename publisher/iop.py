@@ -198,11 +198,13 @@ class IOPHandler(PublisherHandler):
         body_parts = []
 
         for element in body_div.find_all(
-            ['h2', 'h3', 'h4', 'p', 'div', 'figure', 'table', 'ul', 'ol'],
+            ['h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div', 'figure', 'table', 'ul', 'ol'],
             recursive=False,
         ):
-            if element.name in ('h2', 'h3', 'h4'):
-                level = '#' * (int(element.name[1]) + 1)
+            if element.name in ('h2', 'h3', 'h4', 'h5', 'h6'):
+                # h2 → ###, h3 → ####, h4 → #####, h5/h6 → ######
+                # (markdown caps at ######, so h5/h6 both map to it)
+                level = '#' * min(int(element.name[1]) + 1, 6)
                 heading_md = render_heading_md(
                     element, level, converter=cls._convert_iop_paragraph_to_md
                 )
@@ -279,11 +281,12 @@ class IOPHandler(PublisherHandler):
         this method handles arbitrary nesting depth.
         """
         for child in container.find_all(
-            ['p', 'h3', 'h4', 'div', 'figure', 'table', 'ul', 'ol'],
+            ['p', 'h3', 'h4', 'h5', 'h6', 'div', 'figure', 'table', 'ul', 'ol'],
             recursive=False,
         ):
-            if child.name in ('h3', 'h4'):
-                level = '#' * (int(child.name[1]) + 1)
+            if child.name in ('h3', 'h4', 'h5', 'h6'):
+                # h3 → ####, h4 → #####, h5/h6 → ######
+                level = '#' * min(int(child.name[1]) + 1, 6)
                 heading_md = render_heading_md(
                     child, level, converter=cls._convert_iop_paragraph_to_md
                 )

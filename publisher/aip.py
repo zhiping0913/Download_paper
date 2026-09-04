@@ -537,11 +537,15 @@ class AIPHandler(PublisherHandler):
             ])
 
         # Heading levels we render:
-        #   h2 → ###   h3 → ####   h4 → #####
+        #   h2 → ###   h3 → ####   h4 → #####   h5 → ######   h6 → ######
+        # (markdown caps at ######, so h5/h6 both map to it.)
         # data-section-title attr is only reliable on h2/h3 (jumplink headings);
-        # h4 subsection titles carry only the visible text, so accept them
-        # unconditionally.
-        _HEADING_LEVELS = {'h2': '###', 'h3': '####', 'h4': '#####'}
+        # h4-h6 subsection titles carry only the visible text, so accept them
+        # unconditionally when they wear the section-title class.
+        _HEADING_LEVELS = {
+            'h2': '###', 'h3': '####', 'h4': '#####',
+            'h5': '######', 'h6': '######',
+        }
 
         seen_content_ids = set()
         article_nodes = soup.find_all(
@@ -549,7 +553,7 @@ class AIPHandler(PublisherHandler):
                 tag.name in {'h2', 'h3'}
                 and tag.get('data-section-title') is not None
             ) or (
-                tag.name == 'h4'
+                tag.name in {'h4', 'h5', 'h6'}
                 and 'section-title' in (tag.get('class') or [])
             ) or (
                 tag.name == 'div'

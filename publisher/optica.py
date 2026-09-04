@@ -515,8 +515,10 @@ class OpticaHandler(PublisherHandler):
                     parts.append(p_md)
                     parts.append("")
 
-        elif element.name in ('h2', 'h3', 'h4', 'h5'):
-            level_map = {'h2': '##', 'h3': '###', 'h4': '####', 'h5': '#####'}
+        elif element.name in ('h2', 'h3', 'h4', 'h5', 'h6'):
+            # h2 → ##, h3 → ###, h4 → ####, h5 → #####, h6 → ######
+            level_map = {'h2': '##', 'h3': '###', 'h4': '####',
+                         'h5': '#####', 'h6': '######'}
             level = level_map[element.name]
             heading_md = render_heading_md(
                 element, level, converter=cls._convert_paragraph_to_md

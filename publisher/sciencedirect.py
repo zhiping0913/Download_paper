@@ -643,9 +643,10 @@ class ScienceDirectHandler(PublisherHandler):
                 cls._walk_sd_body(child, parts)
                 continue
 
-            if child.name in ('h2', 'h3', 'h4', 'h5'):
+            if child.name in ('h2', 'h3', 'h4', 'h5', 'h6'):
                 flush()
-                level = '#' * (int(child.name[1]) + 1)
+                # h2 → ###, h3 → ####, h4 → #####, h5/h6 → ######
+                level = '#' * min(int(child.name[1]) + 1, 6)
                 heading_md = render_heading_md(
                     child, level, converter=cls._convert_paragraph_to_md
                 )
@@ -1157,7 +1158,7 @@ class ScienceDirectHandler(PublisherHandler):
         urls = []
         descriptions = {}
 
-        for heading in soup.find_all(['h2', 'h3', 'h4']):
+        for heading in soup.find_all(['h2', 'h3', 'h4', 'h5', 'h6']):
             text = heading.get_text(' ', strip=True)
             if not text:
                 continue

@@ -619,7 +619,7 @@ class OupHandler(PublisherHandler):
 
             tag = child.name
 
-            if tag in ('h2', 'h3', 'h4'):
+            if tag in ('h2', 'h3', 'h4', 'h5', 'h6'):
                 # skip_headings check needs a plain lowercase string
                 heading_text = child.get_text(' ', strip=True)
                 heading_text = re.sub(r'\s+', ' ', heading_text or '').strip()
@@ -633,7 +633,8 @@ class OupHandler(PublisherHandler):
                     continue
                 # Render via the shared heading helper so MathJax / <math>
                 # inside a title survives (get_text() would strip it).
-                level = '#' * (int(tag[1]) + 1)
+                # h2 → ###, ..., h5/h6 → ###### (markdown caps at 6)
+                level = '#' * min(int(tag[1]) + 1, 6)
                 heading_md = render_heading_md(child, level)
                 if heading_md:
                     body_parts.extend([heading_md, ''])
