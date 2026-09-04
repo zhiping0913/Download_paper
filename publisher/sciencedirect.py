@@ -4,14 +4,27 @@ ScienceDirect / Elsevier publisher handler.
 Extracts metadata, body, figures, tables, references, and supplemental materials
 from ScienceDirect article pages (www.sciencedirect.com).
 
-ScienceDirect ships article data both as:
-  * ``window.__PRELOADED_STATE__`` JSON (canonical metadata, PDF link payload).
-  * Rendered HTML under ``<div class="body-area">`` and
-    ``<div class="body u-font-serif" id="body">`` (figures, tables, formulas).
+ScienceDirect ships article data as:
+  * ``window.__PRELOADED_STATE__`` JSON — canonical metadata, PDF link payload.
+  * ``/sdfe/arp/pii/{PII}/body?entitledToken={TOKEN}`` JSON — **the body**.
+  * Rendered HTML under ``<div class="body-area">`` — the visual DOM.
 
-The page is heavily JavaScript-rendered, so a headed browser is required to
-load the rendered DOM.  MathJax stores assistive MathML alongside the SVG
-rendering, so equation conversion reuses the shared pandoc MathML path.
+Body extraction uses the JSON API (``render_body_json``). The payload is
+Elsevier's "xocs" serialisation of the JATS XML and still carries source
+**MathML**, so equations convert to real LaTeX. The rendered DOM cannot be
+relied on for this: since ~2023 Elsevier ships MathJax 3 CHTML with every
+LaTeX/MathML annotation stripped (no data-latex, no <mjx-assistive-mml>,
+no <math>), leaving only visual glyphs plus a speech string.
+
+The per-session ``entitledToken`` is scraped from the landing-page HTML.
+Figures and supplemental files resolve through the payload's ``attachments``
+list: ``https://ars.els-cdn.com/content/image/{attachment-eid}``.
+
+The DOM walk is retained as a fallback for when the token/PII can't be
+resolved — see the LEGACY banner further down. Metadata, abstract,
+highlights, keywords and references still come from the HTML.
+
+The page is heavily JavaScript-rendered, so a headed browser is required.
 """
 
 import json
@@ -20,6 +33,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
+from html_to_md_converter import mathml_to_latex_pandoc
 from publisher.base import PublisherHandler
 from publisher.wildcard import (
     convert_html_fragment_to_markdown,
@@ -625,6 +639,23 @@ class ScienceDirectHandler(PublisherHandler):
         except Exception:
             pass
         return results
+
+    # ==================================================================
+    # LEGACY — rendered-DOM body extraction (fallback path)
+    # ==================================================================
+    # Everything from here to ``extract_references_from_html`` walks the
+    # rendered <div id="body"> DOM. It was the primary path until the
+    # sdfe/arp body-JSON API was wired in (see ``render_body_json`` above).
+    #
+    # Kept because it is a genuine fallback: ``extract_all`` uses it when
+    # the entitledToken / PII can't be resolved or the API request fails.
+    # Note its known limitation — on papers rendered with MathJax 3 CHTML
+    # (Elsevier, ~2023 onward) the DOM carries no LaTeX/MathML source, so
+    # equations degrade to "[math: <speech text>]" placeholders. The API
+    # path has the real MathML and should be preferred whenever available.
+    #
+    # ``_preprocess_sd_math`` / ``_convert_paragraph_to_md`` above are NOT
+    # legacy — the abstract + highlights extraction still runs through them.
 
     @classmethod
     def _walk_sd_body(cls, container, parts: list):
@@ -1270,6 +1301,704 @@ class ScienceDirectHandler(PublisherHandler):
     # Publisher contract methods
     # ------------------------------------------------------------------
 
+    # ==================================================================
+    # Body API (sdfe/arp/pii/{PII}/body) — PRIMARY body extraction path
+    # ==================================================================
+    # ScienceDirect renders the article body client-side from a JSON API:
+    #     https://www.sciencedirect.com/sdfe/arp/pii/{PII}/body?entitledToken={TOKEN}
+    # The per-session token is embedded in the landing-page HTML as
+    # ``"entitledToken":"…"``.
+    #
+    # Why this replaces the DOM walk: since ~2023 Elsevier serves the body
+    # as MathJax 3 CHTML with EVERY LaTeX/MathML source annotation stripped
+    # (no data-latex, no <mjx-assistive-mml>, no <math>, nothing in
+    # __PRELOADED_STATE__) — only visual glyphs plus a speech string. The
+    # JSON API still carries the original MathML, so formulas convert to
+    # real LaTeX instead of "[math: script L sub HE equals …]" placeholders.
+    #
+    # JSON node model (Elsevier "xocs" serialisation of JATS XML):
+    #     {"#name": tag, "$": {attrs}, "$$": [children], "_": "leaf text"}
+    # Top level: {content, floats, footnotes, attachments, …}
+
+    SD_ATTACHMENT_BASE = 'https://ars.els-cdn.com/content/image/'
+    SD_BODY_API = 'https://www.sciencedirect.com/sdfe/arp/pii/{pii}/body?entitledToken={token}'
+
+    # Inline wrappers: xocs tag -> (prefix, suffix)
+    _XOCS_INLINE_WRAP = {
+        'italic': ('*', '*'),
+        'bold': ('**', '**'),
+        'sup': ('^', '^'),
+        'inf': ('~', '~'),
+        'sub': ('~', '~'),
+        'monospace': ('`', '`'),
+    }
+
+    # Nodes whose children we render but that add no markup of their own.
+    _XOCS_TRANSPARENT = {
+        'display', 'sections', 'simple-para', 'caption', 'textbox-body',
+        'para-block', 'outline', 'entry-para', 'note-para', 'floats',
+        'nomenclature', 'glossary', 'textbox',
+    }
+
+    # Nodes to drop entirely (metadata / bookkeeping that isn't body prose).
+    _XOCS_SKIP = {
+        'alt-text', 'grant-sponsor', 'grant-number', 'author-group',
+        'correspondence', 'affiliation', 'author', 'date',
+    }
+
+    @staticmethod
+    def _extract_entitled_token(html_content: str) -> str:
+        """Pull the per-session body-API token out of the landing page HTML."""
+        if not html_content:
+            return ''
+        m = re.search(r'"entitledToken"\s*:\s*"([^"]+)"', html_content)
+        return m.group(1) if m else ''
+
+    @staticmethod
+    def _extract_pii(html_content: str = '', url: str = '') -> str:
+        """Resolve the article PII from the URL or the page HTML."""
+        for src in (url or '', html_content or ''):
+            if not src:
+                continue
+            m = re.search(r'/pii/([A-Z0-9]{15,20})', src)
+            if m:
+                return m.group(1)
+        if html_content:
+            m = re.search(r'"pii"\s*:\s*"([A-Z0-9]{15,20})"', html_content)
+            if m:
+                return m.group(1)
+        return ''
+
+    @classmethod
+    def _body_api_url(cls, pii: str, token: str) -> str:
+        if not pii or not token:
+            return ''
+        return cls.SD_BODY_API.format(pii=pii, token=token)
+
+    # ---- xocs node helpers -------------------------------------------
+
+    @staticmethod
+    def _xocs_xml(node) -> str:
+        """Serialise an xocs JSON node back to an XML string (for MathML)."""
+        def esc(s):
+            return (str(s).replace('&', '&amp;')
+                          .replace('<', '&lt;').replace('>', '&gt;'))
+
+        def rec(n):
+            if isinstance(n, str):
+                return esc(n)
+            if not isinstance(n, dict):
+                return ''
+            name = n.get('#name')
+            if not name:
+                return ''
+            if name == '__text__':
+                return esc(n.get('_', '') or '')
+            attrs = ''.join(
+                f' {k}="{esc(v)}"'
+                for k, v in (n.get('$') or {}).items()
+                # xmlns:* come through as boolean True — they'd serialise as
+                # xmlns:mml="True" and confuse pandoc's MathML reader.
+                if v is not True and not str(k).startswith('xmlns')
+            )
+            kids = n.get('$$')
+            if kids:
+                inner = ''.join(rec(c) for c in kids)
+            else:
+                inner = esc(n.get('_', '') or '')
+            return f'<{name}{attrs}>{inner}</{name}>'
+
+        return rec(node)
+
+    @classmethod
+    def _xocs_math_latex(cls, math_node, display: bool = False) -> str:
+        """Convert an xocs <math> node to a LaTeX body (no $ delimiters)."""
+        xml = cls._xocs_xml(math_node)
+        if not xml:
+            return ''
+        latex = mathml_to_latex_pandoc(xml) or ''
+        latex = latex.strip()
+        if not latex:
+            return ''
+        # pandoc returns $…$ / $$…$$ — strip so the caller controls wrapping.
+        if latex.startswith('$$') and latex.endswith('$$'):
+            latex = latex[2:-2].strip()
+        elif latex.startswith('$') and latex.endswith('$'):
+            latex = latex[1:-1].strip()
+        return latex
+
+    @classmethod
+    def _sd_attachment_index(cls, attachments: list) -> dict:
+        """Map a file basename → {'url', 'type', 'filename', 'filesize'}.
+
+        Elsevier ships several renditions of the same asset::
+
+            1-s2.0-<PII>-gr002.jpg       IMAGE-DOWNSAMPLED
+            1-s2.0-<PII>-gr002_lrg.jpg   IMAGE-HIGH-RES     ← preferred
+            1-s2.0-<PII>-gr002.sml       IMAGE-THUMBNAIL    ← skipped
+            1-s2.0-<PII>-mmc1.pdf        APPLICATION        ← supplemental
+
+        High-res variants carry a ``_lrg`` suffix; index them under the plain
+        basename so a body ``link locator="gr002"`` resolves to the best copy.
+        """
+        rank = {
+            'IMAGE-HIGH-RES': 3,
+            'IMAGE-DOWNSAMPLED': 2,
+            'APPLICATION': 2,
+            'IMAGE-THUMBNAIL': 0,   # never worth downloading
+        }
+        idx = {}
+        for att in attachments or []:
+            eid = (att.get('attachment-eid') or '').strip()
+            base = (att.get('file-basename') or '').strip()
+            atype = (att.get('attachment-type') or '').strip()
+            if not eid or not base:
+                continue
+            score = rank.get(atype, 1)
+            if score <= 0:
+                continue
+            key = base[:-4] if base.endswith('_lrg') else base
+            prev = idx.get(key)
+            if prev is not None and prev['_score'] >= score:
+                continue
+            idx[key] = {
+                '_score': score,
+                'url': cls.SD_ATTACHMENT_BASE + eid,
+                'type': atype,
+                'filename': att.get('filename') or base,
+                'filesize': att.get('filesize') or '',
+                'eid': eid,
+            }
+        return idx
+
+    @classmethod
+    def _sd_float_index(cls, floats: list) -> dict:
+        """Map float id (fig001 / tbl001) → the float node."""
+        idx = {}
+        for f in floats or []:
+            fid = ((f.get('$') or {}).get('id') or '').strip()
+            if fid:
+                idx[fid] = f
+        return idx
+
+    # ---- xocs → markdown ---------------------------------------------
+
+    @classmethod
+    def _xocs_render(cls, node, ctx: dict, depth: int = 0) -> str:
+        """Recursively render an xocs node to Markdown.
+
+        ``ctx`` carries the attachment index, float index, heading base level
+        and the set of float ids already emitted (so a float rendered at its
+        anchor isn't repeated in the trailing sweep).
+        """
+        if node is None:
+            return ''
+        if isinstance(node, list):
+            return ''.join(cls._xocs_render(n, ctx, depth) for n in node)
+        if isinstance(node, str):
+            return node
+        if not isinstance(node, dict):
+            return ''
+
+        name = node.get('#name') or ''
+        attrs = node.get('$') or {}
+        kids = node.get('$$')
+        text = node.get('_')
+
+        def inner(d=depth):
+            if kids:
+                return ''.join(cls._xocs_render(k, ctx, d) for k in kids)
+            return text or ''
+
+        if name in cls._XOCS_SKIP:
+            return ''
+
+        if name == '__text__':
+            return text or ''
+
+        # ---- math ----
+        if name == 'math':
+            latex = cls._xocs_math_latex(node)
+            return f' ${latex}$ ' if latex else ''
+
+        if name == 'formula':
+            label, math_node = '', None
+            for k in (kids or []):
+                kn = k.get('#name')
+                if kn == 'label':
+                    label = (k.get('_') or '').strip()
+                elif kn == 'math':
+                    math_node = k
+            if math_node is None:
+                return inner()
+            latex = cls._xocs_math_latex(math_node, display=True)
+            if not latex:
+                return ''
+            tail = f' \\quad {label}' if label else ''
+            return f'\n\n$$\n{latex}{tail}\n$$\n\n'
+
+        # ---- inline formatting ----
+        if name in cls._XOCS_INLINE_WRAP:
+            pre, suf = cls._XOCS_INLINE_WRAP[name]
+            body = inner().strip()
+            return f'{pre}{body}{suf}' if body else ''
+
+        if name == 'hsp':
+            return ' '
+
+        if name in ('cross-ref', 'cross-refs'):
+            return (text or inner() or '').strip()
+
+        if name == 'inter-ref':
+            href = (attrs.get('href') or '').strip()
+            label = (text or inner() or href).strip()
+            if href.startswith('mailto:'):
+                return label
+            return f'[{label}]({href})' if href else label
+
+        # ---- headings / sections ----
+        if name == 'section':
+            label, title = '', ''
+            rest = []
+            for k in (kids or []):
+                kn = k.get('#name')
+                if kn == 'label' and not label:
+                    label = (k.get('_') or '').strip()
+                elif kn == 'section-title' and not title:
+                    title = cls._xocs_render(k, ctx, depth).strip()
+                else:
+                    rest.append(k)
+            out = ''
+            if title:
+                hashes = '#' * min(ctx.get('base_level', 3) + depth, 6)
+                heading = f'{label} {title}'.strip() if label else title
+                out += f'\n\n{hashes} {heading}\n\n'
+            out += ''.join(cls._xocs_render(k, ctx, depth + 1) for k in rest)
+            return out
+
+        if name == 'section-title':
+            return (text or inner() or '').strip()
+
+        if name in ('appendices', 'acknowledgment', 'conflict-of-interest',
+                    'ack', 'appendix'):
+            titles = {
+                'acknowledgment': 'Acknowledgements',
+                'ack': 'Acknowledgements',
+                'conflict-of-interest': 'Declaration of competing interest',
+                'appendices': 'Appendix',
+                'appendix': 'Appendix',
+            }
+            hashes = '#' * min(ctx.get('base_level', 3), 6)
+            has_own_title = any(
+                (k.get('#name') == 'section-title') for k in (kids or [])
+            )
+            head = '' if has_own_title else f'\n\n{hashes} {titles.get(name, name)}\n\n'
+            return head + inner(depth)
+
+        if name == 'para':
+            body = inner().strip()
+            return f'\n\n{body}\n\n' if body else ''
+
+        # ---- lists ----
+        if name == 'list':
+            items = [k for k in (kids or []) if k.get('#name') == 'list-item']
+            pieces = []
+            for i, item in enumerate(items, 1):
+                pieces.append(cls._xocs_render_list_item(item, ctx, depth, i))
+            return '\n' + '\n'.join(p for p in pieces if p) + '\n'
+
+        if name == 'list-item':
+            return cls._xocs_render_list_item(node, ctx, depth, 1)
+
+        # ---- figures / floats ----
+        if name == 'inline-figure':
+            return cls._xocs_render_inline_figure(node, ctx)
+
+        if name == 'float-anchor':
+            refid = (attrs.get('refid') or '').strip()
+            return cls._xocs_render_float(refid, ctx, depth)
+
+        if name in ('figure', 'table'):
+            fid = (attrs.get('id') or '').strip()
+            return cls._xocs_render_float_node(node, ctx, depth, fid)
+
+        if name == 'e-component':
+            return cls._xocs_render_e_component(node, ctx)
+
+        if name == 'link':
+            # A bare link outside inline-figure — resolve to an image if we can.
+            loc = (attrs.get('locator') or '').strip()
+            hit = ctx['attachments'].get(loc)
+            if hit and hit['type'] != 'APPLICATION':
+                ctx['inline_images'].append(hit['url'])
+                return f'\n\n![]({hit["url"]})\n\n'
+            return ''
+
+        if name in cls._XOCS_TRANSPARENT or name in ('body', 'content'):
+            return inner(depth)
+
+        if name == 'label':
+            return (text or inner() or '').strip()
+
+        # Unknown node — render children so nothing silently disappears.
+        return inner(depth)
+
+    @classmethod
+    def _xocs_render_list_item(cls, item, ctx: dict, depth: int, ordinal: int) -> str:
+        """Render one <list-item>, preserving nesting via indentation."""
+        label, body_parts = '', []
+        for k in (item.get('$$') or []):
+            if k.get('#name') == 'label' and not label:
+                label = (k.get('_') or '').strip()
+            else:
+                body_parts.append(cls._xocs_render(k, ctx, depth + 1))
+        body = ''.join(body_parts).strip()
+        if not body and not label:
+            return ''
+        indent = '    ' * ctx.get('list_depth', 0)
+        bullet = label if label else f'{ordinal}.'
+        # Collapse the leading blank lines a nested <para> introduces, then
+        # re-indent continuation lines so the markdown list stays intact.
+        lines = [ln for ln in body.split('\n')]
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if not lines:
+            return ''
+        first, rest = lines[0], lines[1:]
+        out = f'{indent}- {bullet} {first}'.rstrip()
+        for ln in rest:
+            out += f'\n{indent}  {ln}' if ln.strip() else '\n'
+        return out
+
+    @classmethod
+    def _xocs_render_inline_figure(cls, node, ctx: dict) -> str:
+        """<inline-figure><link locator="fx003"/></inline-figure> → ![](url).
+
+        These are the un-numbered in-text illustrations (program listings,
+        algorithm cycles) that carry no Fig. N label.
+        """
+        loc = ''
+        for k in (node.get('$$') or []):
+            if k.get('#name') == 'link':
+                loc = ((k.get('$') or {}).get('locator') or '').strip()
+                break
+        if not loc:
+            return ''
+        hit = ctx['attachments'].get(loc)
+        if not hit:
+            return ''
+        ctx['inline_images'].append(hit['url'])
+        return f'\n\n![]({hit["url"]})\n\n'
+
+    @classmethod
+    def _xocs_render_float(cls, refid: str, ctx: dict, depth: int) -> str:
+        """Render the float referenced by a <float-anchor refid="…"/>."""
+        if not refid:
+            return ''
+        node = ctx['floats'].get(refid)
+        if node is None or refid in ctx['emitted_floats']:
+            return ''
+        return cls._xocs_render_float_node(node, ctx, depth, refid)
+
+    @classmethod
+    def _xocs_render_float_node(cls, node, ctx: dict, depth: int, fid: str) -> str:
+        """Render a <figure> or <table> float: label + caption + content."""
+        if fid:
+            if fid in ctx['emitted_floats']:
+                return ''
+            ctx['emitted_floats'].add(fid)
+
+        kind = node.get('#name')
+        label, caption_md, locator, table_node = '', '', '', None
+        footnotes = []
+        for k in (node.get('$$') or []):
+            kn = k.get('#name')
+            if kn == 'label' and not label:
+                label = (k.get('_') or '').strip()
+            elif kn == 'caption':
+                caption_md = cls._xocs_render(k, ctx, depth).strip()
+            elif kn == 'link' and not locator:
+                locator = ((k.get('$') or {}).get('locator') or '').strip()
+            elif kn == 'tgroup':
+                table_node = k
+            elif kn in ('table-footnote', 'legend'):
+                fn = cls._xocs_render(k, ctx, depth).strip()
+                if fn:
+                    footnotes.append(fn)
+
+        caption_md = re.sub(r'\s+', ' ', caption_md).strip()
+        out = '\n\n'
+        if label and caption_md:
+            out += f'**{label}.** {caption_md}\n\n'
+        elif label:
+            out += f'**{label}.**\n\n'
+        elif caption_md:
+            out += f'**{caption_md}**\n\n'
+
+        if kind == 'figure' and locator:
+            hit = ctx['attachments'].get(locator)
+            if hit:
+                alt = label or 'Figure'
+                out += f'![{alt}]({hit["url"]})\n\n'
+                ctx['figures'].append({
+                    'id': fid, 'label': label,
+                    'caption': caption_md, 'url': hit['url'],
+                })
+        elif kind == 'table' and table_node is not None:
+            tbl = cls._xocs_table_to_md(table_node, ctx, depth)
+            if tbl:
+                out += tbl + '\n\n'
+
+        for fn in footnotes:
+            out += f'**Note:** {fn}\n\n'
+        return out
+
+    @classmethod
+    def _xocs_table_to_md(cls, tgroup, ctx: dict, depth: int) -> str:
+        """Convert a CALS <tgroup> to a Markdown table."""
+        def cells(row):
+            out = []
+            for e in (row.get('$$') or []):
+                if e.get('#name') != 'entry':
+                    continue
+                txt = cls._xocs_render(e, ctx, depth).strip()
+                txt = re.sub(r'\s+', ' ', txt).replace('|', r'\|')
+                out.append(txt)
+            return out
+
+        header, body = [], []
+        for part in (tgroup.get('$$') or []):
+            pn = part.get('#name')
+            if pn == 'thead':
+                for r in (part.get('$$') or []):
+                    if r.get('#name') == 'row':
+                        header.append(cells(r))
+            elif pn == 'tbody':
+                for r in (part.get('$$') or []):
+                    if r.get('#name') == 'row':
+                        body.append(cells(r))
+
+        rows = header + body
+        if not rows:
+            return ''
+        width = max(len(r) for r in rows)
+        rows = [r + [''] * (width - len(r)) for r in rows]
+
+        lines = []
+        if header:
+            lines.append('| ' + ' | '.join(rows[0]) + ' |')
+            lines.append('|' + '|'.join(['---'] * width) + '|')
+            data = rows[1:]
+        else:
+            lines.append('| ' + ' | '.join([''] * width) + ' |')
+            lines.append('|' + '|'.join(['---'] * width) + '|')
+            data = rows
+        for r in data:
+            lines.append('| ' + ' | '.join(r) + ' |')
+        return '\n'.join(lines)
+
+    @classmethod
+    def _xocs_render_e_component(cls, node, ctx: dict) -> str:
+        """<e-component> — a supplemental-material reference in the body."""
+        attrs = node.get('$') or {}
+        label, caption, locator = '', '', (attrs.get('id') or '').strip()
+        for k in (node.get('$$') or []):
+            kn = k.get('#name')
+            if kn == 'label' and not label:
+                label = (k.get('_') or '').strip()
+            elif kn == 'caption':
+                caption = cls._xocs_render(k, ctx, 0).strip()
+            elif kn == 'link':
+                loc = ((k.get('$') or {}).get('locator') or '').strip()
+                if loc:
+                    locator = loc
+        hit = ctx['attachments'].get(locator) if locator else None
+        if hit:
+            ctx['supplemental'].append({
+                'url': hit['url'],
+                'label': label or locator,
+                'caption': caption,
+                'filename': hit['filename'],
+            })
+        bits = [b for b in (f'**{label}**' if label else '', caption) if b]
+        return ('\n\n' + ' '.join(bits) + '\n\n') if bits else ''
+
+    # ---- top-level body-JSON driver -----------------------------------
+
+    @classmethod
+    def render_body_json(cls, body_json: dict, base_level: int = 3) -> dict:
+        """Render a body-API JSON payload into markdown + asset links.
+
+        Returns ``{'body_md', 'figure_urls', 'supplemental_urls',
+        'supplemental_descriptions', 'inline_images'}``.
+        """
+        if not isinstance(body_json, dict):
+            return {
+                'body_md': '', 'figure_urls': {},
+                'supplemental_urls': [], 'supplemental_descriptions': {},
+                'inline_images': [],
+            }
+
+        attachments = cls._sd_attachment_index(body_json.get('attachments') or [])
+        ctx = {
+            'attachments': attachments,
+            'floats': cls._sd_float_index(body_json.get('floats') or []),
+            'base_level': base_level,
+            'list_depth': 0,
+            'emitted_floats': set(),
+            'figures': [],
+            'supplemental': [],
+            'inline_images': [],
+        }
+
+        body_md = cls._xocs_render(body_json.get('content') or [], ctx, 0)
+
+        # Floats never anchored in the body still belong in the output.
+        trailing = []
+        for fid, fnode in ctx['floats'].items():
+            if fid not in ctx['emitted_floats']:
+                trailing.append(cls._xocs_render_float_node(fnode, ctx, 0, fid))
+        if any(t.strip() for t in trailing):
+            body_md += '\n\n' + ''.join(trailing)
+
+        # Normalise whitespace: collapse 3+ blank lines, trim trailing spaces.
+        body_md = re.sub(r'[ \t]+\n', '\n', body_md)
+        body_md = re.sub(r'\n{3,}', '\n\n', body_md).strip()
+
+        # Figures → the {'fig_N': {...}} shape the download pipeline expects.
+        figure_urls = {}
+        for i, fig in enumerate(ctx['figures'], 1):
+            figure_urls[f'fig_{i}'] = {
+                'url': fig['url'],
+                'caption': fig['caption'],
+                'label': fig['label'],
+            }
+        # Un-numbered inline illustrations (fx001.gif …) download too.
+        seen_urls = {v['url'] for v in figure_urls.values()}
+        for url in ctx['inline_images']:
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            figure_urls[f'fig_{len(figure_urls) + 1}'] = {
+                'url': url, 'caption': '', 'label': '', 'inline': True,
+            }
+
+        # Supplemental: body-referenced <e-component>s first, then any
+        # APPLICATION attachment that wasn't referenced inline.
+        supp_urls, supp_desc = [], {}
+        for s in ctx['supplemental']:
+            if s['url'] in supp_desc:
+                continue
+            supp_urls.append(s['url'])
+            supp_desc[s['url']] = (s['caption'] or s['label']
+                                   or s['filename'] or 'Supplementary material')
+        for key, hit in attachments.items():
+            if hit['type'] != 'APPLICATION' or hit['url'] in supp_desc:
+                continue
+            supp_urls.append(hit['url'])
+            supp_desc[hit['url']] = hit['filename'] or key
+
+        return {
+            'body_md': body_md,
+            'figure_urls': figure_urls,
+            'supplemental_urls': supp_urls,
+            'supplemental_descriptions': supp_desc,
+            'inline_images': ctx['inline_images'],
+        }
+
+    async def _fetch_body_json(self, page, html_content: str) -> dict:
+        """Fetch + cache the sdfe/arp body JSON for the current article.
+
+        Returns the parsed payload, or ``{}`` when the token / PII can't be
+        resolved or the request fails (caller then falls back to the legacy
+        DOM walk).
+        """
+        try:
+            page_url = page.url or ''
+        except Exception:
+            page_url = ''
+
+        pii = self._extract_pii(html_content, page_url) or self._extract_pii(html_content)
+        token = self._extract_entitled_token(html_content)
+        if not pii or not token:
+            print(f"  ⚠️  body API 跳过：pii={'✓' if pii else '✗'} token={'✓' if token else '✗'}")
+            return {}
+
+        api_url = self._body_api_url(pii, token)
+        print(f"  ↪ 请求正文 API: /sdfe/arp/pii/{pii}/body")
+
+        # Issue the request from INSIDE the page via fetch(). Playwright's
+        # APIRequestContext shares cookies but not the page's JS/TLS
+        # fingerprint, and Elsevier answers it with 403. A same-origin
+        # in-page fetch inherits the exact session that just rendered the
+        # article, so it is accepted.
+        payload = None
+        try:
+            payload = await page.evaluate(
+                """async (url) => {
+                    try {
+                        const r = await fetch(url, {
+                            method: 'GET',
+                            credentials: 'include',
+                            headers: {'Accept': 'application/json'},
+                        });
+                        if (!r.ok) return {__err: 'status ' + r.status};
+                        return await r.json();
+                    } catch (e) {
+                        return {__err: String(e)};
+                    }
+                }""",
+                api_url,
+            )
+        except Exception as exc:
+            print(f"  ⚠️  body API in-page fetch 异常: {type(exc).__name__}: {str(exc)[:120]}")
+            payload = None
+
+        if isinstance(payload, dict) and payload.get('__err'):
+            print(f"  ⚠️  body API in-page fetch 失败: {payload['__err']}")
+            payload = None
+
+        # Fall back to the out-of-page request context (works on some
+        # mirrors / when the page navigated away mid-flight).
+        if payload is None:
+            try:
+                resp = await page.context.request.get(
+                    api_url,
+                    headers={
+                        'Accept': 'application/json',
+                        'Referer': page_url or f'https://www.sciencedirect.com/science/article/pii/{pii}',
+                    },
+                    timeout=60000,
+                )
+                if not resp.ok:
+                    print(f"  ⚠️  body API 返回 {resp.status}")
+                    return {}
+                payload = await resp.json()
+            except Exception as exc:
+                print(f"  ⚠️  body API 请求失败: {type(exc).__name__}: {str(exc)[:120]}")
+                return {}
+
+        if not isinstance(payload, dict) or not payload.get('content'):
+            print("  ⚠️  body API 响应缺少 content")
+            return {}
+
+        # Cache alongside page.html so the JSON can be re-inspected offline.
+        try:
+            if self.captured_data_dir:
+                out = Path(self.captured_data_dir) / 'body.json'
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=1),
+                    encoding='utf-8',
+                )
+                print(f"  ✓ body.json 已保存 ({out.stat().st_size:,} bytes)")
+        except Exception:
+            pass
+
+        return payload
+
     async def extract_metadata(self, page) -> dict:
         html_content = ''
         if page is not None:
@@ -1393,11 +2122,33 @@ class ScienceDirectHandler(PublisherHandler):
             figure_urls = {}
             supp_urls = []
             supp_descriptions = {}
-            if fulltext_html:
+
+            # ---- PRIMARY: body JSON API --------------------------------
+            # Preferred over the DOM walk because the API payload still
+            # carries source MathML; the rendered page (MathJax 3 CHTML
+            # since ~2023) has every LaTeX/MathML annotation stripped.
+            body_json = await self._fetch_body_json(page, fulltext_html)
+            if body_json:
+                rendered = self.render_body_json(body_json)
+                if rendered.get('body_md'):
+                    metadata['_body_md'] = rendered['body_md']
+                    figure_urls = rendered['figure_urls']
+                    supp_urls = rendered['supplemental_urls']
+                    supp_descriptions = rendered['supplemental_descriptions']
+                    print(
+                        f"  ✓ 正文来自 body API: {len(rendered['body_md']):,} 字符, "
+                        f"{len(figure_urls)} 图, {len(supp_urls)} 补充材料"
+                    )
+
+            # ---- FALLBACK: legacy DOM walk -----------------------------
+            if not metadata.get('_body_md') and fulltext_html:
+                print("  ↪ 回退到 DOM 提取路径")
                 figure_urls = self.extract_figures_from_html(fulltext_html)
                 supp_urls, supp_descriptions = self._extract_supplemental_from_html(
                     fulltext_html
                 )
+
+            if fulltext_html:
                 # Graphical abstract (e.g. ga1_lrg.jpg) is downloaded as key_image
                 # via the shared download pipeline (metadata['key_image_url']).
                 key_image_url = self.extract_graphical_abstract_url(fulltext_html)
@@ -1471,11 +2222,18 @@ class ScienceDirectHandler(PublisherHandler):
         # Abstract block: combine highlights + abstract + keywords (HTML-derived).
         abstract_md = ''
         body_md = ''
+        # Body from the sdfe/arp JSON API (rendered in extract_all) wins —
+        # it carries source MathML, so equations are real LaTeX. The HTML
+        # walk below only runs when the API path was unavailable.
+        api_body = (metadata.get('_body_md') or '').strip()
         if isinstance(article_text, str) and article_text.strip():
             if article_text.lstrip().startswith('<'):
-                abstract_md, body_md = self.extract_article_text_from_html(article_text)
+                abstract_md, html_body_md = self.extract_article_text_from_html(article_text)
+                body_md = api_body or html_body_md
             else:
-                body_md = article_text.strip()
+                body_md = api_body or article_text.strip()
+        else:
+            body_md = api_body
 
         # If extract_article_text_from_html missed the abstract, fall back to metadata.
         if not abstract_md and metadata.get('abstract'):
