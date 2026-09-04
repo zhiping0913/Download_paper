@@ -32,6 +32,7 @@ from publisher.wildcard import (
     generate_bibtex_key,
     generate_reference_text_from_crossref,
     init_extract_all_page,
+    render_heading_md,
     set_actual_base_url,
 )
 
@@ -417,12 +418,13 @@ class ScienceHandler(PublisherHandler):
                 continue
 
             if child.name in ('h2', 'h3', 'h4', 'h5'):
-                text = child.get_text(' ', strip=True)
-                text = re.sub(r'\s+', ' ', text).strip()
-                if not text:
-                    continue
                 level = '#' * min(int(child.name[1]) + 1, 6)
-                parts.append(f"{level} {text}")
+                heading_md = render_heading_md(
+                    child, level, converter=cls._convert_paragraph_to_md
+                )
+                if not heading_md:
+                    continue
+                parts.append(heading_md)
                 parts.append("")
                 continue
 

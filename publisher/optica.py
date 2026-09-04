@@ -25,6 +25,7 @@ from publisher.wildcard import (
     generate_bibtex_key,
     generate_reference_text_from_crossref,
     init_extract_all_page,
+    render_heading_md,
     set_actual_base_url,
 )
 
@@ -514,17 +515,14 @@ class OpticaHandler(PublisherHandler):
                     parts.append(p_md)
                     parts.append("")
 
-        elif element.name == 'h3':
-            h3_text = element.get_text(' ', strip=True)
-            h3_text = re.sub(r'\s+', ' ', h3_text).strip()
-            if h3_text:
-                parts.append(f"### {h3_text}")
-                parts.append("")
-
-        elif element.name == 'h4':
-            h4_text = element.get_text(' ', strip=True)
-            if h4_text:
-                parts.append(f"#### {h4_text}")
+        elif element.name in ('h2', 'h3', 'h4', 'h5'):
+            level_map = {'h2': '##', 'h3': '###', 'h4': '####', 'h5': '#####'}
+            level = level_map[element.name]
+            heading_md = render_heading_md(
+                element, level, converter=cls._convert_paragraph_to_md
+            )
+            if heading_md:
+                parts.append(heading_md)
                 parts.append("")
 
         elif element.name == 'table':

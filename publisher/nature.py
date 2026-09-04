@@ -780,15 +780,35 @@ class NatureHandler(PublisherHandler):
 
             stripped = paragraph_html.strip()
 
-            # Handle headings: extract text and format as markdown heading
+            # Handle headings: route through the shared MathJax pipeline so
+            # inline math / italics / sup-sub inside a title survive
+            # (get_text() would strip them, silently truncating headings like
+            # "Effect of B on ne τ").
             h_match = re.match(r'<h([2-6])[^>]*>(.*?)</h\1>', stripped, re.DOTALL)
             if h_match:
                 level = int(h_match.group(1))
-                heading_text = BeautifulSoup(h_match.group(2), 'html.parser').get_text(' ', strip=True)
-                heading_text = re.sub(r'\s+', ' ', heading_text).strip()
-                if heading_text:
-                    prefix = '#' * (level + 1)  # h2 → ###, h3 → ####
-                    return f"{prefix} {heading_text}"
+                prefix = '#' * (level + 1)  # h2 → ###, h3 → ####
+                inner_html = h_match.group(2).strip()
+                heading_md = ''
+                if inner_html:
+                    try:
+                        prepared, formulas = prepare_mathjax_html_fragment(
+                            f"<p>{inner_html}</p>", "NATUREHDR"
+                        )
+                        heading_md = convert_html_to_markdown(prepared)
+                        for _idx, _latex in enumerate(formulas):
+                            heading_md = heading_md.replace(
+                                f"NATUREHDR{_idx:03d}MATHEND", _latex
+                            )
+                        heading_md = cleanup_markdown(heading_md)
+                        heading_md = re.sub(r'\s+', ' ', heading_md).strip()
+                    except Exception:
+                        heading_md = ''
+                if not heading_md:
+                    heading_md = BeautifulSoup(inner_html, 'html.parser').get_text(' ', strip=True)
+                    heading_md = re.sub(r'\s+', ' ', heading_md).strip()
+                if heading_md:
+                    return f"{prefix} {heading_md}"
                 return ""
 
             # Handle figure blocks — emit the figcaption text as a bold heading,
