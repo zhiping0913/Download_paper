@@ -50,3 +50,6 @@ temp/
 # Downloaded papers
 papers/
 log/
+
+# 本机专用启动脚本（含个人 Chrome profile 路径，不入库）
+/launch.sh
