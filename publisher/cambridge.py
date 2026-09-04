@@ -386,7 +386,7 @@ class CambridgeHandler(PublisherHandler):
                     section_nodes.append(child)
                     continue
                 # Fallback: include any direct-child div with an h2/h3 heading
-                if child.find(['h2', 'h3'], recursive=False):
+                if child.find(['h2', 'h3', 'h4', 'h5', 'h6'], recursive=False):
                     section_nodes.append(child)
 
         for sec in section_nodes:
@@ -399,9 +399,13 @@ class CambridgeHandler(PublisherHandler):
             # Section heading — route through the same fragment converter as
             # body paragraphs so <math> / MathJax / italics survive in
             # titles like "Effect of B on n_e τ".
-            heading_tag = sec.find(['h2', 'h3', 'h4', 'h5'])
+            heading_tag = sec.find(['h2', 'h3', 'h4', 'h5', 'h6'])
             if heading_tag:
-                level_map = {'h2': '###', 'h3': '####', 'h4': '#####', 'h5': '######'}
+                # h2 → ###, h3 → ####, h4 → #####, h5/h6 → ######
+                level_map = {
+                    'h2': '###', 'h3': '####', 'h4': '#####',
+                    'h5': '######', 'h6': '######',
+                }
                 level = level_map.get(heading_tag.name, '####')
                 heading_md = render_heading_md(
                     heading_tag, level, converter=cls._convert_html_fragment_to_markdown

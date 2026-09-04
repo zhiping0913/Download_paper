@@ -303,7 +303,7 @@ class ScienceHandler(PublisherHandler):
         for child in abs_section.children:
             if not hasattr(child, 'name') or not child.name:
                 continue
-            if child.name in ('h2', 'h3'):
+            if child.name in ('h2', 'h3', 'h4', 'h5', 'h6'):
                 # Skip the "Abstract" heading itself; emit sub-headings as bold.
                 heading_text = child.get_text(' ', strip=True)
                 if heading_text and heading_text.lower() != 'abstract':
@@ -417,7 +417,7 @@ class ScienceHandler(PublisherHandler):
                 cls._walk_sci_body(child, parts, depth_offset + 1)
                 continue
 
-            if child.name in ('h2', 'h3', 'h4', 'h5'):
+            if child.name in ('h2', 'h3', 'h4', 'h5', 'h6'):
                 level = '#' * min(int(child.name[1]) + 1, 6)
                 heading_md = render_heading_md(
                     child, level, converter=cls._convert_paragraph_to_md
@@ -643,7 +643,7 @@ class ScienceHandler(PublisherHandler):
             for child in sec.children:
                 if not hasattr(child, 'name') or not child.name:
                     continue
-                if child.name in ('h2', 'h3', 'h4'):
+                if child.name in ('h2', 'h3', 'h4', 'h5', 'h6'):
                     text = child.get_text(' ', strip=True)
                     if text and text.lower() != 'summary':
                         summary_parts.append(f"**{text}**")
