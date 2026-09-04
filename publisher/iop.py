@@ -28,6 +28,7 @@ from publisher.wildcard import (
     init_extract_all_page,
     parse_citation_reference_string,
     prepare_mathjax_html_fragment,
+    render_heading_md,
     set_actual_base_url,
     generate_reference_text_from_crossref,
 )
@@ -201,11 +202,12 @@ class IOPHandler(PublisherHandler):
             recursive=False,
         ):
             if element.name in ('h2', 'h3', 'h4'):
-                heading_text = element.get_text(' ', strip=True)
-                heading_text = re.sub(r'\s+', ' ', heading_text or '').strip()
-                if heading_text:
-                    level = '#' * (int(element.name[1]) + 1)
-                    body_parts.extend([f"{level} {heading_text}", ""])
+                level = '#' * (int(element.name[1]) + 1)
+                heading_md = render_heading_md(
+                    element, level, converter=cls._convert_iop_paragraph_to_md
+                )
+                if heading_md:
+                    body_parts.extend([heading_md, ""])
 
             elif element.name == 'figure' and 'boxout' in element.get('class', []):
                 # Inline figures within the body — already handled by figure extraction,
@@ -281,11 +283,12 @@ class IOPHandler(PublisherHandler):
             recursive=False,
         ):
             if child.name in ('h3', 'h4'):
-                heading_text = child.get_text(' ', strip=True)
-                heading_text = re.sub(r'\s+', ' ', heading_text or '').strip()
-                if heading_text:
-                    level = '#' * (int(child.name[1]) + 1)
-                    body_parts.extend([f"{level} {heading_text}", ""])
+                level = '#' * (int(child.name[1]) + 1)
+                heading_md = render_heading_md(
+                    child, level, converter=cls._convert_iop_paragraph_to_md
+                )
+                if heading_md:
+                    body_parts.extend([heading_md, ""])
 
             elif child.name == 'p':
                 p_md = cls._convert_iop_paragraph_to_md(str(child))

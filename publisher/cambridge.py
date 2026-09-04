@@ -17,7 +17,7 @@ from html_to_md_converter import (
     remove_newlines_in_paragraph,
 )
 from publisher.base import PublisherHandler
-from publisher.wildcard import set_actual_base_url, init_extract_all_page, format_as_bibtex, generate_reference_text_from_crossref
+from publisher.wildcard import set_actual_base_url, init_extract_all_page, format_as_bibtex, generate_reference_text_from_crossref, render_heading_md
 
 
 class CambridgeHandler(PublisherHandler):
@@ -396,16 +396,18 @@ class CambridgeHandler(PublisherHandler):
             if sec_id == 'sec0' or 'abstract' in sec.get('class', []):
                 continue
 
-            # Section heading
+            # Section heading — route through the same fragment converter as
+            # body paragraphs so <math> / MathJax / italics survive in
+            # titles like "Effect of B on n_e τ".
             heading_tag = sec.find(['h2', 'h3', 'h4', 'h5'])
             if heading_tag:
-                heading_text = heading_tag.get_text(' ', strip=True)
-                heading_text = re.sub(r'\s+', ' ', heading_text or '').strip()
-                if heading_text:
-                    # h2 → ###, h3 → ####, h4 → #####, h5 → ######
-                    level_map = {'h2': '###', 'h3': '####', 'h4': '#####', 'h5': '######'}
-                    level = level_map.get(heading_tag.name, '####')
-                    body_parts.extend([f"{level} {heading_text}", ""])
+                level_map = {'h2': '###', 'h3': '####', 'h4': '#####', 'h5': '######'}
+                level = level_map.get(heading_tag.name, '####')
+                heading_md = render_heading_md(
+                    heading_tag, level, converter=cls._convert_html_fragment_to_markdown
+                )
+                if heading_md:
+                    body_parts.extend([heading_md, ""])
 
             # Process child elements: paragraphs, figure sections
             for child in sec.children:

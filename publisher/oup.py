@@ -30,6 +30,7 @@ from publisher.wildcard import (
     format_as_bibtex,
     generate_reference_text_from_crossref,
     init_extract_all_page,
+    render_heading_md,
     set_actual_base_url,
 )
 
@@ -619,6 +620,7 @@ class OupHandler(PublisherHandler):
             tag = child.name
 
             if tag in ('h2', 'h3', 'h4'):
+                # skip_headings check needs a plain lowercase string
                 heading_text = child.get_text(' ', strip=True)
                 heading_text = re.sub(r'\s+', ' ', heading_text or '').strip()
                 if not heading_text:
@@ -629,8 +631,12 @@ class OupHandler(PublisherHandler):
                 state['in_skipped'] = False
                 if 'abstract-title' in (child.get('class') or []):
                     continue
+                # Render via the shared heading helper so MathJax / <math>
+                # inside a title survives (get_text() would strip it).
                 level = '#' * (int(tag[1]) + 1)
-                body_parts.extend([f"{level} {heading_text}", ''])
+                heading_md = render_heading_md(child, level)
+                if heading_md:
+                    body_parts.extend([heading_md, ''])
                 continue
 
             if state['in_skipped']:

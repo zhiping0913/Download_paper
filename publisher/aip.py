@@ -536,11 +536,21 @@ class AIPHandler(PublisherHandler):
                 "",
             ])
 
+        # Heading levels we render:
+        #   h2 → ###   h3 → ####   h4 → #####
+        # data-section-title attr is only reliable on h2/h3 (jumplink headings);
+        # h4 subsection titles carry only the visible text, so accept them
+        # unconditionally.
+        _HEADING_LEVELS = {'h2': '###', 'h3': '####', 'h4': '#####'}
+
         seen_content_ids = set()
         article_nodes = soup.find_all(
             lambda tag: (
                 tag.name in {'h2', 'h3'}
                 and tag.get('data-section-title') is not None
+            ) or (
+                tag.name == 'h4'
+                and 'section-title' in (tag.get('class') or [])
             ) or (
                 tag.name == 'div'
                 and 'article-section-wrapper' in tag.get('class', [])
@@ -548,13 +558,29 @@ class AIPHandler(PublisherHandler):
         )
 
         for node in article_nodes:
-            if node.name in {'h2', 'h3'}:
-                heading = node.get('data-section-title') or node.get_text(' ', strip=True)
+            if node.name in _HEADING_LEVELS:
+                # Route the heading INNER HTML through the same paragraph
+                # pipeline as body text so <mjx-container> / <math> / <sup>
+                # get preserved (previously get_text() stripped them, so a
+                # heading like "B. Lawson's second insight: Dependence of
+                # fuel energy gain on T and n τ" was truncated at the
+                # first MathJax span).
+                inner_html = node.decode_contents().strip()
+                if inner_html:
+                    heading = cls._convert_aip_html_fragment_to_markdown(
+                        f"<p>{inner_html}</p>"
+                    )
+                else:
+                    heading = ''
+                # Fallback to data-section-title / plain text if the
+                # conversion produced nothing.
+                if not heading:
+                    heading = (node.get('data-section-title')
+                               or node.get_text(' ', strip=True) or '').strip()
                 heading = re.sub(r'\s+', ' ', heading or '').strip()
                 if not heading:
                     continue
-                level = "###" if node.name == 'h2' else "####"
-                body_parts.extend([f"{level} {heading}", ""])
+                body_parts.extend([f"{_HEADING_LEVELS[node.name]} {heading}", ""])
                 continue
 
             content_id = node.get('id')

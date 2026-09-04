@@ -184,6 +184,59 @@ def convert_html_fragment_to_markdown(html_fragment: str, placeholder_prefix: st
     return md
 
 
+def render_heading_md(heading_el, level_hashes: str,
+                      converter=None,
+                      placeholder_prefix: str = "MATH") -> str:
+    """Render an <hN> BeautifulSoup element to a markdown heading line.
+
+    Rationale: many publisher pages embed MathJax / <math> markup inside
+    section titles (e.g. AIP's h3 "Dependence of fuel energy gain on T
+    and n τ" wraps τ in an <mjx-container>). Calling ``get_text()``
+    strips the math outright, silently truncating the heading at the
+    first non-text child. Routing the heading's INNER HTML through the
+    same paragraph → MathJax-placeholder → pandoc pipeline used for
+    body text preserves formulas, italics, sup/sub, and inline refs.
+
+    Args:
+        heading_el: BeautifulSoup Tag for the <h2>/<h3>/... element.
+        level_hashes: markdown level string, e.g. "###" for h2 -> ###.
+        converter: optional callable(html_fragment) -> markdown. If not
+            supplied, defaults to convert_html_fragment_to_markdown.
+        placeholder_prefix: forwarded to the default converter.
+
+    Returns:
+        A "``{level_hashes}`` ``<rendered>``" string, or "" if the
+        heading is empty. Never returns a trailing blank line — the
+        caller is expected to add spacing.
+    """
+    if heading_el is None:
+        return ''
+    if converter is None:
+        def _default_conv(frag):
+            return convert_html_fragment_to_markdown(frag, placeholder_prefix)
+        converter = _default_conv
+
+    inner = ''
+    try:
+        inner = heading_el.decode_contents().strip()
+    except Exception:
+        inner = ''
+
+    rendered = ''
+    if inner:
+        try:
+            rendered = converter(f"<p>{inner}</p>") or ''
+        except Exception:
+            rendered = ''
+    if not rendered:
+        # Fallback to plain text — better a truncated heading than none.
+        rendered = heading_el.get_text(' ', strip=True)
+    rendered = re.sub(r'\s+', ' ', rendered or '').strip()
+    if not rendered:
+        return ''
+    return f"{level_hashes} {rendered}"
+
+
 # ------------------------------------------------------------------
 # Generic article body / abstract extraction
 # ------------------------------------------------------------------

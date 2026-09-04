@@ -27,6 +27,7 @@ from publisher.wildcard import (
     generate_bibtex_key,
     generate_reference_text_from_crossref,
     init_extract_all_page,
+    render_heading_md,
     set_actual_base_url,
 )
 
@@ -644,11 +645,15 @@ class ScienceDirectHandler(PublisherHandler):
 
             if child.name in ('h2', 'h3', 'h4', 'h5'):
                 flush()
-                heading = child.get_text(' ', strip=True)
-                heading = re.sub(r'\s+', ' ', heading or '').strip()
-                if heading and heading.lower() not in ('references', 'reference'):
-                    level = '#' * (int(child.name[1]) + 1)
-                    parts.append(f"{level} {heading}")
+                level = '#' * (int(child.name[1]) + 1)
+                heading_md = render_heading_md(
+                    child, level, converter=cls._convert_paragraph_to_md
+                )
+                # Skip standalone "References" heading — refs are emitted
+                # separately with their own section.
+                stripped = re.sub(r'^#+\s+', '', heading_md).strip().lower()
+                if heading_md and stripped not in ('references', 'reference'):
+                    parts.append(heading_md)
                     parts.append("")
                 continue
 

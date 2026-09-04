@@ -30,6 +30,7 @@ from publisher.wildcard import (
     format_as_bibtex,
     generate_reference_text_from_crossref,
     init_extract_all_page,
+    render_heading_md,
     set_actual_base_url,
 )
 
@@ -501,12 +502,12 @@ class MDPIHandler(PublisherHandler):
             classes = child.get('class') or []
 
             if tag in ('h2', 'h3', 'h4', 'h5', 'h6'):
-                text = re.sub(r'\s+', ' ',
-                              child.get_text(' ', strip=True) or '').strip()
-                if not text:
-                    continue
                 level = '#' * (int(tag[1]) + 1)
-                body_parts.extend([f"{level} {text}", ''])
+                heading_md = render_heading_md(
+                    child, level, converter=cls._convert_mdpi_fragment_to_md
+                )
+                if heading_md:
+                    body_parts.extend([heading_md, ''])
                 continue
 
             if tag == 'div':
