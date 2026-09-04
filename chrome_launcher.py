@@ -122,21 +122,30 @@ def launch_chrome(
     """
 
     if use_user_config:
-        # 使用用户的真实Chrome配置
+        # 使用用户的真实Chrome配置（chrome_launcher.py --user-config 或 config.py 显式请求）
         user_data_dir = CHROME_USER_DATA_DIR
         print(f"使用用户配置: {user_data_dir}")
     else:
-        # 创建临时目录
-        import tempfile
-        profile_root = os.environ.get("CHROME_PROFILE_ROOT")
-        if profile_root:
-            Path(profile_root).expanduser().mkdir(parents=True, exist_ok=True)
-            profile_root = str(Path(profile_root).expanduser().resolve())
-        user_data_dir = tempfile.mkdtemp(
-            prefix=f"chrome_{CHROME_DEBUG_PORT}_",
-            dir=profile_root,
-        )
-        print(f"创建临时配置: {user_data_dir}")
+        # 默认创建临时目录（隔离新 profile）。但是——如果用户在环境里显式设了
+        # CHROME_USER_DATA_DIR，就当作 opt-in 复用该目录（launch.sh 的常见用法：
+        # 指向一个专用的 ~/.config/google-chrome-scraping 让 cookies / Cloudflare
+        # 通过态跨轮次累积，避免每篇论文都要重新过挑战）。
+        explicit_env = os.environ.get("CHROME_USER_DATA_DIR", "").strip()
+        if explicit_env:
+            user_data_dir = str(Path(explicit_env).expanduser().resolve())
+            Path(user_data_dir).mkdir(parents=True, exist_ok=True)
+            print(f"使用环境变量指定的 profile: {user_data_dir}")
+        else:
+            import tempfile
+            profile_root = os.environ.get("CHROME_PROFILE_ROOT")
+            if profile_root:
+                Path(profile_root).expanduser().mkdir(parents=True, exist_ok=True)
+                profile_root = str(Path(profile_root).expanduser().resolve())
+            user_data_dir = tempfile.mkdtemp(
+                prefix=f"chrome_{CHROME_DEBUG_PORT}_",
+                dir=profile_root,
+            )
+            print(f"创建临时配置: {user_data_dir}")
 
     # 应用设置
     ensure_chrome_preferences(user_data_dir)
@@ -176,26 +185,32 @@ def launch_chrome(
     print(f"✓ Chrome 已启动 (PID: {proc.pid})")
     print(f"✓ 远程调试端口: {CHROME_DEBUG_PORT}")
 
-    # 等待启动
-    time.sleep(6)
-
-    # 验证连接
+    # 轮询 CDP 端口，最多等 20 秒（冷启动 profile 或大 restore-tabs 会拖时间）。
+    # 用 0.5 s 步长优于原来的固定 6 s sleep — 快 profile 3 s 内就通，慢 profile
+    # 也不会误报 “未响应”。
     import socket
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(5)
-        result = sock.connect_ex(('127.0.0.1', CHROME_DEBUG_PORT))
-        sock.close()
+    deadline = time.monotonic() + 20.0
+    ready = False
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            # Chrome 已退出（通常是同 --user-data-dir 已有实例，把 URL 转发给
+            # 现有 Chrome 后自杀）。CDP 永远不会起来。
+            print(f"⚠️  Chrome 进程已退出 (exit={proc.returncode})。"
+                  "常见原因：--user-data-dir 指向的 profile 正在被其它 Chrome 实例占用；"
+                  "换一个专用 scraping profile 或先关掉现有 Chrome 再试。")
+            return (proc, user_data_dir, not use_user_config) if return_details else proc
+        try:
+            with socket.create_connection(('127.0.0.1', CHROME_DEBUG_PORT), timeout=1):
+                ready = True
+                break
+        except OSError:
+            time.sleep(0.5)
 
-        if result == 0:
-            print("✓ Chrome CDP 端口已就绪")
-            return (proc, user_data_dir, not use_user_config) if return_details else proc
-        else:
-            print("⚠️  CDP 端口未响应，但Chrome已启动")
-            return (proc, user_data_dir, not use_user_config) if return_details else proc
-    except Exception as e:
-        print(f"⚠️  连接检查失败: {e}")
-        return (proc, user_data_dir, not use_user_config) if return_details else proc
+    if ready:
+        print(f"✓ Chrome CDP 端口已就绪 (等待 {time.monotonic() - (deadline - 20):.1f}s)")
+    else:
+        print("⚠️  CDP 端口 20s 内未响应，但 Chrome 仍在运行")
+    return (proc, user_data_dir, not use_user_config) if return_details else proc
 
 
 if __name__ == "__main__":
