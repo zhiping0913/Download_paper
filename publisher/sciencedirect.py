@@ -311,24 +311,70 @@ class ScienceDirectHandler(PublisherHandler):
             svg.decompose()
 
         # First pass: convert each <span class="math"> to a placeholder mapped to $...$.
+        # Try source-recovery in priority order:
+        #   1) <script type="math/mml">          MathJax 2.x embedded MathML
+        #   2) <span class="MathJax_SVG" data-mathml="…">  MathJax 2.x SVG rendering
+        #   3) bare <math>                       raw MathML (rare on SD)
+        #   4) <mjx-container data-latex="…">    MathJax 3 with LaTeX annotation
+        #   5) <mjx-assistive-mml> inside <mjx-container>  MathJax 3 accessibility MathML
+        #   6) placeholder built from data-semantic-speech-none + <mjx-speech>
+        #      — some newer SD papers ship MathJax 3 CHTML with NO source
+        #        annotation of any kind (data-latex missing, no assistive-mml,
+        #        no <math>, no <script> — the DOM only carries visual glyphs
+        #        and a semantic speech string). Emitting a "[Equation: …]"
+        #        text placeholder is worse than clean LaTeX but far better
+        #        than silently deleting the formula (previous behaviour),
+        #        which broke paragraph flow around every equation.
         inline_counter = [0]
         for math_span in soup.find_all('span', class_='math'):
             latex = ''
+            speech_fallback = ''
             script = math_span.find('script', attrs={'type': re.compile(r'math/m?ml')})
             if script and script.string:
                 latex = mathml_to_latex_pandoc(script.string)
-            else:
+            if not latex:
                 svg_span = math_span.find('span', class_='MathJax_SVG')
                 if svg_span and svg_span.get('data-mathml'):
                     latex = mathml_to_latex_pandoc(svg_span['data-mathml'])
-                else:
-                    math_tag = math_span.find('math')
-                    if math_tag:
-                        latex = mathml_to_latex_pandoc(str(math_tag))
-
             if not latex:
+                math_tag = math_span.find('math')
+                if math_tag:
+                    latex = mathml_to_latex_pandoc(str(math_tag))
+            if not latex:
+                mjx = math_span.find('mjx-container')
+                if mjx is not None:
+                    # 4) direct LaTeX annotation
+                    data_latex = (mjx.get('data-latex') or '').strip()
+                    if data_latex:
+                        latex = data_latex
+                    # 5) assistive MathML
+                    if not latex:
+                        assistive = mjx.find('mjx-assistive-mml')
+                        if assistive is not None:
+                            inner_math = assistive.find('math')
+                            src_ml = str(inner_math) if inner_math else str(assistive)
+                            latex = mathml_to_latex_pandoc(src_ml)
+                    # 6) speech-none placeholder — preserve paragraph flow when
+                    #    Elsevier's CHTML strips all source annotations
+                    if not latex:
+                        speech = (mjx.get('data-semantic-speech-none')
+                                  or mjx.get('data-semantic-speech') or '').strip()
+                        if not speech:
+                            speech_el = mjx.find('mjx-speech')
+                            if speech_el is not None:
+                                speech = speech_el.get_text(' ', strip=True)
+                        if speech:
+                            # Trim runaway aria-label repetition (some papers
+                            # include the speech twice via mark tags).
+                            speech = re.sub(r'\s+', ' ', speech)[:400]
+                            speech_fallback = f"\\text{{[math: {speech}]}}"
+
+            if not latex and not speech_fallback:
                 math_span.decompose()
                 continue
+
+            if speech_fallback and not latex:
+                latex = speech_fallback
 
             latex = latex.strip()
             if latex.startswith('$$') and latex.endswith('$$'):
