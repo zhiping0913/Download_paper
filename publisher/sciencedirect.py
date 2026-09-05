@@ -1336,7 +1336,7 @@ class ScienceDirectHandler(PublisherHandler):
     # Nodes whose children we render but that add no markup of their own.
     _XOCS_TRANSPARENT = {
         'display', 'sections', 'simple-para', 'caption', 'textbox-body',
-        'para-block', 'outline', 'entry-para', 'note-para', 'floats',
+        'para-block', 'outline', 'entry-para', 'floats',
         'nomenclature', 'glossary', 'textbox',
     }
 
@@ -1547,6 +1547,14 @@ class ScienceDirectHandler(PublisherHandler):
             return ' '
 
         if name in ('cross-ref', 'cross-refs'):
+            # A cross-ref pointing at a footnote id becomes a markdown
+            # footnote marker; everything else (equation / figure / citation
+            # refs) keeps rendering as its plain visible text.
+            refid = (attrs.get('refid') or '').strip()
+            num = (ctx.get('footnote_numbers') or {}).get(refid)
+            if num:
+                ctx['footnotes_used'].add(refid)
+                return f'[^{num}]'
             return (text or inner() or '').strip()
 
         if name == 'inter-ref':
@@ -1595,7 +1603,7 @@ class ScienceDirectHandler(PublisherHandler):
             head = '' if has_own_title else f'\n\n{hashes} {titles.get(name, name)}\n\n'
             return head + inner(depth)
 
-        if name == 'para':
+        if name in ('para', 'note-para'):
             body = inner().strip()
             return f'\n\n{body}\n\n' if body else ''
 
@@ -1825,18 +1833,70 @@ class ScienceDirectHandler(PublisherHandler):
         bits = [b for b in (f'**{label}**' if label else '', caption) if b]
         return ('\n\n' + ' '.join(bits) + '\n\n') if bits else ''
 
+    @staticmethod
+    def _xocs_footnote_index(footnotes: list) -> dict:
+        """Map footnote id (fn1, fn2, …) → sequential 1-based marker number.
+
+        The source labels can't be used as markers: Elsevier cycles †/‡ so
+        the same symbol repeats many times per article (fn1=†, fn2=‡,
+        fn3=† …). Numbering by array position gives each footnote a unique
+        markdown marker while preserving document order.
+        """
+        idx = {}
+        for node in footnotes or []:
+            fid = ((node.get('$') or {}).get('id') or '').strip()
+            if fid and fid not in idx:
+                idx[fid] = len(idx) + 1
+        return idx
+
+    @classmethod
+    def _xocs_render_footnotes(cls, footnotes: list, ctx: dict) -> str:
+        """Render the footnote array as pandoc-style ``[^N]: …`` definitions.
+
+        A footnote can hold several ``<note-para>`` blocks, each with its own
+        display equations (e.g. fn33 in 10.1016/B978-0-08-030275-1.50008-4
+        carries three). Continuation lines are indented four spaces so the
+        whole block stays bound to its marker instead of breaking out into
+        body text after the first line.
+        """
+        numbers = ctx.get('footnote_numbers') or {}
+        out = []
+        for node in footnotes or []:
+            fid = ((node.get('$') or {}).get('id') or '').strip()
+            num = numbers.get(fid)
+            if not num:
+                continue
+            # Skip <label> (†/‡) — the markdown marker replaces that glyph.
+            body = ''.join(
+                cls._xocs_render(k, ctx, 0)
+                for k in (node.get('$$') or [])
+                if k.get('#name') != 'label'
+            )
+            body = re.sub(r'[ \t]+\n', '\n', body)
+            body = re.sub(r'\n{3,}', '\n\n', body).strip()
+            if not body:
+                continue
+            lines = body.split('\n')
+            first = lines[0].strip()
+            rest = [('    ' + ln.rstrip()) if ln.strip() else '' for ln in lines[1:]]
+            block = f'[^{num}]: {first}'
+            if rest:
+                block += '\n' + '\n'.join(rest)
+            out.append(block)
+        return '\n\n'.join(out)
+
     # ---- top-level body-JSON driver -----------------------------------
 
     @classmethod
     def render_body_json(cls, body_json: dict, base_level: int = 3) -> dict:
         """Render a body-API JSON payload into markdown + asset links.
 
-        Returns ``{'body_md', 'figure_urls', 'supplemental_urls',
-        'supplemental_descriptions', 'inline_images'}``.
+        Returns ``{'body_md', 'footnotes_md', 'figure_urls',
+        'supplemental_urls', 'supplemental_descriptions', 'inline_images'}``.
         """
         if not isinstance(body_json, dict):
             return {
-                'body_md': '', 'figure_urls': {},
+                'body_md': '', 'footnotes_md': '', 'figure_urls': {},
                 'supplemental_urls': [], 'supplemental_descriptions': {},
                 'inline_images': [],
             }
@@ -1851,6 +1911,12 @@ class ScienceDirectHandler(PublisherHandler):
             'figures': [],
             'supplemental': [],
             'inline_images': [],
+            # Footnote ids are resolved before the walk so a cross-ref
+            # encountered mid-body already knows its marker number.
+            'footnote_numbers': cls._xocs_footnote_index(
+                body_json.get('footnotes') or []
+            ),
+            'footnotes_used': set(),
         }
 
         body_md = cls._xocs_render(body_json.get('content') or [], ctx, 0)
@@ -1900,8 +1966,13 @@ class ScienceDirectHandler(PublisherHandler):
             supp_urls.append(hit['url'])
             supp_desc[hit['url']] = hit['filename'] or key
 
+        footnotes_md = cls._xocs_render_footnotes(
+            body_json.get('footnotes') or [], ctx
+        )
+
         return {
             'body_md': body_md,
+            'footnotes_md': footnotes_md,
             'figure_urls': figure_urls,
             'supplemental_urls': supp_urls,
             'supplemental_descriptions': supp_desc,
@@ -2132,12 +2203,18 @@ class ScienceDirectHandler(PublisherHandler):
                 rendered = self.render_body_json(body_json)
                 if rendered.get('body_md'):
                     metadata['_body_md'] = rendered['body_md']
+                    if rendered.get('footnotes_md'):
+                        metadata['_footnotes_md'] = rendered['footnotes_md']
                     figure_urls = rendered['figure_urls']
                     supp_urls = rendered['supplemental_urls']
                     supp_descriptions = rendered['supplemental_descriptions']
+                    n_fn = rendered.get('footnotes_md', '').count('\n[^') + (
+                        1 if rendered.get('footnotes_md') else 0
+                    )
                     print(
                         f"  ✓ 正文来自 body API: {len(rendered['body_md']):,} 字符, "
-                        f"{len(figure_urls)} 图, {len(supp_urls)} 补充材料"
+                        f"{len(figure_urls)} 图, {len(supp_urls)} 补充材料, "
+                        f"{n_fn} 脚注"
                     )
 
             # ---- FALLBACK: legacy DOM walk -----------------------------
@@ -2294,6 +2371,13 @@ class ScienceDirectHandler(PublisherHandler):
             body_md or "[Article text not found.]",
             "",
         ])
+
+        # Footnotes: pandoc-style ``[^N]: …`` definitions matching the
+        # ``[^N]`` markers already inlined in the body. Placed after the
+        # article text so the definitions sit next to their references.
+        footnotes_md = (metadata.get('_footnotes_md') or '').strip()
+        if footnotes_md:
+            md_parts.extend(["---", "", "## Footnotes", "", footnotes_md, ""])
 
         # Supplemental block (currently always empty for ScienceDirect)
         supplemental_urls = kwargs.get('supplemental_urls', [])
