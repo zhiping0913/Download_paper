@@ -1721,6 +1721,7 @@ class ScienceDirectHandler(PublisherHandler):
         kind = node.get('#name')
         label, caption_md, locator, table_node = '', '', '', None
         footnotes = []
+        sub_floats = []
         for k in (node.get('$$') or []):
             kn = k.get('#name')
             if kn == 'label' and not label:
@@ -1731,6 +1732,14 @@ class ScienceDirectHandler(PublisherHandler):
                 locator = ((k.get('$') or {}).get('locator') or '').strip()
             elif kn == 'tgroup':
                 table_node = k
+            elif kn in ('figure', 'table'):
+                # Composite float: a parent <figure> holding its own overall
+                # label/caption plus one nested <figure> per panel, each with
+                # its own label ("Fig. 4(a)"), caption and image link. The
+                # parent has NO direct <link>, so without this the whole
+                # group rendered as a bare caption and every panel image was
+                # dropped (e.g. gr4a–gr4d in 10.1016/j.cpc.2018.03.018).
+                sub_floats.append(k)
             elif kn in ('table-footnote', 'legend'):
                 fn = cls._xocs_render(k, ctx, depth).strip()
                 if fn:
@@ -1758,6 +1767,12 @@ class ScienceDirectHandler(PublisherHandler):
             tbl = cls._xocs_table_to_md(table_node, ctx, depth)
             if tbl:
                 out += tbl + '\n\n'
+
+        # Render nested panels after the group's own label/caption so each
+        # sub-figure contributes its image and its own downloadable entry.
+        for sub in sub_floats:
+            sub_id = ((sub.get('$') or {}).get('id') or '').strip()
+            out += cls._xocs_render_float_node(sub, ctx, depth, sub_id)
 
         for fn in footnotes:
             out += f'**Note:** {fn}\n\n'
