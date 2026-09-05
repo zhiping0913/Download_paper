@@ -810,6 +810,97 @@ class APSHandler(PublisherHandler):
 
         return captured
 
+    async def _fetch_fulltext_json(self, page, doi: str) -> dict:
+        """Actively fetch the APS fulltext JSON for *doi*.
+
+        The passive network capture in ``setup_network_capture`` only records
+        responses that happen to fly past. That works when doi.org lands the
+        browser straight on the fulltext view, but for many articles it lands
+        on ``/abstract/{doi}`` instead — and that page never XHRs the body, so
+        ``captured['fulltext_data']`` stays empty and the generated paper.md
+        has an empty "Article Text" section.
+
+        ``journals.aps.org/{prefix}/fulltext/{doi}`` content-negotiates: it
+        serves the reading view as HTML, and the same component tree as JSON
+        when asked for ``application/json``. Request it from INSIDE the page
+        so the call is same-origin and inherits the session that already
+        rendered the article — and, unlike a navigation, leaves the current
+        page intact for the PDF-button lookup and supplemental flow that run
+        afterwards.
+
+        Returns the parsed payload, or ``{}`` on any failure.
+        """
+        if not doi:
+            return {}
+
+        url = f"https://journals.aps.org/{self.journal_prefix}/fulltext/{doi}"
+        print(f"  ↪ 主动请求 fulltext: /{self.journal_prefix}/fulltext/{doi}")
+
+        payload = None
+        try:
+            payload = await page.evaluate(
+                """async (url) => {
+                    try {
+                        const r = await fetch(url, {
+                            method: 'GET',
+                            credentials: 'include',
+                            headers: {'Accept': 'application/json'},
+                        });
+                        if (!r.ok) return {__err: 'status ' + r.status};
+                        const ct = r.headers.get('content-type') || '';
+                        if (ct.indexOf('json') === -1) {
+                            return {__err: 'content-type ' + ct};
+                        }
+                        return await r.json();
+                    } catch (e) {
+                        return {__err: String(e)};
+                    }
+                }""",
+                url,
+            )
+        except Exception as exc:
+            print(f"  ⚠️  fulltext in-page fetch 异常: {type(exc).__name__}: {str(exc)[:120]}")
+            payload = None
+
+        if isinstance(payload, dict) and payload.get('__err'):
+            print(f"  ⚠️  fulltext in-page fetch 失败: {payload['__err']}")
+            payload = None
+
+        # Fall back to the out-of-page request context.
+        if payload is None:
+            try:
+                resp = await page.context.request.get(
+                    url,
+                    headers={'Accept': 'application/json', 'Referer': url},
+                    timeout=60000,
+                )
+                if not resp.ok:
+                    print(f"  ⚠️  fulltext 返回 {resp.status}")
+                    return {}
+                payload = await resp.json()
+            except Exception as exc:
+                print(f"  ⚠️  fulltext 请求失败: {type(exc).__name__}: {str(exc)[:120]}")
+                return {}
+
+        if not isinstance(payload, dict) or not payload:
+            print("  ⚠️  fulltext 响应为空")
+            return {}
+
+        # Cache alongside the other captures so it can be re-inspected offline.
+        try:
+            if self.captured_data_dir:
+                out = Path(self.captured_data_dir) / 'fulltext.json'
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=1),
+                    encoding='utf-8',
+                )
+                print(f"  ✓ fulltext.json 已保存 ({out.stat().st_size:,} bytes)")
+        except Exception:
+            pass
+
+        return payload
+
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
         """Execute complete extraction flow
 
@@ -941,22 +1032,31 @@ class APSHandler(PublisherHandler):
                 doi_match = re.search(r'10\.1103/([A-Za-z]+)', actual_doi)
                 if doi_match:
                     journal_name = doi_match.group(1)
+                    # Keys are the DOI's journal token, lowercased:
+                    #   10.1103/PhysRevX.7.041003 -> 'physrevx'
+                    # Four keys used to be spelled in a form the DOI never
+                    # produces ('physreviewx', 'physrevphysedures',
+                    # 'physrevstab', 'physrevstper'), so those journals never
+                    # matched and silently fell back to the constructor
+                    # default 'prl' — which then built wrong /pdf/ and
+                    # /supplemental/ URLs.
                     APS_JOURNAL_PREFIXES = {
+                        'physrev': 'pr',                    # pre-1970 Physical Review
                         'physrevlett': 'prl',
-                        'physrevapplied': 'prapplied',
-                        'physreviewx': 'prx',
+                        'physrevx': 'prx',
                         'physreva': 'pra',
                         'physrevb': 'prb',
                         'physrevc': 'prc',
                         'physrevd': 'prd',
                         'physreve': 'pre',
+                        'physrevapplied': 'prapplied',
                         'physrevresearch': 'prresearch',
                         'physrevfluids': 'prfluids',
                         'physrevmaterials': 'prmaterials',
                         'physrevaccelbeams': 'prab',
-                        'physrevphysedures': 'prper',
-                        'physrevstab': 'prstab',
-                        'physrevstper': 'prstper',
+                        'physrevphyseducres': 'prper',
+                        'physrevstaccelbeams': 'prstab',
+                        'physrevstphyseducres': 'prstper',
                         'revmodphys': 'rmp',
                     }
                     # Case-insensitive lookup
@@ -966,6 +1066,14 @@ class APSHandler(PublisherHandler):
         if detected_prefix:
             self.journal_prefix = detected_prefix
             print(f"  ✓ 期刊前缀: {self.journal_prefix}")
+
+        # 5.5 Actively fetch the fulltext when the passive capture missed it.
+        # Runs after the journal prefix is known (the URL needs it) and before
+        # figure extraction below, which reads fulltext_data. Uses an in-page
+        # fetch so the current page — still the abstract view — stays put for
+        # the PDF-button lookup and supplemental flow that follow.
+        if not fulltext_data:
+            fulltext_data = await self._fetch_fulltext_json(page, self.doi or doi)
 
         # 6. Extract PDF URL from <a class="sm-primary-button">, fallback to journal pattern
         pdf_url = None
