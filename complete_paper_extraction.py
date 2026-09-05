@@ -19,6 +19,7 @@ import random
 import re
 import requests
 import shutil
+import time
 import sys
 import signal
 import subprocess
@@ -53,6 +54,9 @@ from config import (
     BATCH_SLEEP_MAX,
     BATCH_SLEEP_MIN,
     CHROME_DEBUG_PORT,
+    CHROME_PROFILE,
+    CHROME_PROFILE_REFRESH_EVERY,
+    CHROME_PROFILE_SOURCE_DIR,
     OUTPUT_DIR_DEFAULT,
     SAVE_WITHOUT_REFERENCES,
 )
@@ -624,6 +628,7 @@ class SharedBrowserSession:
         self.headed_browser = None
         self.headed_context = None
         self.latest_headed_state = None
+        self.papers_since_profile_reset = 0
 
     @staticmethod
     def _chrome_ready() -> bool:
@@ -811,6 +816,143 @@ class SharedBrowserSession:
         self.owns_headed_profile = False
         self.headed_context = None
         self.headed_browser = None
+
+    # ------------------------------------------------------------------
+    # Scraping-profile hygiene
+    # ------------------------------------------------------------------
+    # Files worth carrying over from the clean profile. Cookies bring the
+    # publisher sessions and Cloudflare clearance; "Local State" holds the key
+    # those cookies are encrypted with (copy one without the other and every
+    # cookie decodes to garbage); Preferences carries the PDF-download
+    # settings ensure_chrome_preferences() would otherwise have to rebuild.
+    # Deliberately NOT copied: History, Cache, extensions, Sessions — bulky,
+    # and the point of the reset is to shed accumulated state.
+    _PROFILE_SEED_FILES = (
+        'Cookies',
+        'Cookies-journal',
+        'Login Data',
+        'Preferences',
+        'Secure Preferences',
+        'Web Data',
+    )
+    _PROFILE_SEED_ROOT_FILES = ('Local State',)
+
+    @staticmethod
+    def _seed_scraping_profile(target: Path, source: Path, profile_name: str) -> bool:
+        """Copy a minimal working set from *source* profile into *target*."""
+        src_inner = source / profile_name
+        if not src_inner.is_dir():
+            print(f"  ⚠️  源 profile 不存在: {src_inner}")
+            return False
+
+        dst_inner = target / profile_name
+        dst_inner.mkdir(parents=True, exist_ok=True)
+
+        copied = []
+        for name in SharedBrowserSession._PROFILE_SEED_FILES:
+            src_file = src_inner / name
+            if not src_file.exists():
+                continue
+            try:
+                shutil.copy2(src_file, dst_inner / name)
+                copied.append(name)
+            except Exception:
+                pass
+        for name in SharedBrowserSession._PROFILE_SEED_ROOT_FILES:
+            src_file = source / name
+            if not src_file.exists():
+                continue
+            try:
+                shutil.copy2(src_file, target / name)
+                copied.append(name)
+            except Exception:
+                pass
+
+        if not copied:
+            print(f"  ⚠️  未能从 {source} 复制任何文件")
+            return False
+        print(f"  ✓ 已从干净 profile 播种: {', '.join(copied)}")
+        return True
+
+    def reset_scraping_profile(self, reason: str = '') -> bool:
+        """Tear down Chrome, wipe the scraping profile, re-seed it.
+
+        Chrome holds an exclusive lock on its user-data-dir, so the running
+        instance has to go first; the next ensure_headed_chrome() starts a
+        fresh one against the clean directory.
+
+        Returns True when the profile was actually replaced.
+        """
+        scraping_dir = (os.environ.get('CHROME_USER_DATA_DIR', '') or '').strip()
+        if not scraping_dir:
+            print("  ⚠️  跳过 profile 重置: 未设置 CHROME_USER_DATA_DIR"
+                  "（当前用的是每次新建的临时 profile，本就没有累积）")
+            return False
+
+        target = Path(scraping_dir).expanduser().resolve()
+        source = Path(CHROME_PROFILE_SOURCE_DIR).expanduser().resolve()
+
+        # Never let the reset touch the profile it copies from — that would
+        # delete the user's own Chrome data.
+        if target == source:
+            print(f"  ⚠️  跳过 profile 重置: 抓取 profile 与源 profile 是同一目录 ({target})")
+            return False
+        try:
+            if source in target.parents:
+                print(f"  ⚠️  跳过 profile 重置: 抓取 profile 位于源 profile 内部 ({target})")
+                return False
+        except Exception:
+            pass
+
+        print()
+        print("=" * 80)
+        print(f"🔄 重置抓取 profile{f' ({reason})' if reason else ''}")
+        print(f"   目标: {target}")
+        print(f"   来源: {source}")
+        print("=" * 80)
+
+        # 1. Chrome must release the profile lock first.
+        self.headed_context = None
+        if self.headed_browser is not None:
+            self.headed_browser = None
+        self.cleanup_owned_chrome_sync()
+        time.sleep(2)
+
+        # 2. Wipe.
+        try:
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+        except Exception as exc:
+            print(f"  ⚠️  删除旧 profile 失败: {exc}")
+            return False
+
+        # 3. Re-seed.
+        target.mkdir(parents=True, exist_ok=True)
+        ok = self._seed_scraping_profile(target, source, CHROME_PROFILE)
+        self.papers_since_profile_reset = 0
+        print("=" * 80)
+        print()
+        return ok
+
+    def note_paper_processed(self) -> bool:
+        """Count a finished paper; reset the profile when the quota is hit.
+
+        Returns True when a reset actually happened.
+        """
+        if CHROME_PROFILE_REFRESH_EVERY <= 0:
+            return False
+        # Only papers that actually drove the headed Chrome wear the profile.
+        if self.headed_process is None and not self._check_cdp_port():
+            return False
+        self.papers_since_profile_reset += 1
+        if self.papers_since_profile_reset < CHROME_PROFILE_REFRESH_EVERY:
+            remaining = CHROME_PROFILE_REFRESH_EVERY - self.papers_since_profile_reset
+            print(f"  ℹ️  profile 已用于 {self.papers_since_profile_reset} 篇，"
+                  f"再 {remaining} 篇后重置")
+            return False
+        return self.reset_scraping_profile(
+            reason=f"每 {CHROME_PROFILE_REFRESH_EVERY} 篇"
+        )
 
     async def close(self):
         if self.headless_context is not None:
@@ -3295,6 +3437,16 @@ JSON 格式:
                         import traceback
                         traceback.print_exc()
                         fail_count += 1
+
+                    # Retire the scraping profile every N papers. A profile
+                    # driven over CDP picks up automation fingerprints as it
+                    # goes, until Cloudflare stops letting it through; wiping
+                    # and re-seeding from the clean profile restores the pass
+                    # rate. No-op unless CHROME_PROFILE_REFRESH_EVERY is set.
+                    try:
+                        browser_session.note_paper_processed()
+                    except Exception as exc:
+                        print(f"  ⚠️  profile 重置检查失败: {exc}")
 
                     # 批量处理防拉黑：随机睡眠 (最后一条不需要)
                     if BATCH_SLEEP_ENABLED and i < len(dois):
