@@ -1991,6 +1991,22 @@ async def complete_extraction_workflow(
         print(f"Step 2️⃣  使用{publisher.upper()}Handler完整提取...")
         print("=" * 80)
 
+        # Pin the article URL BEFORE extract_all runs. Handlers navigate the
+        # page during extraction — the APS one visits /supplemental/{doi} to
+        # enumerate attachments — so reading page.url afterwards records
+        # whatever page the handler happened to finish on, not the article.
+        # (That is how metadata.json ended up with a supplemental link.)
+        # Handlers that want it can also read handler._landing_url, e.g. to
+        # derive a journal code from the URL.
+        landing_url = ''
+        try:
+            candidate = (page.url or '') if page is not None else ''
+            if candidate and not candidate.startswith('about:'):
+                landing_url = candidate
+                handler._landing_url = landing_url
+        except Exception:
+            pass
+
         try:
             extraction_result = await handler.extract_all(captured=captured_data)
         except Exception as e:
@@ -2003,14 +2019,21 @@ async def complete_extraction_workflow(
         links = extraction_result['links']
         fulltext_data = extraction_result['fulltext_data']
 
-        # Record the browser's landed URL — after doi.org redirect this is
-        # the direct publisher URL. save_metadata_json will surface it as
+        # Record the article URL pinned above — after the doi.org redirect
+        # this is the direct publisher URL. save_metadata_json surfaces it as
         # "link" so future runs can bypass doi.org via the --json input.
-        try:
-            landing_url = (page.url or '') if page is not None else ''
-        except Exception:
-            landing_url = ''
-        if landing_url and not landing_url.startswith('about:'):
+        # Fall back to the handler's own value (it may have refined it) and
+        # only then to the live page, which by now may have navigated away.
+        if not landing_url:
+            landing_url = getattr(handler, '_landing_url', '') or ''
+        if not landing_url:
+            try:
+                candidate = (page.url or '') if page is not None else ''
+                if candidate and not candidate.startswith('about:'):
+                    landing_url = candidate
+            except Exception:
+                pass
+        if landing_url:
             metadata['_landing_url'] = landing_url
 
         # Save HTML to the per-DOI capture directory.

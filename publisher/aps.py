@@ -604,16 +604,56 @@ async def get_supplemental_links(page, doi: str = None, journal_prefix: str = No
 class APSHandler(PublisherHandler):
     """Handler for American Physical Society (APS) journals"""
 
+    @staticmethod
+    def journal_prefix_from_url(url: str) -> str:
+        """Return the APS journal code embedded in *url*, or '' if absent.
+
+        Every APS article URL carries the journal code as its first path
+        segment, whatever the view::
+
+            https://journals.aps.org/prl/abstract/10.1103/PhysRevLett.124.185004
+            https://journals.aps.org/prx/fulltext/10.1103/PhysRevX.7.041003
+                                     ^^^
+
+        Reading it here beats mapping the DOI's journal token through a
+        lookup table: the table has to be extended by hand for every new
+        APS title (and four of its keys were silently wrong until recently),
+        whereas the URL always states the answer. Same approach
+        get_supplemental_links() already takes when it rewrites
+        /abstract/ to /supplemental/.
+        """
+        if not url:
+            return ''
+        m = re.search(r'journals\.aps\.org/([a-z][a-z0-9-]*)/', url.lower())
+        return m.group(1) if m else ''
+
     def __init__(self, journal_prefix: str = 'prl', page=None, captured_data_dir=None, doi: str = None):
         """
         Initialize APS handler
 
         Args:
-            journal_prefix: Journal code (prl, pre, pra, prb, etc.)
+            journal_prefix: Journal code (prl, pre, pra, prb, etc.). Used only
+                as a fallback — the real prefix is read off the article URL as
+                soon as one is available (constructor, then set_journal_prefix_from_url).
         """
         super().__init__(page=page, captured_data_dir=captured_data_dir, doi=doi)
         self.journal_prefix = journal_prefix
         self.base_url = f"https://journals.aps.org/{journal_prefix}"
+        # A page handed to the constructor may already sit on the article.
+        if page is not None:
+            try:
+                self.set_journal_prefix_from_url(page.url)
+            except Exception:
+                pass
+
+    def set_journal_prefix_from_url(self, url: str) -> bool:
+        """Adopt the journal prefix carried by *url*. Returns True if adopted."""
+        prefix = self.journal_prefix_from_url(url)
+        if not prefix or prefix == self.journal_prefix:
+            return False
+        self.journal_prefix = prefix
+        self.base_url = f"https://journals.aps.org/{prefix}"
+        return True
 
     async def extract_metadata(self, page) -> dict:
         """Extract metadata from APS abstract page"""
@@ -1023,49 +1063,24 @@ class APSHandler(PublisherHandler):
             except:
                 fulltext_data = {}
 
-        # 5. Update journal_prefix from captured data (detected from URL) or DOI
-        detected_prefix = captured.get('journal_prefix')
-        if not detected_prefix:
-            # Fallback: extract from DOI: 10.1103/PhysRevApplied.18.024026 or 10.1103/physrevlett.124.185004
-            actual_doi = self.doi or doi
-            if actual_doi:
-                doi_match = re.search(r'10\.1103/([A-Za-z]+)', actual_doi)
-                if doi_match:
-                    journal_name = doi_match.group(1)
-                    # Keys are the DOI's journal token, lowercased:
-                    #   10.1103/PhysRevX.7.041003 -> 'physrevx'
-                    # Four keys used to be spelled in a form the DOI never
-                    # produces ('physreviewx', 'physrevphysedures',
-                    # 'physrevstab', 'physrevstper'), so those journals never
-                    # matched and silently fell back to the constructor
-                    # default 'prl' — which then built wrong /pdf/ and
-                    # /supplemental/ URLs.
-                    APS_JOURNAL_PREFIXES = {
-                        'physrev': 'pr',                    # pre-1970 Physical Review
-                        'physrevlett': 'prl',
-                        'physrevx': 'prx',
-                        'physreva': 'pra',
-                        'physrevb': 'prb',
-                        'physrevc': 'prc',
-                        'physrevd': 'prd',
-                        'physreve': 'pre',
-                        'physrevapplied': 'prapplied',
-                        'physrevresearch': 'prresearch',
-                        'physrevfluids': 'prfluids',
-                        'physrevmaterials': 'prmaterials',
-                        'physrevaccelbeams': 'prab',
-                        'physrevphyseducres': 'prper',
-                        'physrevstaccelbeams': 'prstab',
-                        'physrevstphyseducres': 'prstper',
-                        'revmodphys': 'rmp',
-                    }
-                    # Case-insensitive lookup
-                    mapped = APS_JOURNAL_PREFIXES.get(journal_name.lower())
-                    if mapped:
-                        detected_prefix = mapped
-        if detected_prefix:
-            self.journal_prefix = detected_prefix
-            print(f"  ✓ 期刊前缀: {self.journal_prefix}")
+        # 5. Resolve the journal prefix from whatever URL we have.
+        # Read it straight off the URL rather than mapping the DOI's journal
+        # token through a lookup table: every APS article URL states the code
+        # as its first path segment, so new titles need no code change.
+        # Sources, best first: the URL pinned when the article finished
+        # loading, the live page, then the prefix the passive capture saw.
+        url_prefix = ''
+        for candidate in (getattr(self, '_landing_url', '') or '',
+                          (page.url if page is not None else '') or ''):
+            url_prefix = self.journal_prefix_from_url(candidate)
+            if url_prefix:
+                break
+        resolved = url_prefix or captured.get('journal_prefix') or self.journal_prefix
+        if resolved != self.journal_prefix:
+            self.journal_prefix = resolved
+            self.base_url = f"https://journals.aps.org/{resolved}"
+        print(f"  ✓ 期刊前缀: {self.journal_prefix}"
+              f"{'' if url_prefix else ' (未能从URL获取，使用回退值)'}")
 
         # 5.5 Actively fetch the fulltext when the passive capture missed it.
         # Runs after the journal prefix is known (the URL needs it) and before
