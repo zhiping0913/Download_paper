@@ -28,9 +28,6 @@ from bs4 import BeautifulSoup, NavigableString
 from publisher.base import PublisherHandler
 from publisher.wildcard import (
     convert_html_fragment_to_markdown,
-    format_as_bibtex,
-    generate_bibtex_key,
-    generate_reference_text_from_crossref,
     init_extract_all_page,
     render_heading_md,
     set_actual_base_url,
@@ -595,30 +592,91 @@ class ScienceHandler(PublisherHandler):
     # References
     # ------------------------------------------------------------------
 
+    _EMPHASIS_TAGS = ('em', 'i', 'b', 'strong')
+
+    @classmethod
+    def _space_adjacent_emphasis(cls, node) -> str:
+        """Serialize *node*, separating back-to-back emphasis runs.
+
+        Science writes volume numbers as ``<em>Nature</em><b><i>424</i></b>``
+        with no whitespace between the tags, which pandoc renders as
+        ``*Nature****424***`` — an ambiguous asterisk run that no longer reads
+        as emphasis.  Inserting a single space between adjacent inline
+        emphasis siblings keeps the markdown well-formed.
+        """
+        clone = BeautifulSoup(str(node), 'html.parser')
+        for tag in clone.find_all(cls._EMPHASIS_TAGS):
+            nxt = tag.next_sibling
+            if getattr(nxt, 'name', None) in cls._EMPHASIS_TAGS:
+                tag.insert_after(NavigableString(' '))
+        return str(clone)
+
     @classmethod
     def extract_references_from_html(cls, html_content: str) -> list:
-        """Return ``[(text_md, crossref_url_or_empty), …]`` for each reference."""
+        """Return ``[(text_md, crossref_url_or_empty), …]`` for each reference.
+
+        science.org marks the bibliography up as
+
+            <section id="bibliography">
+              <div class="bibliolist">
+                <div class="biblioentry" data-has="label">
+                  <div class="label">1</div>
+                  <div class="citations" id="REF1">
+                    <div class="citation">
+                      <div class="citation-content">…</div>
+                      <div class="external-links">
+                        <div class="core-xlink-crossref"><a href=…>Crossref</a></div>
+
+        The previous selector looked for ``div[role="listitem"]``, which the
+        page never emits — every article came out with an empty References
+        section.  Match ``div.biblioentry`` instead, and fall back to the
+        listitem shape plus a bare ``div.citation-content`` sweep so a future
+        markup change degrades rather than silently yielding nothing.
+        """
         if not html_content:
             return []
         soup = BeautifulSoup(html_content, 'html.parser')
         bib = soup.find('section', id='bibliography')
         if not bib:
             return []
+
+        items = (bib.select('div.biblioentry')
+                 or bib.select('div[role="listitem"]')
+                 or bib.select('li'))
         out = []
-        for item in bib.select('div[role="listitem"]'):
-            citation = item.find('div', class_='citation-content')
-            if citation is None:
+        for item in items:
+            # One entry can carry several <div class="citation"> siblings
+            # (Science splits "Notes" that bundle multiple works).
+            contents = item.select('div.citation-content')
+            if not contents:
                 continue
-            text_md = cls._convert_paragraph_to_md(str(citation))
-            text_md = re.sub(r'\s+', ' ', text_md).strip()
+            texts = []
+            for citation in contents:
+                text_md = cls._convert_paragraph_to_md(
+                    cls._space_adjacent_emphasis(citation))
+                text_md = re.sub(r'\s+', ' ', text_md).strip()
+                if text_md:
+                    texts.append(text_md)
+            if not texts:
+                continue
             crossref_url = ''
             cr_div = item.find('div', class_='core-xlink-crossref')
             if cr_div is not None:
                 a = cr_div.find('a', href=True)
                 if a is not None:
                     crossref_url = a['href'].strip()
+            out.append((' '.join(texts), crossref_url))
+
+        if out:
+            return out
+
+        # Last resort: no recognisable entry wrapper — take the contents flat.
+        for citation in bib.select('div.citation-content'):
+            text_md = cls._convert_paragraph_to_md(
+                cls._space_adjacent_emphasis(citation))
+            text_md = re.sub(r'\s+', ' ', text_md).strip()
             if text_md:
-                out.append((text_md, crossref_url))
+                out.append((text_md, ''))
         return out
 
     # ------------------------------------------------------------------
@@ -980,50 +1038,15 @@ class ScienceHandler(PublisherHandler):
                     md_parts.append(f"- [{url}]({url})")
                 md_parts.append("")
 
-        # References — text + Crossref link + Crossref-derived BibTeX.
-        crossref_refs = metadata.get('_crossref_references', [])
+        # References — plain numbered entries.  No Crossref verification /
+        # BibTeX block here: science.org's own bibliography already carries
+        # full citation text, so the Crossref round-trip added nothing but
+        # noise (and a rate-limit dependency).
         ref_text_list = metadata.get('references', []) or []
-        ref_crossref_urls = metadata.get('_ref_crossref_urls', []) or []
-
-        if ref_text_list or crossref_refs:
+        if ref_text_list:
             md_parts.extend(["---", "", "## References", ""])
-
-        # Build a map from Crossref ref key suffix to ref entry for BibTeX injection.
-        crossref_by_index = {}
-        for ref in crossref_refs:
-            key = ref.get('key', '') or ''
-            m = re.search(r'(\d+)$', key)
-            if m:
-                crossref_by_index[int(m.group(1))] = ref
-
-        for idx, text in enumerate(ref_text_list, 1):
-            md_parts.append(f"[{idx}] {text}")
-            if idx - 1 < len(ref_crossref_urls):
-                url = ref_crossref_urls[idx - 1]
-                if url:
-                    md_parts.append("")
-                    md_parts.append(f"Crossref: [{url}]({url})")
-            md_parts.append("")
-            ref = crossref_by_index.get(idx)
-            if ref is not None:
-                ref_key = ref.get('key') or generate_bibtex_key(
-                    [ref.get('author', '')] if ref.get('author') else [],
-                    str(ref.get('year', '')),
-                    ref.get('article-title', ''),
-                )
-                parts_dict = {
-                    'author': ref.get('author', ''),
-                    'title': ref.get('article-title', ''),
-                    'journal': ref.get('journal-title', ''),
-                    'volume': ref.get('volume', ''),
-                    'firstpage': ref.get('first-page', ''),
-                    'lastpage': ref.get('last-page', ''),
-                    'year': str(ref.get('year', '')),
-                    'doi': ref.get('DOI', ''),
-                }
-                parts_dict = {k: v for k, v in parts_dict.items() if v or k == 'doi'}
-                if any(parts_dict.get(k) for k in ('author', 'title', 'journal')):
-                    bibtex = format_as_bibtex(parts_dict, key=ref_key)
-                    md_parts.extend(["```bibtex", bibtex, "```", ""])
+            for idx, text in enumerate(ref_text_list, 1):
+                md_parts.append(f"[{idx}] {text}")
+                md_parts.append("")
 
         return "\n".join(md_parts)
