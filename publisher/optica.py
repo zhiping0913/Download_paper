@@ -17,6 +17,7 @@ import re
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 
+from core.utilities import fetch_view_source_html
 from publisher.base import PublisherHandler
 from publisher.wildcard import (
     convert_html_fragment_to_markdown,
@@ -1003,6 +1004,28 @@ class OpticaHandler(PublisherHandler):
     # Main extraction entry point
     # ------------------------------------------------------------------
 
+    # A formula wrapper whose content still starts with a TeX delimiter, i.e.
+    #     <span class="inline-formula">\n$${P_0} = …$$
+    # Once MathJax 4 has run, the same wrapper holds an <mjx-container>/<svg>
+    # whose only text is the accessibility speech string ("P sub 0 equals …").
+    _TEX_FORMULA_RE = re.compile(
+        r'class="(?:disp|inline)-formula"[^>]*>\s*\$'
+    )
+
+    @classmethod
+    def _count_tex_math(cls, html: str) -> int:
+        """Number of formula wrappers in *html* that still carry TeX source.
+
+        Used to pick between two candidate copies of the same page. A plain
+        ``'$$' in html`` test is useless here: a 2 MB rendered DOM contains a
+        stray dollar sign somewhere almost by definition, and ``inline-formula``
+        survives rendering — only the delimiter *immediately inside the
+        wrapper* distinguishes source from rendered.
+        """
+        if not html:
+            return 0
+        return len(cls._TEX_FORMULA_RE.findall(html))
+
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
         """Complete Optica extraction following the unified publisher contract.
 
@@ -1064,6 +1087,36 @@ class OpticaHandler(PublisherHandler):
                     self._raw_server_html = _fulltext_raw[-1]
         except Exception as e:
             print(f"  ⚠️  Optica fulltext 切换失败: {e}")
+
+        # ── view-source fallback ────────────────────────────────────────────
+        # Optica loads MathJax 4 (tex-mml-svg), which replaces the ``$$...$$``
+        # TeX in the HTML source with SVG whose only text is the a11y speech
+        # string — that is how equations came out as
+        #   "P sub 0 equals E sub 0 divided by tau sub eff"
+        # instead of "{P_0} = {E_0}/{\tau _{\rm{eff}}}".
+        #
+        # Two upstream mechanisms are supposed to prevent this: block_mathjax()
+        # route interception, and the main-document response listener. Neither
+        # is guaranteed here — the interceptor only helps if it was registered
+        # before the script request, and the listener misses the fulltext.cfm
+        # navigation this handler performs itself. So re-fetch the document
+        # source unconditionally (the equivalent of view-source:) and prefer it
+        # whenever it actually carries the TeX the rendered DOM has lost.
+        try:
+            source_html = await fetch_view_source_html(page)
+            if source_html:
+                current = getattr(self, '_raw_server_html', None) or ''
+                src_n = self._count_tex_math(source_html)
+                cur_n = self._count_tex_math(current)
+                if src_n > cur_n:
+                    print(f"  ↪ Optica: 使用 view-source 原始 HTML "
+                          f"({len(source_html):,} 字符, {src_n} 个 TeX 公式 "
+                          f"→ 原有 {cur_n} 个)")
+                    self._raw_server_html = source_html
+                elif not current:
+                    self._raw_server_html = source_html
+        except Exception as e:
+            print(f"  ⚠️  Optica view-source 回退失败: {e}")
 
         set_actual_base_url(self, page)
 
