@@ -28,6 +28,51 @@ from typing import Optional
 import websockets
 
 
+# Cloudflare localises its interstitial by Accept-Language, so the title is
+# whatever language the browser asked for. A Chinese-locale Chrome shows
+# "请稍候…" where an English one shows "Just a moment…" -- matching only the
+# English strings meant the challenge went undetected on this machine, the
+# Turnstile auto-click never ran, and the preload just span until timeout.
+_CHALLENGE_TITLE_KEYWORDS = (
+    # English
+    'just a moment', 'verify you are human', 'security verification',
+    'attention required', 'performing security verification', 'checking your browser',
+    # Chinese (Simplified / Traditional)
+    '请稍候', '请稍等', '稍候片刻', '請稍候', '請稍等',
+    '正在验证', '正在驗證', '需要注意', '安全验证', '安全驗證',
+    # Japanese / Korean
+    'お待ちください', '少々お待ち', '잠시만 기다',
+    # European
+    'einen moment', 'un instant', 'un momento', 'um momento',
+    'even geduld', 'подождите', 'один момент',
+)
+
+
+def _is_challenge_title(title_lower: str) -> bool:
+    """True if *title_lower* is a Cloudflare interstitial in any locale."""
+    if not title_lower:
+        return False
+    return any(kw in title_lower for kw in _CHALLENGE_TITLE_KEYWORDS)
+
+
+# Language-independent fallback: the challenge page's own DOM. Any of these
+# means Cloudflare is holding the request, whatever the title says.
+_CHALLENGE_DOM_JS = r"""(function () {
+    try {
+        if (document.querySelector(
+                '#challenge-form, #challenge-running, #challenge-stage, ' +
+                '#cf-challenge-running, [id^="cf-chl"], ' +
+                'script[src*="cdn-cgi/challenge-platform"]')) {
+            return true;
+        }
+        return /cdn-cgi\/challenge-platform/.test(document.documentElement.innerHTML)
+               && document.body && document.body.innerText.length < 2000;
+    } catch (e) {
+        return false;
+    }
+})()"""
+
+
 async def _send(ws, method: str, params: dict = None) -> dict:
     """发送 CDP 命令并等待结果。跳过事件消息（无 id）。"""
     msg_id = id(object()) % 1000000
@@ -374,12 +419,20 @@ async def bypass_cloudflare_cdp(
                     body_lower = body_text.lower()
 
                     # 检查是否是挑战页
-                    challenge_keywords = [
-                        'just a moment', 'verify you are human',
-                        'security verification', 'attention required',
-                        'performing security verification',
-                    ]
-                    is_challenge = any(kw in title_lower for kw in challenge_keywords)
+                    is_challenge = _is_challenge_title(title_lower)
+                    if not is_challenge:
+                        # Title match is language-dependent; the DOM markers
+                        # are not. See _CHALLENGE_DOM_JS.
+                        try:
+                            marker_r = await _send(ws, "Runtime.evaluate", {
+                                "expression": _CHALLENGE_DOM_JS,
+                                "returnByValue": True,
+                            })
+                            is_challenge = bool(
+                                marker_r.get("result", {}).get("value")
+                            )
+                        except Exception:
+                            pass
                     if is_challenge:
                         challenge_detected = True
                         challenge_rounds += 1
