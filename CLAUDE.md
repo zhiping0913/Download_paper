@@ -51,6 +51,30 @@ python batch_process.py --file dois.txt                     # 批量
 | `10.1017` | CambridgeHandler | 无头 | 完整 |
 | `10.1093` | OupHandler | 无头 | 完整 |
 | `10.1145` | ACMHandler | **有头** | **abstract-only** — 见下 |
+| `10.1109` | IEEEHandler | 有头 | 完整（REST 接口） |
+
+### IEEE (`10.1109`, ieeexplore.ieee.org)
+
+- 页面是 Angular 客户端渲染，**正文不在 DOM 里**。全部内容走 REST 接口，键是数字
+  **articleId**（不是 DOI），从最终 URL `/document/{articleId}/` 或页面里的
+  `"articleId":"..."` 取
+- 接口（都用页面内 `fetch()` 发，out-of-page 请求会被当作未授权）：
+  - `/rest/document/{aid}/?logAccess=true` — 正文 XHTML，公式是
+    `<tex-math notation="LaTeX">` 原文，无需 MathJax 还原
+  - `/rest/document/{aid}/references`、`/multimedia`、`/footnotes`
+- 书目元数据来自 landing page 里的 `xplGlobal.document.metadata` JSON
+  （authors + affiliation、abstract、keywords、pdfUrl / pdfPath、supplementGroup）
+- 响应会缓存到 `html/`：`rest.html`、`references.json`、`multimedia.json`、
+  `footnotes.json`，可离线重跑渲染
+- **PDF 不能靠导航下载**：`pdfPath` 的 `/iel7/...pdf` 会重定向到 `stamp.jsp`，
+  而 stamp 页只是个查看器，要人手点「open」才触发下载 —— 浏览器 download 事件
+  永远不会触发。handler 用 `download_pdf_via_page()` 页面内 `fetch()` 直接取字节，
+  首选 `https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber={aid}`
+  （查看器自己调的那个接口，直接回 PDF），失败再回退 metadata 里的两个链接并跟随
+  查看器页里的 `<iframe src>`
+- 陷阱：正文里 `<p>` **可以嵌套整个 `<ul>`**（见 `_render_paragraph`）；
+  `\$` 在公式内部是字面美元符号，只能剥最外层定界符；references 的文本是
+  UTF-8 被当 cp1252 的乱码，需 `_fix_mojibake`
 
 ### ACM (`10.1145`, dl.acm.org)
 

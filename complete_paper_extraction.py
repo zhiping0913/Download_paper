@@ -1124,6 +1124,7 @@ async def _download_all_resources(
     doi: str = None,
     force_headed: bool = False,
     reuse_context: bool = False,
+    handler=None,
 ) -> dict:
     """Unified download manager for all resources (PDF, figures, supplemental)
 
@@ -1134,6 +1135,10 @@ async def _download_all_resources(
         context: Playwright browser context (for new tabs)
         metadata: Paper metadata (for supplemental material naming)
         doi: DOI for constructing PDF URL if pdf_url not provided
+        handler: publisher handler; when it exposes ``download_pdf_via_page``
+            that is tried before the navigation-based download (some
+            publishers never fire a browser download event -- see
+            IEEEHandler.download_pdf_via_page)
 
     Returns:
         dict with 'pdf', 'figures', 'supplemental' keys
@@ -1165,11 +1170,28 @@ async def _download_all_resources(
             try:
                 pdf_filename = "paper.pdf"
 
-                pdf_result = await retry_download(
-                    download_pdf,
-                    download_page, pdf_url, output_dir, pdf_filename, download_context, force_headed,
-                    max_retries=DP_MAX_RETRIES, retry_delay=DP_RETRY_DELAY
-                )
+                # Publisher-owned download path, when the handler has one.
+                # Used by publishers whose PDF URL cannot be downloaded by
+                # navigating to it (IEEE redirects to a viewer that waits for
+                # a human click), so navigation would burn the whole retry
+                # budget and still produce nothing.
+                pdf_result = None
+                if handler is not None and hasattr(handler, 'download_pdf_via_page'):
+                    try:
+                        pdf_result = await handler.download_pdf_via_page(
+                            download_page, output_dir, pdf_filename
+                        )
+                    except Exception as e:
+                        print(f"  ⚠️  handler PDF 下载失败，回退通用流程: "
+                              f"{type(e).__name__}: {str(e)[:100]}")
+
+                if not pdf_result:
+                    pdf_result = await retry_download(
+                        download_pdf,
+                        download_page, pdf_url, output_dir, pdf_filename,
+                        download_context, force_headed,
+                        max_retries=DP_MAX_RETRIES, retry_delay=DP_RETRY_DELAY,
+                    )
                 downloads['pdf'] = pdf_result
             except Exception as e:
                 print(f"⚠️  PDF下载失败: {e}")
@@ -2264,6 +2286,7 @@ async def complete_extraction_workflow(
             doi,
             force_headed_downloads,
             reuse_context=browser_session is not None,
+            handler=handler,
         )
 
         # Step 3.5: Check if paper has meaningful content before saving

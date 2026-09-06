@@ -148,6 +148,7 @@ complete_extraction_workflow(doi, output_file=None, force_headed=False)
 - `10.1017`、`cambridge.org` -> `cambridge`
 - `10.1093`、`academic.oup.com` -> `oup`
 - `10.3390`、`mdpi.com` -> `mdpi`
+- `10.1109`、`ieeexplore.ieee.org` -> `ieee` **(REST 接口取正文/引用/补充材料/脚注，公式为 LaTeX 原文；PDF 走 handler 的 `download_pdf_via_page()` 页面内 fetch，导航下载不了)**
 - `10.1145`、`dl.acm.org` -> `acm` **(abstract-only — 仅抓 abstract，正文/图片/补充材料不保证；必须有头访问)**
 - `sciencedirect.com`、`10.1016` -> `nature` (Elsevier 回退)
 - `epj-conferences.org`、`10.1051` -> `nature` (EDP Sciences 回退)
@@ -157,6 +158,7 @@ complete_extraction_workflow(doi, output_file=None, force_headed=False)
 handler 创建由 `get_publisher_handler()` 负责：
 
 - `nature` -> `NatureHandler`
+- `ieee` -> `IEEEHandler`
 - `aps` -> `APSHandler`
 - `aip` -> `AIPHandler`
 - `iop` -> `IOPHandler`

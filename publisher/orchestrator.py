@@ -16,6 +16,7 @@ from publisher.oup import OupHandler
 from publisher.oup_book import OupBookHandler
 from publisher.mdpi import MDPIHandler
 from publisher.acm import ACMHandler
+from publisher.ieee import IEEEHandler
 
 
 def detect_publisher_from_url(url: str) -> str:
@@ -92,6 +93,12 @@ def detect_publisher_from_url(url: str) -> str:
         return 'acm'
     elif '10.1145' in url_lower:
         return 'acm'
+
+    # IEEE Xplore
+    elif 'ieeexplore.ieee.org' in url_lower:
+        return 'ieee'
+    elif '10.1109' in url_lower:
+        return 'ieee'
 
     # Science / AAAS vs ScienceDirect / Elsevier
     # -----------------------------------------
@@ -175,6 +182,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return MDPIHandler(**kwargs)
     elif publisher == 'acm':
         return ACMHandler(**kwargs)
+    elif publisher == 'ieee':
+        return IEEEHandler(**kwargs)
     elif publisher == 'science':
         return ScienceHandler(**kwargs)
     elif publisher == 'sciencedirect':
