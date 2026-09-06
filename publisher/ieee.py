@@ -371,6 +371,29 @@ class IEEEHandler(PublisherHandler):
         return inner
 
     @classmethod
+    def field_md(cls, raw: str) -> str:
+        r"""Convert one metadata *string* field to markdown.
+
+        Fields in ``xplGlobal.document.metadata`` are HTML fragments, not
+        plain text: abstracts routinely embed
+        ``<inline-formula><tex-math notation="LaTeX">$\pm$</tex-math></inline-formula>``
+        (and article titles can too -- IEEE ships a separate
+        ``formulaStrippedArticleTitle`` precisely because ``title`` may carry
+        math). Emitting the raw string dumps that markup, namespace
+        declarations and all, straight into the markdown.
+
+        Routing these fields through the same :meth:`inline_md` pipeline the
+        body uses keeps one formula path for the whole handler.
+        """
+        raw = (raw or '').strip()
+        if not raw:
+            return ''
+        raw = cls._fix_mojibake(raw)
+        if '<' not in raw:
+            return raw
+        return cls._text_md(BeautifulSoup(raw, 'html.parser'))
+
+    @classmethod
     def _text_md(cls, node) -> str:
         """:meth:`inline_md` with surrounding whitespace collapsed."""
         return re.sub(r'\s+', ' ', cls.inline_md(node)).strip()
@@ -716,33 +739,80 @@ class IEEEHandler(PublisherHandler):
         return urls, descriptions
 
     @classmethod
-    def supplement_group_urls(cls, xpl: dict) -> Tuple[List[str], Dict[str, str]]:
-        """Supplemental files listed in the landing-page metadata blob.
+    def parse_supplement_groups(cls, xpl: dict) -> Tuple[List[dict], List[str], Dict[str, str]]:
+        """Split ``supplementGroup`` into external records and fetchable files.
 
-        Some articles carry a ``supplementGroup`` in ``xplGlobal`` instead of
-        (or as well as) an entry in the multimedia endpoint.
+        The blob looks like::
+
+            "supplementGroup": [{
+                "repository": "IEEE DataPort", "type": "dataset",
+                "badge": "Available",
+                "supplement": [{"doi": "10.21227/09en-qt48",
+                                "name": "4- and 2-inch PM dataset ...",
+                                "badgeType": "Dataset-Available"}]}]
+
+        This is what the article page shows under "Code & Datasets". Note what
+        the entries carry: a **DOI into an external repository**, not a file
+        path. Resolving one yields a DataPort landing page, so these must NOT
+        go into ``supplemental_urls`` -- the downloader would save HTML as if
+        it were the dataset. They are recorded in their own markdown section
+        instead.
+
+        Entries that do carry a ``filePath`` (some articles put real files
+        here rather than in the multimedia endpoint) are returned separately
+        as genuine downloads.
+
+        Returns ``(records, file_urls, file_descriptions)``.
         """
-        group = (xpl or {}).get('supplementGroup') or {}
-        entries = group.get('supplement') if isinstance(group, dict) else group
-        if isinstance(entries, dict):
-            entries = [entries]
-        if not isinstance(entries, list):
-            return [], {}
+        groups = (xpl or {}).get('supplementGroup') or []
+        if isinstance(groups, dict):
+            groups = [groups]
+        if not isinstance(groups, list):
+            return [], [], {}
 
+        records: List[dict] = []
         urls: List[str] = []
         descriptions: Dict[str, str] = {}
-        for item in entries:
-            if not isinstance(item, dict):
+
+        for group in groups:
+            if not isinstance(group, dict):
                 continue
-            path = (item.get('filePath') or item.get('url') or '').strip()
-            if not path:
-                continue
-            url = path if path.startswith('http') else cls.IEEE_BASE + path
-            desc = (item.get('description') or item.get('title')
-                    or item.get('fileName') or '').strip()
-            urls.append(url)
-            descriptions[url] = cls._fix_mojibake(desc) if desc else url
-        return urls, descriptions
+            repository = (group.get('repository') or '').strip()
+            gtype = (group.get('type') or '').strip()
+            badge = (group.get('badgeMsg') or group.get('badge') or '').strip()
+
+            entries = group.get('supplement') or []
+            if isinstance(entries, dict):
+                entries = [entries]
+            for item in entries:
+                if not isinstance(item, dict):
+                    continue
+                path = (item.get('filePath') or '').strip()
+                if path:
+                    url = path if path.startswith('http') else cls.IEEE_BASE + path
+                    desc = cls.field_md(item.get('description') or item.get('name')
+                                        or item.get('title') or item.get('fileName'))
+                    urls.append(url)
+                    descriptions[url] = desc or url
+                    continue
+
+                doi = (item.get('doi') or '').strip()
+                name = cls.field_md(item.get('name') or item.get('title'))
+                link = (item.get('url') or '').strip()
+                if not link and doi:
+                    link = f"https://doi.org/{doi}"
+                if not (name or link):
+                    continue
+                records.append({
+                    'repository': repository,
+                    'type': gtype,
+                    'badge': badge,
+                    'name': name,
+                    'doi': doi,
+                    'url': link,
+                })
+
+        return records, urls, descriptions
 
     # ==================================================================
     # Footnotes
@@ -812,7 +882,8 @@ class IEEEHandler(PublisherHandler):
         # Keywords come in typed groups ("IEEE Keywords", "Index Terms", ...).
         keyword_groups: List[Tuple[str, List[str]]] = []
         for group in xpl.get('keywords') or []:
-            kwds = [k.strip() for k in (group.get('kwd') or []) if k and k.strip()]
+            kwds = [cls_md for cls_md in
+                    (self.field_md(k) for k in (group.get('kwd') or [])) if cls_md]
             if kwds:
                 keyword_groups.append(((group.get('type') or 'Keywords').strip(), kwds))
 
@@ -829,7 +900,7 @@ class IEEEHandler(PublisherHandler):
         pages = f"{start}-{end}" if start and end else start
 
         return {
-            'title': self._fix_mojibake((xpl.get('title') or '').strip()),
+            'title': self.field_md(xpl.get('title')),
             'doi': (xpl.get('doi') or self.doi or '').strip(),
             'authors': authors,
             'author_with_affiliations': detailed,
@@ -840,7 +911,7 @@ class IEEEHandler(PublisherHandler):
             'pages': pages,
             'issn': issn,
             'publisher': (xpl.get('publisher') or 'IEEE').strip(),
-            'abstract': self._fix_mojibake((xpl.get('abstract') or '').strip()),
+            'abstract': self.field_md(xpl.get('abstract')),
             'corresponding_author_emails': [],
             '_keyword_groups': keyword_groups,
             '_xpl': xpl,
@@ -1092,13 +1163,16 @@ class IEEEHandler(PublisherHandler):
                 self.CACHE_NAMES['multimedia'],
             )
             supp_urls, supp_descriptions = self.parse_multimedia(mm_payload)
-            group_urls, group_desc = self.supplement_group_urls(self._xpl_cache)
+            records, group_urls, group_desc = self.parse_supplement_groups(self._xpl_cache)
             for url in group_urls:
                 if url not in supp_urls:
                     supp_urls.append(url)
                     supp_descriptions[url] = group_desc[url]
             if supp_urls:
                 print(f"  ✓ 补充材料: {len(supp_urls)} 个")
+            if records:
+                metadata['_supplement_records'] = records
+                print(f"  ✓ Code & Datasets: {len(records)} 条")
 
             # -- Footnotes --------------------------------------------------
             fn_payload = await self._fetch_rest_json(
@@ -1200,6 +1274,24 @@ class IEEEHandler(PublisherHandler):
             else:
                 for url in supp_urls:
                     md.append(f"- [{supp_desc.get(url, url)}]({url})")
+            md.append('')
+
+        # "Code & Datasets" -- external repository records (IEEE DataPort and
+        # friends). Listed rather than downloaded: they are DOIs into another
+        # site, not files.
+        records = metadata.get('_supplement_records') or []
+        if records:
+            md.extend(['---', '', '## Code & Datasets', ''])
+            for rec in records:
+                name = rec.get('name') or rec.get('doi') or ''
+                url = rec.get('url') or ''
+                line = f"- [{name}]({url})" if url else f"- {name}"
+                bits = [b for b in (rec.get('repository'), rec.get('type')) if b]
+                if bits:
+                    line += f" — {' / '.join(bits)}"
+                md.append(line)
+                if rec.get('doi'):
+                    md.append(f"  - DOI: {rec['doi']}")
             md.append('')
 
         references = metadata.get('references') or []
