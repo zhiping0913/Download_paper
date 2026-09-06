@@ -80,3 +80,10 @@ mdpi
 acm
 10.1145/3731599.3767493   #figure, nested list, table with footnote, algorithm diagram not in figure block, supplemental (mp4)
 10.1145/3712285.3771783   #figure, formula, nested list, table with footnote, algorithm diagram not in figure block, footnote, supplemental (mp4)
+
+ieee
+10.1109/TDSC.2024.3353536   #figure, nested list with formula, display-formula, footnote with multiline formula, supplemental
+10.1109/TIE.2024.3376832   #figure, nested list with formula, display-formula, Code & Datasets
+10.1109/TPS.2010.2064310   #figure, nested list with formula, footnote with formula
+10.1109/ACCESS.2020.2991812   #figure, key_image, display-formula, supplemental
+
