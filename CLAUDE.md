@@ -72,6 +72,12 @@ python batch_process.py --file dois.txt                     # 批量
   首选 `https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber={aid}`
   （查看器自己调的那个接口，直接回 PDF），失败再回退 metadata 里的两个链接并跟随
   查看器页里的 `<iframe src>`
+- `xplGlobal` 里的 `title` / `abstract` / `keywords` **是 HTML 片段不是纯文本**，
+  摘要里常有 `<inline-formula><tex-math>`，必须走 `field_md()`（同一套公式管道）
+- `supplementGroup` 是**仓库分组的列表**，条目带的是外部 DOI（IEEE DataPort）而不是
+  文件路径 —— 对应页面上的 "Code & Datasets"。这些只列进 md 的 `## Code & Datasets`
+  段，**不能**塞进 `supplemental_urls`，否则下载器会把 landing page 当数据集存下来。
+  带 `filePath` 的条目才当真正的补充材料下载
 - 陷阱：正文里 `<p>` **可以嵌套整个 `<ul>`**（见 `_render_paragraph`）；
   `\$` 在公式内部是字面美元符号，只能剥最外层定界符；references 的文本是
   UTF-8 被当 cp1252 的乱码，需 `_fix_mojibake`
