@@ -738,6 +738,43 @@ class IEEEHandler(PublisherHandler):
             )
         return urls, descriptions
 
+    # A DOI: the "10.<registrant>/<suffix>" shape, optionally already wrapped
+    # in a resolver. Anything else in the ``doi`` field is some repository's
+    # own identifier and must not be handed to doi.org.
+    _DOI_RE = re.compile(r'^(?:https?://(?:dx\.)?doi\.org/)?(10\.\d{4,9}/\S+)$',
+                         re.IGNORECASE)
+
+    @classmethod
+    def _supplement_link(cls, item: dict) -> str:
+        """Best available URL for a Code & Datasets entry, or ``''``.
+
+        IEEE calls the field ``doi``, but the value is only *sometimes* a DOI
+        -- it is whatever identifier the hosting repository uses, and other
+        articles link their data by plain URL or by an accession number that
+        looks nothing like a DOI. Building ``https://doi.org/{value}``
+        unconditionally would emit links that resolve to nothing.
+
+        Order: an explicit URL field, then a value already shaped like a URL,
+        then a value that genuinely matches the DOI pattern. Otherwise no
+        link -- the caller still shows the identifier as text.
+        """
+        for key in ('url', 'link', 'href'):
+            value = (item.get(key) or '').strip()
+            if value:
+                if value.startswith('//'):
+                    return 'https:' + value
+                if value.startswith('/'):
+                    return cls.IEEE_BASE + value
+                return value
+
+        value = (item.get('doi') or '').strip()
+        if not value:
+            return ''
+        if value.lower().startswith(('http://', 'https://')):
+            return value
+        m = cls._DOI_RE.match(value)
+        return f"https://doi.org/{m.group(1)}" if m else ''
+
     @classmethod
     def parse_supplement_groups(cls, xpl: dict) -> Tuple[List[dict], List[str], Dict[str, str]]:
         """Split ``supplementGroup`` into external records and fetchable files.
@@ -752,11 +789,18 @@ class IEEEHandler(PublisherHandler):
                                 "badgeType": "Dataset-Available"}]}]
 
         This is what the article page shows under "Code & Datasets". Note what
-        the entries carry: a **DOI into an external repository**, not a file
-        path. Resolving one yields a DataPort landing page, so these must NOT
+        the entries carry: a pointer into an **external repository**, not a
+        file path. Following one lands on a repository page, so these must NOT
         go into ``supplemental_urls`` -- the downloader would save HTML as if
         it were the dataset. They are recorded in their own markdown section
         instead.
+
+        The ``doi`` field is not reliably a DOI. It is whatever identifier the
+        repository uses, and other articles' data links do not necessarily
+        look like DOIs at all, so :meth:`_supplement_link` only builds a
+        ``doi.org`` URL when the value really matches a DOI, passes through
+        anything already shaped like a URL, and otherwise leaves the entry
+        unlinked rather than inventing a resolver that would 404.
 
         Entries that do carry a ``filePath`` (some articles put real files
         here rather than in the multimedia endpoint) are returned separately
@@ -796,19 +840,17 @@ class IEEEHandler(PublisherHandler):
                     descriptions[url] = desc or url
                     continue
 
-                doi = (item.get('doi') or '').strip()
+                ident = (item.get('doi') or '').strip()
                 name = cls.field_md(item.get('name') or item.get('title'))
-                link = (item.get('url') or '').strip()
-                if not link and doi:
-                    link = f"https://doi.org/{doi}"
-                if not (name or link):
+                link = cls._supplement_link(item)
+                if not (name or link or ident):
                     continue
                 records.append({
                     'repository': repository,
                     'type': gtype,
                     'badge': badge,
                     'name': name,
-                    'doi': doi,
+                    'identifier': ident,
                     'url': link,
                 })
 
@@ -1280,20 +1322,25 @@ class IEEEHandler(PublisherHandler):
         # friends). Listed rather than downloaded: they point into another
         # site, not at files.
         #
-        # Only the link is emitted. These are DataCite-style dataset DOIs,
-        # which Crossref cannot resolve, so printing one as a standalone
-        # "DOI:" line invites a verification that will always fail -- and the
-        # DOI is already inside the URL anyway.
+        # Only the link is emitted, never a "DOI:" line. The identifier just
+        # looks like a DOI on some articles; it is a repository-local id that
+        # Crossref cannot verify, and on other articles it is not DOI-shaped
+        # at all.
         records = metadata.get('_supplement_records') or []
         if records:
             md.extend(['---', '', '## Code & Datasets', ''])
             for rec in records:
-                name = rec.get('name') or rec.get('doi') or ''
+                ident = rec.get('identifier') or ''
+                name = rec.get('name') or ident
                 url = rec.get('url') or ''
                 line = f"- [{name}]({url})" if url else f"- {name}"
                 bits = [b for b in (rec.get('repository'), rec.get('type')) if b]
                 if bits:
                     line += f" — {' / '.join(bits)}"
+                # No resolvable link: keep the raw identifier so the reader
+                # can still find the record in the hosting repository.
+                if not url and ident and ident != name:
+                    line += f" (`{ident}`)"
                 md.append(line)
             md.append('')
 
