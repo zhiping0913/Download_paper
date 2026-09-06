@@ -646,6 +646,30 @@ class APSHandler(PublisherHandler):
             except Exception:
                 pass
 
+    @staticmethod
+    def doi_from_url(url: str) -> str:
+        """Return the DOI as APS spells it in *url*, or ``''``.
+
+        APS article URLs are **case-sensitive**: the canonical form is
+        ``/pre/abstract/10.1103/PhysRevE.88.023101``. A DOI is not
+        case-sensitive as an identifier, so users (and DOI lists) routinely
+        pass ``10.1103/physreve.88.023101``, and doi.org happily redirects
+        that to the correctly-cased page. But building a fulltext URL from
+        the lower-cased string gives a 404.
+
+        Reading the DOI back out of the landing URL gets APS's own casing,
+        whatever the caller typed.
+        """
+        if not url:
+            return ''
+        m = re.search(
+            r'journals\.aps\.org/[a-z][a-z0-9-]*/'
+            r'(?:abstract|fulltext|supplemental|cited-by|export|references)/'
+            r'(10\.\d{4,9}/[^/?#]+)',
+            url,
+        )
+        return m.group(1) if m else ''
+
     def set_journal_prefix_from_url(self, url: str) -> bool:
         """Adopt the journal prefix carried by *url*. Returns True if adopted."""
         prefix = self.journal_prefix_from_url(url)
@@ -870,6 +894,16 @@ class APSHandler(PublisherHandler):
 
         Returns the parsed payload, or ``{}`` on any failure.
         """
+        # Prefer the DOI exactly as it appears in the page URL. APS paths are
+        # case-sensitive, and a lower-cased DOI (what doi.org accepts, and
+        # what DOI lists usually contain) 404s here.
+        url_doi = ''
+        try:
+            url_doi = self.doi_from_url(page.url or '')
+        except Exception:
+            url_doi = ''
+        url_doi = url_doi or self.doi_from_url(getattr(self, '_landing_url', '') or '')
+        doi = url_doi or doi
         if not doi:
             return {}
 
