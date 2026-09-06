@@ -773,15 +773,6 @@ class SharedBrowserSession:
                 locale="en-US",
             )
             await self.headed_context.add_init_script(_stealth_js)
-        # Apply undetected-playwright stealth patches for Cloudflare evasion
-        try:
-            from undetected_playwright import stealth_async
-            self.headed_context = await stealth_async(self.headed_context)
-            print("  🥷 undetected-playwright stealth 已应用")
-        except ImportError:
-            print("  ⚠️  undetected-playwright 未安装，使用基础 stealth")
-        except Exception as e:
-            print(f"  ⚠️  undetected-playwright 应用失败: {e}")
 
         return self.headed_browser, self.headed_context
 
