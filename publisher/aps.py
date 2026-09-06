@@ -937,8 +937,20 @@ class APSHandler(PublisherHandler):
             payload = None
 
         if isinstance(payload, dict) and payload.get('__err'):
-            print(f"  ⚠️  fulltext in-page fetch 失败: {payload['__err']}")
+            err = payload['__err']
             payload = None
+            # 404 is a real answer, not a transport failure: APS simply has no
+            # HTML full-text view for this article. Older papers (and most
+            # pre-~2005 PRL) are published as PDF only -- their landing page
+            # carries no /fulltext/ link at all, and the route 404s for both
+            # Accept: application/json and text/html. Retrying out-of-page
+            # just turns that into a confusing 403, so stop here and say what
+            # actually happened.
+            if err.startswith('status 404'):
+                print("  ℹ️  该文章没有 fulltext 视图（APS 仅提供 PDF），"
+                      "正文将来自摘要页")
+                return {}
+            print(f"  ⚠️  fulltext in-page fetch 失败: {err}")
 
         # Fall back to the out-of-page request context.
         if payload is None:
