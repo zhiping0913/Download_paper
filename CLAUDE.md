@@ -77,7 +77,8 @@ python batch_process.py --file dois.txt                     # 批量
 - `supplementGroup` 是**仓库分组的列表**，条目带的是外部 DOI（IEEE DataPort）而不是
   文件路径 —— 对应页面上的 "Code & Datasets"。这些只列进 md 的 `## Code & Datasets`
   段，**不能**塞进 `supplemental_urls`，否则下载器会把 landing page 当数据集存下来。
-  带 `filePath` 的条目才当真正的补充材料下载
+  带 `filePath` 的条目才当真正的补充材料下载。这段**只输出链接**，不单独打印 DOI ——
+  这类是 DataCite 的数据集 DOI，Crossref 核验不了，而且 DOI 本身已经在链接里了
 - 陷阱：正文里 `<p>` **可以嵌套整个 `<ul>`**（见 `_render_paragraph`）；
   `\$` 在公式内部是字面美元符号，只能剥最外层定界符；references 的文本是
   UTF-8 被当 cp1252 的乱码，需 `_fix_mojibake`

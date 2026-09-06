@@ -1277,8 +1277,13 @@ class IEEEHandler(PublisherHandler):
             md.append('')
 
         # "Code & Datasets" -- external repository records (IEEE DataPort and
-        # friends). Listed rather than downloaded: they are DOIs into another
-        # site, not files.
+        # friends). Listed rather than downloaded: they point into another
+        # site, not at files.
+        #
+        # Only the link is emitted. These are DataCite-style dataset DOIs,
+        # which Crossref cannot resolve, so printing one as a standalone
+        # "DOI:" line invites a verification that will always fail -- and the
+        # DOI is already inside the URL anyway.
         records = metadata.get('_supplement_records') or []
         if records:
             md.extend(['---', '', '## Code & Datasets', ''])
@@ -1290,8 +1295,6 @@ class IEEEHandler(PublisherHandler):
                 if bits:
                     line += f" — {' / '.join(bits)}"
                 md.append(line)
-                if rec.get('doi'):
-                    md.append(f"  - DOI: {rec['doi']}")
             md.append('')
 
         references = metadata.get('references') or []
