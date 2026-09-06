@@ -450,6 +450,55 @@ async def block_mathjax(page) -> None:
         print(f"  ⚠️  无法注册 MathJax 拦截器: {e}")
 
 
+async def fetch_view_source_html(page, url: str = None, timeout_ms: int = 30000) -> str:
+    """Re-fetch the current document and return its *unrendered* source.
+
+    This is the programmatic equivalent of opening ``view-source:<url>``: the
+    response body exactly as the server sent it, before MathJax (or any other
+    script) rewrites the DOM. Publishers such as Optica ship display math as
+    ``$$...$$`` TeX in the HTML source, but MathJax 4 replaces it with SVG
+    whose only textual content is the accessibility *speech* string — which is
+    how "P sub 0 equals E sub 0 divided by tau sub eff" ends up in the
+    markdown instead of ``{P_0} = {E_0}/{\tau _{\rm{eff}}}``.
+
+    Route-blocking MathJax (:func:`block_mathjax`) is the first line of
+    defence, but it only helps when the interceptor is registered before the
+    script loads — on CDP-attached headed pages, and after an in-handler
+    navigation, that is not guaranteed. Re-fetching the source is
+    unconditional and cannot be defeated by rendering.
+
+    The fetch runs *inside the page* (``page.evaluate`` + ``fetch``) rather
+    than through ``context.request``: same-origin credentials, and the real
+    browser TLS/JS fingerprint, so publishers that 403 an out-of-page request
+    (ScienceDirect, APS) serve it normally.
+
+    Returns the HTML string, or ``''`` when the fetch fails or the response is
+    implausibly small (the caller should keep whatever it already had).
+    """
+    target = url or getattr(page, 'url', '') or ''
+    if not target:
+        return ''
+    try:
+        html = await page.evaluate(
+            """async (u) => {
+                const r = await fetch(u, {
+                    credentials: 'include',
+                    headers: {'Accept': 'text/html,application/xhtml+xml'},
+                });
+                if (!r.ok) return '';
+                return await r.text();
+            }""",
+            target,
+        )
+    except Exception as e:
+        print(f"  ⚠️  view-source 抓取失败: {e}")
+        return ''
+
+    if not html or len(html) < 2000:
+        return ''
+    return html
+
+
 def detect_publisher_from_url(url: str) -> str:
     """
     Detect publisher from URL domain
