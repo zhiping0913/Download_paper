@@ -1006,25 +1006,55 @@ class OpticaHandler(PublisherHandler):
 
     # A formula wrapper whose content still starts with a TeX delimiter, i.e.
     #     <span class="inline-formula">\n$${P_0} = …$$
-    # Once MathJax 4 has run, the same wrapper holds an <mjx-container>/<svg>
+    # Once MathJax has run, the same wrapper holds an <mjx-container>/<svg>
     # whose only text is the accessibility speech string ("P sub 0 equals …").
     _TEX_FORMULA_RE = re.compile(
         r'class="(?:disp|inline)-formula"[^>]*>\s*\$'
     )
 
-    @classmethod
-    def _count_tex_math(cls, html: str) -> int:
-        """Number of formula wrappers in *html* that still carry TeX source.
+    # Older Optica articles (pre-~2010 Optics Express) ship no TeX at all —
+    # their math is MathML, which MathJax consumes just as thoroughly: the
+    # 2009 OE fulltext source carries 6 <math> elements and the rendered DOM
+    # carries none, only 38 <mjx-container>. MathML is recoverable (the
+    # markdown pipeline runs it through mathml_to_latex_pandoc), so it counts
+    # as math source too.
+    _MATHML_RE = re.compile(r'<math[\s>]', re.IGNORECASE)
 
-        Used to pick between two candidate copies of the same page. A plain
-        ``'$$' in html`` test is useless here: a 2 MB rendered DOM contains a
-        stray dollar sign somewhere almost by definition, and ``inline-formula``
-        survives rendering — only the delimiter *immediately inside the
-        wrapper* distinguishes source from rendered.
+    def _save_view_source(self, html: str) -> None:
+        """Write the re-fetched page source to ``source.html`` in the capture.
+
+        Saved whenever the fetch succeeds, not only when it wins the
+        comparison: when the extraction still comes out wrong, the first
+        question is what the server actually sent, and page_raw.html only
+        answers that when the raw-response listener happened to fire.
+        """
+        if not self.captured_data_dir or not html:
+            return
+        try:
+            from pathlib import Path as _Path
+            out = _Path(self.captured_data_dir) / 'source.html'
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(html, encoding='utf-8')
+            print(f"  ✓ source.html 已保存 ({out.stat().st_size:,} bytes)")
+        except OSError as exc:
+            print(f"  ⚠️  source.html 保存失败: {exc}")
+
+    @classmethod
+    def _count_math_source(cls, html: str) -> int:
+        """How many *recoverable* formulas *html* still carries.
+
+        Used to pick between two candidate copies of the same page, so it must
+        count only markup that survives into LaTeX: TeX inside a formula
+        wrapper, and MathML elements.
+
+        A plain ``'$$' in html`` test is useless here — a 2 MB rendered DOM
+        contains a stray dollar sign somewhere almost by definition, and the
+        ``inline-formula`` class survives rendering — which is why the TeX
+        test anchors on the delimiter *immediately inside* the wrapper.
         """
         if not html:
             return 0
-        return len(cls._TEX_FORMULA_RE.findall(html))
+        return len(cls._TEX_FORMULA_RE.findall(html)) + len(cls._MATHML_RE.findall(html))
 
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
         """Complete Optica extraction following the unified publisher contract.
@@ -1105,12 +1135,13 @@ class OpticaHandler(PublisherHandler):
         try:
             source_html = await fetch_view_source_html(page)
             if source_html:
+                self._save_view_source(source_html)
                 current = getattr(self, '_raw_server_html', None) or ''
-                src_n = self._count_tex_math(source_html)
-                cur_n = self._count_tex_math(current)
+                src_n = self._count_math_source(source_html)
+                cur_n = self._count_math_source(current)
                 if src_n > cur_n:
                     print(f"  ↪ Optica: 使用 view-source 原始 HTML "
-                          f"({len(source_html):,} 字符, {src_n} 个 TeX 公式 "
+                          f"({len(source_html):,} 字符, {src_n} 个公式源 "
                           f"→ 原有 {cur_n} 个)")
                     self._raw_server_html = source_html
                 elif not current:
