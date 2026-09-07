@@ -20,6 +20,7 @@ from publisher.ieee import IEEEHandler
 from publisher.acs import ACSHandler
 from publisher.wiley import WileyHandler
 from publisher.spie import SPIEHandler
+from publisher.researching import ResearchingHandler
 
 
 def detect_publisher_from_url(url: str) -> str:
@@ -97,6 +98,12 @@ def detect_publisher_from_url(url: str) -> str:
     elif '10.1145' in url_lower:
         return 'acm'
 
+    # Chinese Laser Press (researching.cn) -- where 10.3788 actually resolves.
+    # The host test must come before the DOI one below, since a co-published
+    # article's SPIE URL contains the 10.3788 DOI in its path.
+    elif 'researching.cn' in url_lower:
+        return 'researching'
+
     # SPIE Digital Library.
     #
     # Routed by host first. 10.1117 is SPIE's own prefix and resolves here;
@@ -108,6 +115,11 @@ def detect_publisher_from_url(url: str) -> str:
         return 'spie'
     elif '10.1117' in url_lower:
         return 'spie'
+
+    # 10.3788 by DOI, checked after both hosts above so a SPIE URL carrying
+    # the DOI in its path is not claimed here.
+    elif '10.3788' in url_lower:
+        return 'researching'
 
     # Wiley Online Library
     elif 'onlinelibrary.wiley.com' in url_lower:
@@ -217,6 +229,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return WileyHandler(**kwargs)
     elif publisher == 'spie':
         return SPIEHandler(**kwargs)
+    elif publisher == 'researching':
+        return ResearchingHandler(**kwargs)
     elif publisher == 'science':
         return ScienceHandler(**kwargs)
     elif publisher == 'sciencedirect':

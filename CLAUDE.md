@@ -55,6 +55,20 @@ python batch_process.py --file dois.txt                     # 批量
 | `10.1021` | ACSHandler | 有头 | 完整 |
 | `10.1002` | WileyHandler | 有头 | 完整 |
 | `10.1117` / spiedigitallibrary.org | SPIEHandler | 有头 | 完整 |
+| `10.3788` / researching.cn | ResearchingHandler | 有头 | 完整 |
+
+### researching.cn（中国激光杂志社，`10.3788`）
+
+- `doi.org/10.3788/...` 就跳到这里。Photonics Insights 等与 SPIE 联合出版的，
+  SPIE 上还有一份镜像 —— 想要 SPIE 版就在 `--json` 里传 `link`（见 examples/spie.json）
+- ⚠️ **路由顺序**：SPIE 那份的 URL 路径里**含 `10.3788`**，所以域名判断必须排在
+  DOI 判断前面，否则 SPIE 链接会被抢回 researching
+- ⚠️ 图片是**懒加载**：`src` 是 `loading.gif`，真实地址在 `lay-src`
+- ⚠️ **整页没有任何 `<h*>` 标签**：章节标题是 `p.text_index`，形如
+  "2.1.1 Physics origin"，层级只能从编号推
+- 正文根是 `div.text_area`（`div#mainView` 还包着站点导航和页脚）
+- 关键词是一串**没有分隔符的 `<a>`**，按文本切会连成一坨
+- 页面里**没有 `<table>` 元素**，表格在原网页就没渲染出来 —— 尊重原页面，不重建
 
 ### SPIE (`10.1117`、spiedigitallibrary.org)
 

@@ -172,6 +172,7 @@ Cloudflare 也不算数 —— clearance cookie 绑定在签发它的主机上�
 - `10.1017`、`cambridge.org` -> `cambridge`
 - `10.1093`、`academic.oup.com` -> `oup`
 - `10.3390`、`mdpi.com` -> `mdpi`
+- `10.3788`、`researching.cn` -> `researching` **(中国激光杂志社；域名判断需排在 DOI 之前)**
 - `10.1117`、`spiedigitallibrary.org` -> `spie` **(正文走 POST API；`10.3788` 归中国激光杂志社，需用 `--json` 的 `link` 指定 SPIE 页面)**
 - `10.1002`、`onlinelibrary.wiley.com` -> `wiley` **(view-source 取 LaTeX；表格 rowspan 需按网格渲染)**
 - `10.1021`、`pubs.acs.org` -> `acs` **(Silverchair 平台；图/表/Scheme 共用包装但独立编号)**
@@ -189,6 +190,7 @@ handler 创建由 `get_publisher_handler()` 负责：
 - `acs` -> `ACSHandler`
 - `wiley` -> `WileyHandler`
 - `spie` -> `SPIEHandler`
+- `researching` -> `ResearchingHandler`
 - `aps` -> `APSHandler`
 - `aip` -> `AIPHandler`
 - `iop` -> `IOPHandler`
