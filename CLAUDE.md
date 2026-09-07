@@ -53,6 +53,20 @@ python batch_process.py --file dois.txt                     # 批量
 | `10.1145` | ACMHandler | **有头** | **abstract-only** — 见下 |
 | `10.1109` | IEEEHandler | 有头 | 完整（REST 接口） |
 | `10.1021` | ACSHandler | 有头 | 完整 |
+| `10.1002` | WileyHandler | 有头 | 完整 |
+
+### Wiley (`10.1002`, onlinelibrary.wiley.com)
+
+- 服务端渲染，无正文 API。用 view-source 取源码（同 Optica），存 `source.html`
+- 公式：`<annotation encoding="application/x-tex">` 里就是作者原始 LaTeX，MathJax
+  一跑连 annotation 带 MathML 一起换掉 —— 所以必须用源码。没有 annotation 时
+  退回 MathML→LaTeX
+- PDF **不是** `citation_pdf_url`（那是阅读器），要用
+  `/doi/pdfdirect/{doi}?download=true`
+- 表格有 `rowspan`（Table 2 的数据集列 rowspan=4）。按位置读单元格会让后续每行
+  整体左移，表格看着正常但数值全串到错误的列 —— 必须按网格放置
+- `div.article-section__table-footnotes` 是表下的 `Note:`，要跟着表格走
+- 参考文献：`ul.rlist.separator` 的每个 `<li>` 去标记取文字即可
 
 ### ACS (`10.1021`, pubs.acs.org)
 

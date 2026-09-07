@@ -1038,6 +1038,55 @@ def original_image_filename(image_url: str, fig_num: int, default_ext: str = '.p
 # Phase 4: Unified Download Manager with Retry Logic
 # ============================================================================
 
+async def _looks_like_article_page(pw_page, url: str, doi: str) -> bool:
+    """True if *pw_page* actually holds the article, not a helper document."""
+    try:
+        html = await pw_page.content()
+    except Exception:
+        return False
+    if not html or len(html) < 2000:
+        return False
+    lowered = html.lower()
+    if 'citation_doi' in lowered or 'citation_title' in lowered:
+        return True
+    if doi and doi.lower() in lowered:
+        return True
+    # Last resort: the right host and a body of real size.
+    try:
+        from urllib.parse import urlparse
+        return (urlparse(pw_page.url).netloc
+                and urlparse(pw_page.url).netloc == urlparse(url).netloc
+                and len(html) > 20000)
+    except Exception:
+        return False
+
+
+async def _pick_article_page(browser, candidate, url: str, doi: str):
+    """Return the page holding the article, preferring *candidate*.
+
+    Falls back to scanning every open page, because the CDP target the
+    preload reports can be an out-of-process iframe rather than the tab the
+    article rendered in.
+    """
+    if candidate is not None and await _looks_like_article_page(candidate, url, doi):
+        return candidate
+
+    if candidate is not None:
+        print("  ⚠️  预载目标不是文章页面（可能是广告/同步 iframe），继续查找...")
+
+    for ctx in browser.contexts:
+        for pg in ctx.pages:
+            if pg is candidate:
+                continue
+            if await _looks_like_article_page(pg, url, doi):
+                try:
+                    print(f"  ✓ 改用文章页面: {pg.url[:90]}")
+                except Exception:
+                    pass
+                return pg
+    return candidate
+
+
 async def _find_pw_page_by_cdp_target(browser, target_id):
     """在 Playwright 连接的 browser 中按 CDP targetId 精确定位 page。
     targetId 是 tab 的唯一标识，页面重定向（doi.org -> 文章页）后不变，
@@ -2975,6 +3024,23 @@ async def complete_extraction_workflow(
                                 break
                         if _cf_page_obj:
                             break
+                # The preloaded target is not always the article. Publisher
+                # pages spawn out-of-process iframes (Wiley's ad "User-Sync"
+                # document is one) that Chrome exposes as separate CDP page
+                # targets, and picking one of those yields a 235-byte stub:
+                # extraction then finds no authors, no figures and no body,
+                # and an in-page fetch from it fails CORS. Verify the page
+                # actually holds the article before committing to it.
+                _cf_page_obj = await _pick_article_page(browser, _cf_page_obj,
+                                                        url, doi)
+                # When no open page holds the article, do not settle for the
+                # stub: leaving _cf_loaded False makes the flow fall through
+                # to an ordinary Playwright navigation, which works because
+                # the Cloudflare clearance is already in the profile.
+                if _cf_page_obj is not None and not await _looks_like_article_page(
+                        _cf_page_obj, url, doi):
+                    print("  ⚠️  预载页面不可用，改为 Playwright 直接导航")
+                    _cf_page_obj = None
                 if _cf_page_obj is not None:
                     print(f"  ✓ 找到预载页面，直接复用")
                     try:
