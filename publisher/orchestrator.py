@@ -19,6 +19,7 @@ from publisher.acm import ACMHandler
 from publisher.ieee import IEEEHandler
 from publisher.acs import ACSHandler
 from publisher.wiley import WileyHandler
+from publisher.spie import SPIEHandler
 
 
 def detect_publisher_from_url(url: str) -> str:
@@ -95,6 +96,18 @@ def detect_publisher_from_url(url: str) -> str:
         return 'acm'
     elif '10.1145' in url_lower:
         return 'acm'
+
+    # SPIE Digital Library.
+    #
+    # Routed by host first. 10.1117 is SPIE's own prefix and resolves here;
+    # 10.3788 is Chinese Laser Press, and doi.org sends it to researching.cn
+    # even for titles SPIE co-publishes (Photonics Insights), so it is NOT
+    # claimed by DOI — pass the SPIE URL as "link" in --json input to use this
+    # handler for those.
+    elif 'spiedigitallibrary.org' in url_lower:
+        return 'spie'
+    elif '10.1117' in url_lower:
+        return 'spie'
 
     # Wiley Online Library
     elif 'onlinelibrary.wiley.com' in url_lower:
@@ -202,6 +215,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return ACSHandler(**kwargs)
     elif publisher == 'wiley':
         return WileyHandler(**kwargs)
+    elif publisher == 'spie':
+        return SPIEHandler(**kwargs)
     elif publisher == 'science':
         return ScienceHandler(**kwargs)
     elif publisher == 'sciencedirect':
