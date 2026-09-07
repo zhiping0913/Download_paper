@@ -4,6 +4,7 @@
 # Note: pypandoc also requires pandoc binary (https://pandoc.org/installing.html)
 
 playwright>=1.40.0
+websockets>=15.0,<16
 beautifulsoup4>=4.12.0
 requests>=2.31.0
 pypandoc>=1.12
