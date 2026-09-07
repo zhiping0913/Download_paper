@@ -18,6 +18,7 @@ from publisher.mdpi import MDPIHandler
 from publisher.acm import ACMHandler
 from publisher.ieee import IEEEHandler
 from publisher.acs import ACSHandler
+from publisher.wiley import WileyHandler
 
 
 def detect_publisher_from_url(url: str) -> str:
@@ -94,6 +95,12 @@ def detect_publisher_from_url(url: str) -> str:
         return 'acm'
     elif '10.1145' in url_lower:
         return 'acm'
+
+    # Wiley Online Library
+    elif 'onlinelibrary.wiley.com' in url_lower:
+        return 'wiley'
+    elif '10.1002' in url_lower:
+        return 'wiley'
 
     # ACS Publications
     elif 'pubs.acs.org' in url_lower:
@@ -193,6 +200,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return IEEEHandler(**kwargs)
     elif publisher == 'acs':
         return ACSHandler(**kwargs)
+    elif publisher == 'wiley':
+        return WileyHandler(**kwargs)
     elif publisher == 'science':
         return ScienceHandler(**kwargs)
     elif publisher == 'sciencedirect':
