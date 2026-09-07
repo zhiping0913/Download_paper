@@ -405,80 +405,88 @@ class ACSHandler(PublisherHandler):
     # References
     # ==================================================================
 
+    # Link furniture ACS appends to every citation. Removed by container so a
+    # reference whose *title* happens to contain one of these words survives.
+    _REF_LINK_SELECTORS = (
+        'div.crossref-doi',
+        'div.adsDoiReference',
+        'div.xslopenurl',
+        'div.citation-links',
+        'div.ref-links',
+        'span.inst-open-url-holders',
+    )
+    _REF_LINK_WORDS = re.compile(
+        r'\s*(?:Crossref|Search ADS|OpenURL|Google Scholar|PubMed|CAS|'
+        r'Web of Science|View Article)\s*', re.IGNORECASE)
+
     @classmethod
     def extract_references_from_html(cls, html: str) -> list:
-        """References from the ``citation_reference`` meta tags.
+        """Extract the reference list, preferring the rendered one.
 
-        ACS ships each reference as one meta tag of ``key=value;`` pairs,
-        which is cleaner than the rendered list (that carries "Google
-        Scholar"/"CAS" link furniture inside every entry).
+        The ``citation_reference`` meta tags look tempting -- one tag per
+        reference, already split into fields -- but they are lossy for the
+        multi-part references chemistry journals use constantly. A reference
+        reading "For selected reviews: (a) Kagan ... (b) Corey ... (c) Merino
+        ... (d) Jiang ..." collapses into a single tag holding every author
+        from all four works and only the first work's journal, volume and
+        pages, which is worse than useless: it reads like one citation that
+        never existed.
+
+        The rendered list keeps each sub-citation as its own
+        ``div.citation.mixed-citation`` inside the numbered
+        ``div.ref-content``, so it is walked instead and the meta tags are
+        kept only as a fallback.
         """
         if not html:
             return []
         soup = BeautifulSoup(html, 'html.parser')
+
         refs = []
-        for raw in cls._meta_all(soup, 'citation_reference'):
-            parts = cls._parse_reference_meta(raw)
-            text = cls._format_reference(parts)
+        for entry in soup.select('div.ref-content'):
+            text = cls._render_reference(entry)
             if text:
                 refs.append(text)
         if refs:
             return refs
 
-        # Fallback: the rendered list.
-        for h2 in soup.find_all('h2'):
-            if h2.get_text(strip=True).lower() != 'references':
-                continue
-            section = h2.find_parent(['section', 'div'])
-            if section is None:
-                continue
-            for item in section.find_all('li'):
-                text = cls._text_md(item)
-                text = re.sub(r'\s*(Google Scholar|Crossref|CAS|PubMed)\s*', ' ', text)
-                text = re.sub(r'\s+', ' ', text).strip(' ,;')
-                if text:
-                    refs.append(text)
-            break
+        for raw in cls._meta_all(soup, 'citation_reference'):
+            text = cls._format_reference(cls._parse_reference_meta(raw))
+            if text:
+                refs.append(text)
         return refs
 
-    @staticmethod
-    def _parse_reference_meta(raw: str) -> dict:
-        """Split ``citation_title=...; citation_author=...;`` into a dict."""
-        parts: Dict[str, List[str]] = {}
-        for chunk in raw.split(';'):
-            if '=' not in chunk:
-                continue
-            key, _, value = chunk.partition('=')
-            key = key.strip()
-            value = re.sub(r'\s+', ' ', value).strip()
-            if key and value:
-                parts.setdefault(key, []).append(value)
-        return parts
+    @classmethod
+    def _render_reference(cls, entry: Tag) -> str:
+        """One numbered reference, sub-citations and all, as flat text.
 
-    @staticmethod
-    def _format_reference(parts: dict) -> str:
-        if not parts:
-            return ''
-        authors = parts.get('citation_author', [])
-        bits = []
-        if authors:
-            bits.append(', '.join(authors))
-        title = (parts.get('citation_title') or [''])[0]
-        if title:
-            bits.append(title)
-        journal = (parts.get('citation_journal_title') or [''])[0]
-        if journal:
-            bits.append(f"*{journal}*")
-        volume = (parts.get('citation_volume') or [''])[0]
-        if volume:
-            bits.append(f"**{volume}**")
-        pages = (parts.get('citation_pages') or [''])[0]
-        if pages:
-            bits.append(pages)
-        year = (parts.get('citation_year') or [''])[0]
-        if year:
-            bits.append(f"({year})")
-        return ', '.join(b for b in bits if b).strip(' ,')
+        Layout is not preserved on purpose -- what matters is that every
+        sub-citation's text survives. Any lead-in ("For selected reviews:")
+        is kept, since it says what the group of works is for.
+        """
+        clone = BeautifulSoup(str(entry), 'html.parser')
+
+        # Drop the number: the caller re-numbers the list.
+        label = clone.find('span', class_='label')
+        if label is not None and label.find_parent('div', class_='citation') is None:
+            label.decompose()
+
+        for selector in cls._REF_LINK_SELECTORS:
+            for el in clone.select(selector):
+                el.decompose()
+
+        text = cls._text_md(clone)
+        text = cls._REF_LINK_WORDS.sub(' ', text)
+        # ACS separates every field with its own element, so the flattened
+        # text arrives with spaces before the punctuation that joins them.
+        text = re.sub(r'\s+([,.;:])', r'\1', text)
+        text = re.sub(r'\s*-\s*(?=\d)', '-', text)
+        # Sub-citation markers lose their surrounding space when the elements
+        # are flattened: "reviews:(a)Kagan" -> "reviews: (a) Kagan". The
+        # single-letter-in-parens shape avoids touching "[4 + 2]" and the
+        # like.
+        text = re.sub(r'\s*\(([a-z])\)\s*', r' (\1) ', text)
+        text = re.sub(r'\s{2,}', ' ', text).strip(' ,;')
+        return text
 
     # ==================================================================
     # Figures
