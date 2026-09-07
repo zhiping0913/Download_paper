@@ -29,9 +29,14 @@ from pathlib import Path
 from datetime import datetime
 from urllib.parse import unquote, urljoin, urlparse
 from playwright.async_api import async_playwright
-from chrome_launcher import launch_chrome
+from chrome_session import (
+    PROFILE_SEED_FILES,
+    PROFILE_SEED_ROOT_FILES,
+    launch_chrome,
+    seed_profile,
+)
 try:
-    from cf_bypass_cdp import bypass_cloudflare_cdp, has_cf_clearance_cdp
+    from chrome_session import bypass_cloudflare_cdp, has_cf_clearance_cdp
     _CF_BYPASS_AVAILABLE = True
 except ImportError:
     _CF_BYPASS_AVAILABLE = False
@@ -650,7 +655,7 @@ class SharedBrowserSession:
 
     async def launch_headed_chrome(self) -> bool:
         """只启动独立 Chrome，不连接 Playwright。
-        目的：cf_bypass_cdp 过 Cloudflare 之前，避免 Playwright 注入自动化指纹。"""
+        目的：chrome_session 过 Cloudflare 之前，避免 Playwright 注入自动化指纹。"""
         if self._check_cdp_port():
             print("  ✓ Chrome 已在运行 (CDP 端口就绪)")
             return True
@@ -673,7 +678,7 @@ class SharedBrowserSession:
 
     async def connect_headed_browser(self) -> bool:
         """将 Playwright connect 到已启动的 Chrome。
-        注意：必须在 cf_bypass_cdp 之后调用，否则 Playwright 指纹会导致 Cloudflare 403。"""
+        注意：必须在 chrome_session 过挑战之后调用，否则 Playwright 指纹会导致 Cloudflare 403。"""
         if self.headed_browser is not None and self.headed_browser.is_connected():
             return True
         try:
@@ -690,8 +695,8 @@ class SharedBrowserSession:
         # 使用独立启动的 Chrome + CDP 连接。
         # 原因：Playwright 自带的 chromium 过不了 Cloudflare（用户确认），
         # 且 Playwright 连接 CDP 会留下自动化指纹。
-        # 解决方案：先用 chrome_launcher 启动独立 Chrome，
-        # 再用纯 CDP WebSocket 过 Cloudflare 挑战（cf_bypass_cdp），
+        # 解决方案：先用 chrome_session.launch_chrome 启动独立 Chrome，
+        # 再用纯 CDP WebSocket 过 Cloudflare 挑战（chrome_session），
         # 最后 Playwright 才 connect_over_cdp 接棒抓论文。
         if self.headed_browser is not None and self.headed_browser.is_connected():
             return True
@@ -819,52 +824,15 @@ class SharedBrowserSession:
     # settings ensure_chrome_preferences() would otherwise have to rebuild.
     # Deliberately NOT copied: History, Cache, extensions, Sessions — bulky,
     # and the point of the reset is to shed accumulated state.
-    _PROFILE_SEED_FILES = (
-        'Cookies',
-        'Cookies-journal',
-        'Login Data',
-        'Preferences',
-        'Secure Preferences',
-        'Web Data',
-    )
-    _PROFILE_SEED_ROOT_FILES = ('Local State',)
+    # Seeding lives in chrome_session so the shared browser and the
+    # throwaway PDF browser cannot drift apart on which files they copy.
+    _PROFILE_SEED_FILES = PROFILE_SEED_FILES
+    _PROFILE_SEED_ROOT_FILES = PROFILE_SEED_ROOT_FILES
 
     @staticmethod
     def _seed_scraping_profile(target: Path, source: Path, profile_name: str) -> bool:
         """Copy a minimal working set from *source* profile into *target*."""
-        src_inner = source / profile_name
-        if not src_inner.is_dir():
-            print(f"  ⚠️  源 profile 不存在: {src_inner}")
-            return False
-
-        dst_inner = target / profile_name
-        dst_inner.mkdir(parents=True, exist_ok=True)
-
-        copied = []
-        for name in SharedBrowserSession._PROFILE_SEED_FILES:
-            src_file = src_inner / name
-            if not src_file.exists():
-                continue
-            try:
-                shutil.copy2(src_file, dst_inner / name)
-                copied.append(name)
-            except Exception:
-                pass
-        for name in SharedBrowserSession._PROFILE_SEED_ROOT_FILES:
-            src_file = source / name
-            if not src_file.exists():
-                continue
-            try:
-                shutil.copy2(src_file, target / name)
-                copied.append(name)
-            except Exception:
-                pass
-
-        if not copied:
-            print(f"  ⚠️  未能从 {source} 复制任何文件")
-            return False
-        print(f"  ✓ 已从干净 profile 播种: {', '.join(copied)}")
-        return True
+        return seed_profile(target, source, profile_name)
 
     def reset_scraping_profile(self, reason: str = '') -> bool:
         """Tear down Chrome, wipe the scraping profile, re-seed it.
@@ -1358,7 +1326,7 @@ async def download_pdf(
                       not in ('0', 'false', 'no', 'off'))
         if pdf_url and _use_fresh and _CF_BYPASS_AVAILABLE:
             try:
-                from fresh_chrome import open_url_in_fresh_chrome
+                from chrome_session import open_url_in_fresh_chrome
                 # A dedicated download directory per attempt, so "which file
                 # appeared" is unambiguous.
                 _fresh_dl_dir = tempfile.mkdtemp(prefix='dp_pdf_')
@@ -2487,9 +2455,9 @@ async def complete_extraction_workflow(
             return ready
 
         print("⚠️  Chrome 未运行，正在启动...")
-        chrome_launcher = Path(__file__).parent / "chrome_launcher.py"
+        chrome_launcher = Path(__file__).parent / "chrome_session.py"
         if not chrome_launcher.exists():
-            print("⚠️  chrome_launcher.py 未找到\n")
+            print("⚠️  chrome_session.py 未找到\n")
             return False
 
         try:
@@ -2913,7 +2881,7 @@ async def complete_extraction_workflow(
             # Same "open + clear Cloudflare over raw CDP" helper the PDF
             # download uses, just pointed at the batch's shared browser
             # instead of a throwaway one.
-            from fresh_chrome import open_url_via_cdp
+            from chrome_session import open_url_via_cdp
             _cf_pre_result = await open_url_via_cdp(
                 url,
                 CHROME_DEBUG_PORT,
@@ -2934,7 +2902,7 @@ async def complete_extraction_workflow(
 
     async with headed_connection_scope() as connection:
         if connection is None:
-            print("   请运行: python chrome_launcher.py\n")
+            print("   请运行: python chrome_session.py\n")
             return None
         browser, context = connection
         print("✓ 已连接到批次共享Chrome\n" if browser_session else "✓ 已连接到Chrome\n")
@@ -3071,7 +3039,7 @@ async def complete_extraction_workflow(
                 except Exception as _e:
                     print(f"  ⚠️  纯CDP挑战模块异常: {_e}")
             else:
-                print("  ℹ️  cf_bypass_cdp 模块不可用，跳过纯CDP预检查")
+                print("  ℹ️  chrome_session 模块不可用，跳过纯CDP预检查")
 
             # Step 1: Navigate and detect publisher
             print("Step 1️⃣  导航到DOI并检测出版商...")

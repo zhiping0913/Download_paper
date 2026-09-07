@@ -52,7 +52,7 @@ python batch_process.py --dois "10.1103/..." "10.1063/..."
 | 文件 | 用途 |
 |---|---|
 | `config.py` | Chrome 路径、输出目录、批处理延迟、`SAVE_WITHOUT_REFERENCES` 等全局配置 |
-| `chrome_launcher.py` | 跨平台 Chrome 启动/关闭，从 `config.py` 读取路径 |
+| `chrome_session.py` | 所有「开浏览器 + 过 Cloudflare」的逻辑：跨平台启动/关闭、profile 播种与偏好、纯 CDP 过挑战、PDF 专用的一次性 Chrome。合并自原 `chrome_launcher.py` / `cf_bypass_cdp.py` / `fresh_chrome.py` |
 | `html_to_md_converter.py` | HTML → Markdown 转换工具函数（pandoc、LaTeX清理、MathML→LaTeX），可被任意 publisher handler 独立调用 |
 
 ### `html_to_md_converter.py` 可复用的关键函数

@@ -143,12 +143,19 @@ complete_extraction_workflow(doi, output_file=None, force_headed=False)
 PDF 在**另一个域名**上（ScienceDirect 的 `pdf.sciencedirectassets.com`），论文页过了
 Cloudflare 也不算数 —— clearance cookie 绑定在签发它的主机上。
 
-所以 PDF 由 `fresh_chrome.py` 单独起一个 Chrome 下载：独立端口、从真实 profile 复制
+所以 PDF 由 `chrome_session.py` 单独起一个 Chrome 下载：独立端口、从真实 profile 复制
 一份、全程不接 Playwright，用完即删。
 
+`chrome_session.py` 合并了原来的 `chrome_launcher.py`(启动/关闭)、`cf_bypass_cdp.py`
+(纯 CDP 过挑战) 与 `fresh_chrome.py`(一次性实例) —— 三者做的是同一件事，且各自
+重复实现了写下载偏好、轮询 CDP 端口、拼 Chrome 参数。主要接口：
+
+- `launch_chrome()` / `kill_chrome()` — 共享实例的启动与关闭
+- `bypass_cloudflare_cdp()` / `has_cf_clearance_cdp()` — 纯 CDP 过挑战
+- `open_url_via_cdp(url, port, ...)` — 「不接 Playwright、纯 CDP 打开并过挑战」，
+  论文页预载与 PDF 下载共用
 - `open_url_in_fresh_chrome(url, ...)` — 起新 Chrome + 打开页面，返回 session
-- `open_url_via_cdp(url, port, ...)` — 「不接 Playwright、纯 CDP 打开并过挑战」这一步，
-  论文页预载和 PDF 下载共用同一个实现
+- `seed_profile()` / `write_chrome_preferences()` — profile 播种与偏好写入
 
 环境变量：`CHROME_PDF_DEBUG_PORT`(默认 9333，被占用会自动顺延)、
 `CHROME_PROFILE_SOURCE_DIR`、`CHROME_PROFILE`、`CHROME_PDF_PROFILE_ROOT`、
@@ -246,7 +253,7 @@ handler = get_publisher_handler(
 流程是：
 
 1. 检查 `127.0.0.1:9222` 是否已有 Chrome。
-2. 如果没有，通过 `chrome_launcher.py` 启动。
+2. 如果没有，通过 `chrome_session.launch_chrome()` 启动。
 3. 使用 Playwright CDP 连接：
 
    ```text

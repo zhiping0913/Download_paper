@@ -1,32 +1,369 @@
 #!/usr/bin/env python3
+"""Chrome sessions that can get through Cloudflare.
+
+One module for everything that opens a browser and clears a challenge —
+previously split across ``chrome_launcher.py`` (launch/kill/preferences),
+``cf_bypass_cdp.py`` (the pure-CDP challenge solver) and ``fresh_chrome.py``
+(the throwaway instance used for PDFs). They shared a job and three copies of
+the same helpers: writing download preferences, polling the CDP port, and
+building Chrome's argv.
+
+Layout
+------
+1. Chrome process        argv, spawn, CDP-port wait, kill, preferences, profile seeding
+2. CDP primitives        websocket send, tab lookup, synthetic mouse clicks
+3. Challenge handling    locale-independent detection, Turnstile auto-click
+4. Public entry points   bypass_cloudflare_cdp, has_cf_clearance_cdp,
+                         open_url_via_cdp, launch_chrome,
+                         FreshChromeSession, open_url_in_fresh_chrome
+
+Why pure CDP at all: attaching Playwright injects an automation fingerprint
+that pushes Cloudflare into its hardest mode, so the challenge is cleared over
+raw CDP *before* Playwright connects.
+
+Why a throwaway instance for PDFs: by then the shared browser has been driven
+by Playwright and carries that fingerprint. Clearing the challenge on the
+article host does not carry over either — publishers such as ScienceDirect
+serve the PDF from a different host (``pdf.sciencedirectassets.com``) and a
+clearance cookie is bound to the host that issued it.
+
+Usage::
+
+    # clear a challenge on an already-running Chrome
+    result = await open_url_via_cdp(url, port=9222, expected_doi=doi)
+
+    # or in a browser that has never seen Playwright
+    session = await open_url_in_fresh_chrome(pdf_url, pdf_mode=True,
+                                             download_dir=str(tmp))
+    try:
+        saved = session.result.get('downloaded_file')
+    finally:
+        await session.close()
+
+Environment
+-----------
+``CHROME_PATH``                 executable (else auto-detected by config.py)
+``CHROME_DEBUG_PORT``           shared instance's port (default 9222)
+``CHROME_USER_DATA_DIR``        shared instance's profile
+``CHROME_PROFILE``              profile name inside it (default ``Default``)
+``CHROME_PROFILE_ROOT``         parent for temporary shared profiles
+``CHROME_PDF_DEBUG_PORT``       throwaway instance's port (default 9333)
+``CHROME_PDF_PROFILE_ROOT``     where the throwaway profile is built
+``CHROME_PROFILE_SOURCE_DIR``   real profile that gets copied
+``CHROME_DOWNLOAD_DIR``         default download directory
 """
-Cloudflare 挑战通过 —— 纯 CDP WebSocket 版本
-==============================================
 
-Playwright 连接 CDP 后会注入自动化指纹，导致 Cloudflare 挑战进入
-最高难度模式。本模块直接用 websocket + CDP 协议打开页面并等待挑战通过。
-
-用法：
-    from cf_bypass_cdp import bypass_cloudflare_cdp, has_cf_clearance_cdp
-
-    result = await bypass_cloudflare_cdp(
-        url="https://pubs.aip.org/...",
-        debug_port=9222,
-        timeout_s=600,
-    )
-    # result["success"] == True 表示挑战已通过
-    # result["target_id"] / result["ws_url"] 可用于定位页面
-"""
+from __future__ import annotations
 
 import asyncio
-import os
 import glob
 import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
 import urllib.request
+from pathlib import Path
 from typing import Optional
 
 import websockets
 
+try:
+    from config import (
+        CHROME_DEBUG_PORT,
+        CHROME_PATH,
+        CHROME_PROFILE,
+        CHROME_PROFILE_SOURCE_DIR,
+        CHROME_USER_DATA_DIR,
+        IS_WINDOWS,
+    )
+except ImportError:                                  # standalone use
+    IS_WINDOWS = sys.platform == 'win32'
+    CHROME_PATH = 'chrome.exe' if IS_WINDOWS else 'google-chrome'
+    CHROME_PROFILE = os.environ.get('CHROME_PROFILE', 'Default')
+    CHROME_DEBUG_PORT = int(os.environ.get('CHROME_DEBUG_PORT', 9222))
+    CHROME_USER_DATA_DIR = (
+        str(Path.home() / 'AppData' / 'Local' / 'Google' / 'Chrome' / 'User Data')
+        if IS_WINDOWS else str(Path.home() / '.config' / 'google-chrome')
+    )
+    CHROME_PROFILE_SOURCE_DIR = CHROME_USER_DATA_DIR
+
+
+# ==========================================================================
+# 1. Chrome process
+# ==========================================================================
+
+# The minimal working set that makes a copied profile look like the user's:
+# cookies (so existing clearances and any institutional login carry over),
+# the preference files Chrome validates at startup, and saved logins.
+#
+# Local State MUST accompany Cookies -- it holds the encryption key, so
+# copying one without the other yields cookies that cannot be decrypted.
+#
+# History / Cache / Sessions / extensions are deliberately left behind: a
+# scraping profile is disposable, and copying a multi-gigabyte cache is both
+# slow and exactly the accumulated state we want to shed.
+PROFILE_SEED_FILES = (
+    'Cookies',
+    'Cookies-journal',
+    'Login Data',
+    'Preferences',
+    'Secure Preferences',
+    'Web Data',
+)
+PROFILE_SEED_ROOT_FILES = ('Local State',)
+
+
+def seed_profile(target: Path, source: Path, profile_name: str = '') -> bool:
+    """Copy the minimal working set from a real profile into *target*.
+
+    Returns True when at least one file was copied.
+    """
+    profile_name = profile_name or CHROME_PROFILE or 'Default'
+    src_inner = Path(source) / profile_name
+    if not src_inner.is_dir():
+        print(f"  ⚠️  源 profile 不存在: {src_inner}")
+        return False
+
+    dst_inner = Path(target) / profile_name
+    dst_inner.mkdir(parents=True, exist_ok=True)
+
+    copied = []
+    for name in PROFILE_SEED_FILES:
+        src_file = src_inner / name
+        if src_file.exists():
+            try:
+                shutil.copy2(src_file, dst_inner / name)
+                copied.append(name)
+            except OSError:
+                pass
+    for name in PROFILE_SEED_ROOT_FILES:
+        src_file = Path(source) / name
+        if src_file.exists():
+            try:
+                shutil.copy2(src_file, Path(target) / name)
+                copied.append(name)
+            except OSError:
+                pass
+
+    if not copied:
+        print(f"  ⚠️  未能从 {source} 复制任何文件")
+        return False
+    print(f"  ✓ 已从真实 profile 播种: {', '.join(copied)}")
+    return True
+
+
+def write_chrome_preferences(user_data_dir, profile_name: str = '',
+                             download_dir: str = '', quiet: bool = False) -> None:
+    """Write the preferences a scraping profile needs, preserving the rest.
+
+    The one that matters is ``always_open_pdf_externally``: without it Chrome
+    renders the PDF in its viewer and never fires a download event, so a PDF
+    fetch silently produces nothing.
+    """
+    profile_name = profile_name or CHROME_PROFILE or 'Default'
+    prefs_path = Path(user_data_dir) / profile_name / 'Preferences'
+    try:
+        prefs = json.loads(prefs_path.read_text(encoding='utf-8')) \
+            if prefs_path.exists() else {}
+    except (OSError, ValueError):
+        prefs = {}
+
+    target_dir = download_dir or os.environ.get('CHROME_DOWNLOAD_DIR', '') \
+        or str(Path.home() / 'Downloads')
+
+    prefs.setdefault('plugins', {})['always_open_pdf_externally'] = True
+    download = prefs.setdefault('download', {})
+    download['default_directory'] = target_dir
+    download['prompt_for_download'] = False
+    download['directory_upgrade'] = True
+    prefs.setdefault('browser', {})['check_default_browser'] = False
+    # Keep the window alive when the last tab closes, so the session survives
+    # a tab teardown mid-batch.
+    prefs.setdefault('profile', {})['exit_type'] = 'Normal'
+
+    try:
+        prefs_path.parent.mkdir(parents=True, exist_ok=True)
+        prefs_path.write_text(json.dumps(prefs, indent=2), encoding='utf-8')
+    except OSError as exc:
+        print(f"  ⚠️  写入 Chrome 偏好失败: {exc}")
+        return
+
+    if not quiet:
+        print("✓ Chrome 设置已配置:")
+        print("  - PDF 处理: 默认下载（always_open_pdf_externally=True）")
+        print(f"  - 下载目录: {target_dir}")
+        print("  - 下载提示: 关闭")
+
+
+def chrome_argv(user_data_dir, port: int, headless: bool = False) -> list:
+    """Chrome's command line for a scraping instance.
+
+    Deliberately free of "anti-detection" flags (``--disable-extensions``,
+    ``--disable-blink-features=AutomationControlled`` and friends): they make
+    the fingerprint *less* like a real browser, which is the opposite of what
+    gets a challenge cleared.
+    """
+    args = [
+        CHROME_PATH,
+        f'--remote-debugging-port={port}',
+        f'--user-data-dir={user_data_dir}',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+    ]
+    if headless:
+        args.append('--headless=new')
+    return args
+
+
+def spawn_chrome(user_data_dir, port: int,
+                 headless: bool = False) -> Optional[subprocess.Popen]:
+    """Start Chrome detached, in its own process group. None on failure."""
+    extra = {}
+    if not IS_WINDOWS:
+        extra['preexec_fn'] = os.setsid
+    else:
+        extra['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+    try:
+        return subprocess.Popen(
+            chrome_argv(user_data_dir, port, headless),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **extra)
+    except OSError as exc:
+        print(f"  ⚠️  启动 Chrome 失败: {exc}")
+        return None
+
+
+def cdp_port_open(port: int, timeout: float = 1.0) -> bool:
+    """True if something is listening on *port*."""
+    try:
+        with socket.create_connection(('127.0.0.1', port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+async def wait_for_cdp_port(port: int, timeout_s: float = 20.0,
+                            process: Optional[subprocess.Popen] = None) -> bool:
+    """Poll until Chrome's debugging port answers.
+
+    Polling beats a fixed sleep in both directions: a warm profile is ready in
+    a couple of seconds, a cold one can take fifteen. When *process* is given,
+    its death is detected immediately — Chrome exits at once if another
+    instance already holds the profile lock (it forwards the URL and quits),
+    and the port would never open.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if process is not None and process.poll() is not None:
+            print(f"  ⚠️  Chrome 进程已退出 (exit={process.returncode})。"
+                  "常见原因：--user-data-dir 指向的 profile 正被其它 Chrome 实例占用；"
+                  "换一个专用 profile 或先关掉现有 Chrome。")
+            return False
+        if cdp_port_open(port):
+            print(f"  ✓ CDP 端口 {port} 就绪")
+            return True
+        await asyncio.sleep(0.5)
+    print(f"  ⚠️  CDP 端口 {port} 在 {timeout_s:.0f}s 内未响应")
+    return False
+
+
+def kill_chrome() -> None:
+    """Kill every Chrome process (cross-platform)."""
+    if IS_WINDOWS:
+        subprocess.run(['taskkill', '/f', '/im', 'chrome.exe'], capture_output=True)
+    else:
+        subprocess.run(['pkill', '-9', 'chrome'], capture_output=True)
+    print("✓ Chrome processes killed")
+
+
+def launch_chrome(use_user_config: bool = False, headless: bool = False,
+                  return_details: bool = False):
+    """Start the shared scraping Chrome and wait for its debugging port.
+
+    Profile selection, most specific first:
+      * ``use_user_config`` -> the real profile from config.py
+      * ``CHROME_USER_DATA_DIR`` set -> that directory (the launch.sh case: a
+        dedicated scraping profile whose cookies and clearances accumulate
+        across papers)
+      * otherwise a fresh temporary directory
+    """
+    if use_user_config:
+        user_data_dir = CHROME_USER_DATA_DIR
+        print(f"使用用户配置: {user_data_dir}")
+    else:
+        explicit = (os.environ.get('CHROME_USER_DATA_DIR') or '').strip()
+        if explicit:
+            user_data_dir = str(Path(explicit).expanduser().resolve())
+            Path(user_data_dir).mkdir(parents=True, exist_ok=True)
+            print(f"使用环境变量指定的 profile: {user_data_dir}")
+        else:
+            profile_root = os.environ.get('CHROME_PROFILE_ROOT')
+            if profile_root:
+                profile_root = str(Path(profile_root).expanduser())
+                Path(profile_root).mkdir(parents=True, exist_ok=True)
+            user_data_dir = tempfile.mkdtemp(
+                prefix=f'chrome_{CHROME_DEBUG_PORT}_', dir=profile_root)
+            print(f"创建临时配置: {user_data_dir}")
+
+    write_chrome_preferences(user_data_dir)
+
+    print(f"正在启动 Chrome ({CHROME_PATH})...")
+    proc = spawn_chrome(user_data_dir, CHROME_DEBUG_PORT, headless)
+    if proc is None:
+        return (None, user_data_dir, not use_user_config) if return_details else None
+
+    print(f"✓ Chrome 已启动 (PID: {proc.pid})")
+    print(f"✓ 远程调试端口: {CHROME_DEBUG_PORT}")
+
+    # launch_chrome() is called from sync code, so the async waiter is driven
+    # here rather than awaited.
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(wait_for_cdp_port(CHROME_DEBUG_PORT, process=proc))
+    else:
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline and not cdp_port_open(CHROME_DEBUG_PORT):
+            if proc.poll() is not None:
+                break
+            time.sleep(0.5)
+
+    return (proc, user_data_dir, not use_user_config) if return_details else proc
+
+
+def _default_pdf_port() -> int:
+    raw = (os.environ.get('CHROME_PDF_DEBUG_PORT') or '').strip()
+    try:
+        port = int(raw)
+        if 1 <= port <= 65535:
+            return port
+    except ValueError:
+        pass
+    return 9333
+
+
+def _pick_free_port(preferred: int) -> int:
+    """*preferred*, or the next port nothing is listening on.
+
+    Two extractions running at once would otherwise attach to each other's
+    throwaway browser.
+    """
+    port = preferred
+    for _ in range(20):
+        if not cdp_port_open(port):
+            return port
+        port += 1
+    return preferred
+
+
+# ==========================================================================
+# 2-3. CDP primitives and Cloudflare challenge handling
+# ==========================================================================
 
 # Cloudflare localises its interstitial by Accept-Language, so the title is
 # whatever language the browser asked for. A Chinese-locale Chrome shows
@@ -778,3 +1115,233 @@ if __name__ == "__main__":
     print(f"\n结果: {'成功' if result['success'] else '失败'}")
     if result['success']:
         print(f"  target_id: {result['target_id']}")
+
+
+# ==========================================================================
+# 4. Throwaway instance
+# ==========================================================================
+
+
+async def open_url_via_cdp(url: str, port: int, *, expected_doi: str = '',
+                           pdf_mode: bool = False, download_dir: str = '',
+                           timeout_s: int = 60) -> dict:
+    """Open *url* over raw CDP on an already-running Chrome at *port*.
+
+    The shared "navigate and clear Cloudflare without Playwright attached"
+    step, used both by the article-page preload (which targets the batch's
+    shared browser) and by :meth:`FreshChromeSession.open_url` (which targets
+    the throwaway one), so the challenge handling cannot drift between them.
+    """
+    return await bypass_cloudflare_cdp(
+        url=url,
+        debug_port=port,
+        timeout_s=timeout_s,
+        wait_for_content=not pdf_mode,
+        expected_doi=expected_doi,
+        pdf_mode=pdf_mode,
+        download_dir=download_dir,
+    )
+
+
+class FreshChromeSession:
+    """A disposable Chrome instance with a copy of the real profile.
+
+    Nothing here attaches Playwright. The whole point is that the browser
+    stays fingerprint-clean, so the caller drives it over raw CDP (via
+    the helpers above) or simply reads whatever the page downloaded.
+    """
+
+    def __init__(self, port: Optional[int] = None,
+                 download_dir: str = '',
+                 keep_profile: bool = False):
+        self.port = _pick_free_port(port or _default_pdf_port())
+        self.download_dir = download_dir
+        self.keep_profile = keep_profile
+        self.process: Optional[subprocess.Popen] = None
+        self.profile_dir: Optional[Path] = None
+        self._owns_profile = False
+        self.result: dict = {}
+
+    @property
+    def cdp_endpoint(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    # ------------------------------------------------------------------
+
+    def _make_profile(self) -> Path:
+        root = (os.environ.get('CHROME_PDF_PROFILE_ROOT') or '').strip()
+        if root:
+            Path(root).expanduser().mkdir(parents=True, exist_ok=True)
+            target = Path(tempfile.mkdtemp(prefix='chrome_pdf_',
+                                           dir=str(Path(root).expanduser())))
+        else:
+            target = Path(tempfile.mkdtemp(prefix='chrome_pdf_'))
+        self._owns_profile = True
+
+        source = Path(
+            (os.environ.get('CHROME_PROFILE_SOURCE_DIR') or '').strip()
+            or CHROME_PROFILE_SOURCE_DIR
+        ).expanduser()
+        profile_name = os.environ.get('CHROME_PROFILE', CHROME_PROFILE) or 'Default'
+        seed_profile(target, source, profile_name)
+        write_chrome_preferences(target, profile_name=profile_name,
+                                 download_dir=self.download_dir, quiet=True)
+        return target
+
+    async def start(self) -> bool:
+        """Launch the browser and wait for its CDP port."""
+        self.profile_dir = self._make_profile()
+        if self.download_dir:
+            Path(self.download_dir).mkdir(parents=True, exist_ok=True)
+
+        print(f"  🌐 启动独立 Chrome (端口 {self.port}, 真实 profile 副本)...")
+        self.process = spawn_chrome(self.profile_dir, self.port)
+        if self.process is None:
+            return False
+        return await wait_for_cdp_port(self.port, process=self.process)
+
+    async def open_url(self, url: str, *, expected_doi: str = '',
+                       pdf_mode: bool = False, timeout_s: int = 60) -> dict:
+        """Open *url* over raw CDP, clearing any Cloudflare challenge."""
+        self.result = await open_url_via_cdp(
+            url, self.port,
+            expected_doi=expected_doi,
+            pdf_mode=pdf_mode,
+            download_dir=self.download_dir,
+            timeout_s=timeout_s,
+        )
+        return self.result
+
+    async def _browser_close_via_cdp(self) -> bool:
+        """Ask the browser to quit through CDP. Returns True if it obeyed."""
+        import json as _json
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(
+                    f'{self.cdp_endpoint}/json/version', timeout=3) as resp:
+                ws_url = _json.loads(resp.read().decode()).get('webSocketDebuggerUrl')
+        except Exception:
+            return False
+        if not ws_url:
+            return False
+
+        try:
+            import websockets
+        except ImportError:
+            return False
+        try:
+            async with websockets.connect(ws_url, max_size=None) as ws:
+                await ws.send(_json.dumps({'id': 1, 'method': 'Browser.close'}))
+                try:
+                    await asyncio.wait_for(ws.recv(), timeout=3)
+                except Exception:
+                    pass
+            return True
+        except Exception:
+            return False
+
+    def _kill_by_profile(self) -> None:
+        """Kill any Chrome still holding this session's throwaway profile.
+
+        Chrome's launched process often forks and exits, leaving the real
+        browser detached — ``self.process.poll()`` then reports "already
+        gone" and the process-group kill is skipped, so the browser survives
+        and keeps its debugging port bound. Matching on the profile path is
+        exact (the directory name is unique to this session) so it cannot
+        touch the user's own Chrome.
+        """
+        if not self.profile_dir or IS_WINDOWS:
+            return
+        marker = f'--user-data-dir={self.profile_dir}'
+        try:
+            out = subprocess.run(['pgrep', '-f', marker],
+                                 capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return
+        for line in (out.stdout or '').split():
+            try:
+                os.kill(int(line), 9)
+            except (ValueError, OSError):
+                pass
+
+    async def close(self) -> None:
+        """Kill the browser and delete the throwaway profile."""
+        await self._browser_close_via_cdp()
+
+        if self.process is not None:
+            try:
+                if not IS_WINDOWS:
+                    os.killpg(os.getpgid(self.process.pid), 15)
+                else:
+                    self.process.terminate()
+            except OSError:
+                pass
+            for _ in range(12):
+                if self.process.poll() is not None:
+                    break
+                await asyncio.sleep(0.25)
+            if self.process.poll() is None:
+                try:
+                    self.process.kill()
+                except OSError:
+                    pass
+
+        # Belt and braces: the launcher process exiting does not mean the
+        # browser did.
+        self._kill_by_profile()
+        await asyncio.sleep(0.3)
+        self.process = None
+
+        if (self.profile_dir and self._owns_profile and not self.keep_profile
+                and self.profile_dir.exists()):
+            try:
+                shutil.rmtree(self.profile_dir, ignore_errors=True)
+            except OSError:
+                pass
+        self.profile_dir = None
+
+
+async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
+                                   pdf_mode: bool = False,
+                                   download_dir: str = '',
+                                   timeout_s: int = 60,
+                                   port: Optional[int] = None
+                                   ) -> FreshChromeSession:
+    """Launch a clean Chrome, open *url* in it, and hand back the session.
+
+    The session is returned **started and still running** so the caller can
+    read ``session.result`` (and, in ``pdf_mode``, the downloaded file) before
+    calling ``await session.close()``. Always close it — that is what removes
+    the throwaway profile.
+
+    On launch failure the session comes back with an empty ``result``; the
+    caller should fall back to its normal path rather than assume success.
+    """
+    session = FreshChromeSession(port=port, download_dir=download_dir)
+    if not await session.start():
+        await session.close()
+        return session
+    try:
+        await session.open_url(url, expected_doi=expected_doi,
+                               pdf_mode=pdf_mode, timeout_s=timeout_s)
+    except Exception as exc:
+        print(f"  ⚠️  独立 Chrome 打开页面失败: {type(exc).__name__}: {exc}")
+    return session
+
+
+if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(description='启动配置好的 Chrome')
+    parser.add_argument('--user-config', action='store_true',
+                        help='使用用户真实配置目录')
+    parser.add_argument('--headless', action='store_true', help='无头模式')
+    parser.add_argument('--kill', action='store_true', help='关闭所有 Chrome 进程')
+    args = parser.parse_args()
+
+    if args.kill:
+        kill_chrome()
+        raise SystemExit(0)
+
+    launch_chrome(use_user_config=args.user_config, headless=args.headless)
