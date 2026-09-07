@@ -249,9 +249,19 @@ class ACSHandler(PublisherHandler):
             # link to nowhere is worse than plain text.
             if not urlparse(resolved).netloc:
                 return inner
-            return f"[{text}]({resolved})" if text else ''
+            return f"[{text}]({cls._md_url(resolved)})" if text else ''
 
         return inner
+
+    @staticmethod
+    def _md_url(url: str) -> str:
+        """Make a URL safe as a markdown link target.
+
+        Parentheses are legal in a DOI (10.1002/(ISSN)1521-3773,
+        10.1016/S0925-9635(02)00212-1) but terminate the target, so they are
+        percent-encoded. Everything else is left alone.
+        """
+        return (url or '').replace('(', '%28').replace(')', '%29')
 
     @staticmethod
     def _wrap(inner: str, mark: str) -> str:
@@ -405,10 +415,21 @@ class ACSHandler(PublisherHandler):
     # References
     # ==================================================================
 
-    # Link furniture ACS appends to every citation. Removed by container so a
-    # reference whose *title* happens to contain one of these words survives.
+    # ACS appends four links to every citation. Only the Crossref one is a
+    # durable identifier for the cited work; the others are generated from it
+    # and are not worth carrying:
+    #
+    #   Crossref        dx.doi.org/10.1021/cr00013a013     <- kept, as the DOI
+    #   Search ADS      adsabs search query built from that DOI
+    #   OpenURL         getit.princeton.edu/...            <- this institution's
+    #                                                         resolver; useless
+    #                                                         to any other reader
+    #   Google Scholar  scholar.google.com search query
+    #
+    # Removed by container rather than by matching the words, so a reference
+    # whose own title contains "CAS" or "Google Scholar" survives.
+    _REF_DOI_SELECTOR = 'div.crossref-doi'
     _REF_LINK_SELECTORS = (
-        'div.crossref-doi',
         'div.adsDoiReference',
         'div.xslopenurl',
         'div.citation-links',
@@ -470,6 +491,33 @@ class ACSHandler(PublisherHandler):
         if label is not None and label.find_parent('div', class_='citation') is None:
             label.decompose()
 
+        # DOIs the citation already prints itself, so the Crossref link is not
+        # appended as a duplicate.
+        already_linked = {cls._doi_from_url(a.get('href') or '')
+                          for a in clone.find_all('a', href=True)
+                          if a.find_parent('div', class_='crossref-doi') is None}
+        already_linked.discard('')
+
+        # Turn each Crossref link into inline markdown *before* flattening, so
+        # it stays attached to its own sub-citation: a reference listing four
+        # works ends with four DOIs, each after the work it belongs to.
+        for holder in clone.select(cls._REF_DOI_SELECTOR):
+            anchor = holder.find('a', href=True)
+            href = (anchor.get('href') or '').strip() if anchor else ''
+            if not href:
+                holder.decompose()
+                continue
+            doi = cls._doi_from_url(href)
+            # Some references already print their DOI inline; appending the
+            # Crossref link would then show the same identifier twice.
+            if doi and doi in already_linked:
+                holder.decompose()
+                continue
+            if doi:
+                already_linked.add(doi)
+            holder.replace_with(
+                NavigableString(f" [{doi or href}]({cls._md_url(href)})"))
+
         for selector in cls._REF_LINK_SELECTORS:
             for el in clone.select(selector):
                 el.decompose()
@@ -478,15 +526,41 @@ class ACSHandler(PublisherHandler):
         text = cls._REF_LINK_WORDS.sub(' ', text)
         # ACS separates every field with its own element, so the flattened
         # text arrives with spaces before the punctuation that joins them.
-        text = re.sub(r'\s+([,.;:])', r'\1', text)
-        text = re.sub(r'\s*-\s*(?=\d)', '-', text)
+        # Markdown links are exempt: the punctuation inside a URL is part of
+        # it, and "). (b)" must not become ").(b)".
+        text = cls._sub_outside_links(r'\s+([,.;:])', r'\1', text)
+        text = cls._sub_outside_links(r'\s*-\s*(?=\d)', '-', text)
         # Sub-citation markers lose their surrounding space when the elements
         # are flattened: "reviews:(a)Kagan" -> "reviews: (a) Kagan". The
         # single-letter-in-parens shape avoids touching "[4 + 2]" and the
         # like.
-        text = re.sub(r'\s*\(([a-z])\)\s*', r' (\1) ', text)
+        text = cls._sub_outside_links(r'\s*\(([a-z])\)\s*', r' (\1) ', text)
         text = re.sub(r'\s{2,}', ' ', text).strip(' ,;')
         return text
+
+    _MD_LINK_RE = re.compile(r'\[[^\]]*\]\([^)]*\)')
+
+    @classmethod
+    def _sub_outside_links(cls, pattern: str, repl: str, text: str) -> str:
+        """Apply a whitespace tidy-up everywhere except inside markdown links.
+
+        The reference text is punctuation-heavy and so are URLs; running the
+        "close up the space before a comma" rules over a link would corrupt
+        the target.
+        """
+        out, last = [], 0
+        for match in cls._MD_LINK_RE.finditer(text):
+            out.append(re.sub(pattern, repl, text[last:match.start()]))
+            out.append(match.group(0))
+            last = match.end()
+        out.append(re.sub(pattern, repl, text[last:]))
+        return ''.join(out)
+
+    @staticmethod
+    def _doi_from_url(url: str) -> str:
+        """The DOI inside a resolver URL, for use as the link text."""
+        m = re.search(r'(10\.\d{4,9}/\S+)$', url or '')
+        return unquote(m.group(1)) if m else ''
 
     # ==================================================================
     # Figures
