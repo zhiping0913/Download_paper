@@ -200,7 +200,8 @@ def write_chrome_preferences(user_data_dir, profile_name: str = '',
         print("  - 下载提示: 关闭")
 
 
-def chrome_argv(user_data_dir, port: int, headless: bool = False) -> list:
+def chrome_argv(user_data_dir, port: int, headless: bool = False,
+                start_url: str = 'about:blank') -> list:
     """Chrome's command line for a scraping instance.
 
     Deliberately free of "anti-detection" flags (``--disable-extensions``,
@@ -219,14 +220,16 @@ def chrome_argv(user_data_dir, port: int, headless: bool = False) -> list:
     ]
     if headless:
         args.append('--headless=new')
-    # Start on about:blank rather than chrome://new-tab-page: the reusable tab
-    # is then a normal page that JS navigation can leave.
-    args.append('about:blank')
+    # The starting URL goes on the command line. For the throwaway browser
+    # that is the article/PDF URL itself, so the page is fetched by Chrome's
+    # own startup navigation -- before any CDP command has touched the tab.
+    if start_url:
+        args.append(start_url)
     return args
 
 
-def spawn_chrome(user_data_dir, port: int,
-                 headless: bool = False) -> Optional[subprocess.Popen]:
+def spawn_chrome(user_data_dir, port: int, headless: bool = False,
+                 start_url: str = 'about:blank') -> Optional[subprocess.Popen]:
     """Start Chrome detached, in its own process group. None on failure."""
     extra = {}
     if not IS_WINDOWS:
@@ -235,7 +238,7 @@ def spawn_chrome(user_data_dir, port: int,
         extra['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
     try:
         return subprocess.Popen(
-            chrome_argv(user_data_dir, port, headless),
+            chrome_argv(user_data_dir, port, headless, start_url),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **extra)
     except OSError as exc:
         print(f"  ⚠️  启动 Chrome 失败: {exc}")
@@ -646,6 +649,7 @@ async def bypass_cloudflare_cdp(
     expected_doi: str = "",
     pdf_mode: bool = False,
     download_dir: str = "",
+    already_open: bool = False,
 ) -> dict:
     """
     用纯 CDP WebSocket 打开 URL 并等待 Cloudflare 挑战通过。
@@ -667,6 +671,40 @@ async def bypass_cloudflare_cdp(
 
     # 找一个可复用的 tab（优先 about:blank，其次任意 page）
     ws_url = None
+    created_at_target = already_open
+    try:
+        if already_open:
+            # Chrome was launched with this URL on its command line, so the
+            # page is already loading in its own tab. Attach to that tab and
+            # navigate nothing: the fetch has happened without a single CDP
+            # command touching it, which is the whole point of using a
+            # throwaway browser.
+            target_host = urllib.parse.urlparse(url).netloc.lower()
+            for _ in range(20):
+                try:
+                    with urllib.request.urlopen(
+                            f"http://localhost:{debug_port}/json", timeout=5) as resp:
+                        for t in json.loads(resp.read().decode()):
+                            if t.get("type") != "page":
+                                continue
+                            host = urllib.parse.urlparse(
+                                t.get("url", "")).netloc.lower()
+                            if host and host == target_host:
+                                ws_url = t.get("webSocketDebuggerUrl")
+                                break
+                except Exception:
+                    pass
+                if ws_url:
+                    break
+                await asyncio.sleep(0.5)
+            if ws_url:
+                print(f"  📄 附着到启动时打开的 tab（未经 CDP 导航）")
+            else:
+                print(f"  ⚠️  未找到启动时打开的 tab，回退到常规流程")
+                created_at_target = False
+    except Exception:
+        created_at_target = already_open and bool(ws_url)
+
     try:
         targets_url = f"http://localhost:{debug_port}/json"
         with urllib.request.urlopen(targets_url, timeout=5) as resp:
@@ -675,6 +713,8 @@ async def bypass_cloudflare_cdp(
         # 优先选 New Tab（chrome://newtab）—— 起始环境最自然，
         # Cloudflare 挑战会正常渲染 iframe 并自动通过
         for t in targets:
+            if ws_url:
+                break
             if t.get("type") == "page" and "chrome://newtab" in t.get("url", "").lower():
                 ws_url = t.get("webSocketDebuggerUrl")
                 print(f"  📄 复用 New Tab (chrome://newtab)")
@@ -683,7 +723,6 @@ async def bypass_cloudflare_cdp(
         # 找不到 New Tab 就新建一个
         # 注意：绝不复用 about:blank tab——它很可能是 Playwright 创建的，
         # 带有自动化指纹，会导致 Cloudflare 直接 403
-        created_at_target = False
         if not ws_url:
             # Create the tab *at the target URL*.
             #
@@ -731,8 +770,9 @@ async def bypass_cloudflare_cdp(
             await _send(ws, "Runtime.enable")
 
             if created_at_target:
-                # Chrome already opened the URL when the tab was created.
-                print(f"  🚀  tab 已直接打开目标页面")
+                # The tab is already on (or loading) the target URL: either
+                # Chrome opened it at startup, or the tab was created there.
+                print(f"  🚀  tab 已在目标页面，无需导航")
                 await asyncio.sleep(2)
             else:
                 # 用 JS location.href 导航（比 Page.navigate 指纹更自然）
@@ -1177,7 +1217,7 @@ if __name__ == "__main__":
 
 async def open_url_via_cdp(url: str, port: int, *, expected_doi: str = '',
                            pdf_mode: bool = False, download_dir: str = '',
-                           timeout_s: int = 60) -> dict:
+                           timeout_s: int = 60, already_open: bool = False) -> dict:
     """Open *url* over raw CDP on an already-running Chrome at *port*.
 
     The shared "navigate and clear Cloudflare without Playwright attached"
@@ -1193,6 +1233,7 @@ async def open_url_via_cdp(url: str, port: int, *, expected_doi: str = '',
         expected_doi=expected_doi,
         pdf_mode=pdf_mode,
         download_dir=download_dir,
+        already_open=already_open,
     )
 
 
@@ -1241,27 +1282,39 @@ class FreshChromeSession:
                                  download_dir=self.download_dir, quiet=True)
         return target
 
-    async def start(self) -> bool:
-        """Launch the browser and wait for its CDP port."""
+    async def start(self, start_url: str = 'about:blank') -> bool:
+        """Launch the browser, optionally straight at *start_url*.
+
+        Opening the URL from the command line means Chrome performs the
+        navigation itself, exactly as it would for a user clicking a link:
+        no CDP command participates in the page load.
+        """
         self.profile_dir = self._make_profile()
         if self.download_dir:
             Path(self.download_dir).mkdir(parents=True, exist_ok=True)
 
         print(f"  🌐 启动独立 Chrome (端口 {self.port}, 真实 profile 副本)...")
-        self.process = spawn_chrome(self.profile_dir, self.port)
+        self.process = spawn_chrome(self.profile_dir, self.port,
+                                    start_url=start_url)
         if self.process is None:
             return False
         return await wait_for_cdp_port(self.port, process=self.process)
 
     async def open_url(self, url: str, *, expected_doi: str = '',
-                       pdf_mode: bool = False, timeout_s: int = 60) -> dict:
-        """Open *url* over raw CDP, clearing any Cloudflare challenge."""
+                       pdf_mode: bool = False, timeout_s: int = 60,
+                       already_open: bool = False) -> dict:
+        """Open *url*, clearing any Cloudflare challenge.
+
+        With *already_open* the browser was launched on this URL, so this
+        only attaches and watches the challenge through.
+        """
         self.result = await open_url_via_cdp(
             url, self.port,
             expected_doi=expected_doi,
             pdf_mode=pdf_mode,
             download_dir=self.download_dir,
             timeout_s=timeout_s,
+            already_open=already_open,
         )
         return self.result
 
@@ -1372,15 +1425,81 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
     caller should fall back to its normal path rather than assume success.
     """
     session = FreshChromeSession(port=port, download_dir=download_dir)
-    if not await session.start():
+    # Launch straight at the URL: Chrome's own startup navigation fetches the
+    # page, so nothing automated participates in the load. Attaching happens
+    # afterwards, only to watch the challenge and click it through.
+    if not await session.start(start_url=url):
         await session.close()
         return session
+
+    # Fast path: a PDF that is served without a challenge is already on disk
+    # moments after startup. Returning here means no CDP command ever ran
+    # against the page at all.
+    #
+    # This also has to come first for correctness: the download starts before
+    # we could attach, so the challenge watcher would take its "baseline" of
+    # the directory *after* the file landed, see nothing new, and report
+    # failure for a download that had already succeeded.
+    if pdf_mode and download_dir:
+        landed = await _await_download(download_dir, timeout_s=min(20, timeout_s))
+        if landed:
+            print(f"  ✓ PDF 已下载（未经 CDP 交互）: {landed}")
+            session.result = {'success': True, 'downloaded_file': landed,
+                              'target_id': None, 'ws_url': None}
+            return session
+
     try:
         await session.open_url(url, expected_doi=expected_doi,
-                               pdf_mode=pdf_mode, timeout_s=timeout_s)
+                               pdf_mode=pdf_mode, timeout_s=timeout_s,
+                               already_open=True)
     except Exception as exc:
         print(f"  ⚠️  独立 Chrome 打开页面失败: {type(exc).__name__}: {exc}")
+
+    # The challenge flow reports the file it saw appear; when it did not (it
+    # only watches for *new* files), fall back to whatever is in the
+    # directory. It is created empty per attempt, so anything there is ours.
+    if pdf_mode and download_dir and not (session.result or {}).get('downloaded_file'):
+        landed = await _await_download(download_dir, timeout_s=5)
+        if landed:
+            session.result = dict(session.result or {},
+                                  success=True, downloaded_file=landed)
     return session
+
+
+async def _await_download(download_dir: str, timeout_s: float = 20.0,
+                          settle_s: float = 1.0) -> str:
+    """Wait for a finished download to appear in *download_dir*.
+
+    The directory is created empty for each attempt, so any completed file in
+    it belongs to this download -- no before/after comparison is needed, which
+    is what makes this robust when the download beats us to the directory.
+
+    ``.crdownload`` files are Chrome's in-progress markers and are skipped;
+    the file is considered done when it has stopped growing.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            names = [n for n in os.listdir(download_dir)
+                     if not n.endswith('.crdownload')]
+        except OSError:
+            names = []
+        for name in names:
+            path = os.path.join(download_dir, name)
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            if size <= 0:
+                continue
+            await asyncio.sleep(settle_s)
+            try:
+                if os.path.getsize(path) == size:
+                    return path
+            except OSError:
+                continue
+        await asyncio.sleep(0.5)
+    return ''
 
 
 if __name__ == '__main__':
