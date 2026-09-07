@@ -1,0 +1,23 @@
+{
+  "_comment": [
+    "SPIE via an explicit link.",
+    "",
+    "10.3788 is Chinese Laser Press, not SPIE: https://doi.org/10.3788/PI.2023.R05",
+    "resolves to researching.cn. Photonics Insights is co-published, so the same",
+    "article also sits on spiedigitallibrary.org, and only that copy has the",
+    "fulltext API the SPIE handler uses (the API answers from the article's own",
+    "page, not from the SPIE homepage, so the URL cannot be derived from the DOI).",
+    "",
+    "Passing \"link\" skips doi.org and lands the run straight on the SPIE page,",
+    "which routes it to SPIEHandler.",
+    "",
+    "SPIE's own prefix, 10.1117, resolves to spiedigitallibrary.org on its own and",
+    "needs no link."
+  ],
+  "articles": [
+    {
+      "doi": "10.3788/PI.2023.R05",
+      "link": "https://www.spiedigitallibrary.org/journals/photonics-insights/volume-2/issue-2/R05/Optical-manipulation-from-fluid-to-solid-domains/10.3788/PI.2023.R05.full"
+    }
+  ]
+}
