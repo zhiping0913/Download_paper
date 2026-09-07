@@ -67,6 +67,13 @@ python batch_process.py --file dois.txt                     # 批量
   整体左移，表格看着正常但数值全串到错误的列 —— 必须按网格放置
 - `div.article-section__table-footnotes` 是表下的 `Note:`，要跟着表格走
 - 参考文献：`ul.rlist.separator` 的每个 `<li>` 去标记取文字即可
+- **老文章（如 2010 年的 10.1002/cssc.201000245）没有 MathML**，公式是预渲染 GIF
+  (`tex2gif-eqn-N.gif`)，编号在 `span.inline-equation__label`（写作 `((1))`）。
+  这类当图片下载并在 md 里占位，否则整篇公式全丢
+- `div.graphical-abstract` = Graphical Abstract，配图即 key_image
+- 图片/公式 GIF 的编号由 `_number_assets()` **在解析前统一打到 `data-dp-asset`**：
+  图片扫描和正文遍历是两次独立解析，各自计数迟早会错位（ACS 就踩过），
+  从标记里读编号就不会
 
 ### ACS (`10.1021`, pubs.acs.org)
 

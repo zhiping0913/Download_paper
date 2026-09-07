@@ -159,6 +159,12 @@ class WileyHandler(PublisherHandler):
             return f"${latex}$" if latex else ''
         if 'fallback__mathEquation' in classes:
             return ''
+        if name == 'img' and 'tex2gif' in (node.get('src') or ''):
+            # An inline formula shipped as an image; keep it in the text flow.
+            index = cls._asset_index(node)
+            if index:
+                return f" ![Equation](__WILEY_FIG_{index}__) "
+            return f" ![Equation]({cls._abs_asset(node.get('src'))}) "
 
         inner = ''.join(cls._inline_md(c) for c in node.children)
 
@@ -242,6 +248,7 @@ class WileyHandler(PublisherHandler):
 
         date = cls._meta(soup, 'citation_publication_date')
         m = re.search(r'(19|20|21)\d{2}', date)
+        graphical_md, key_image = cls.extract_graphical_abstract(html)
 
         return {
             'title': re.sub(r'\s+', ' ', cls._meta(soup, 'citation_title')).strip(),
@@ -258,6 +265,8 @@ class WileyHandler(PublisherHandler):
             'abstract': cls.extract_abstract_from_html(html),
             'corresponding_author_emails': [],
             '_keywords': cls._extract_keywords(soup),
+            '_graphical_abstract_md': graphical_md,
+            'key_image_url': key_image,
         }
 
     @classmethod
@@ -274,6 +283,46 @@ class WileyHandler(PublisherHandler):
             raw = cls._meta(soup, 'citation_keywords')
             keywords = [k.strip() for k in re.split(r'[;,]', raw) if k.strip()]
         return keywords
+
+    @classmethod
+    def extract_graphical_abstract(cls, html: str) -> Tuple[str, str]:
+        """``(text_md, image_url)`` for the Graphical Abstract.
+
+        Wiley puts a short plain-language summary and a key image in
+        ``div.graphical-abstract``; the image is the article's cover graphic,
+        so it is reported as ``key_image_url`` and the downloader saves it as
+        key_image.png like every other publisher's.
+        """
+        if not html:
+            return '', ''
+        soup = BeautifulSoup(html, 'html.parser')
+        block = soup.select_one('div.graphical-abstract, section.graphical-abstract')
+        if block is None:
+            return '', ''
+
+        image = ''
+        img = block.find('img')
+        if img is not None:
+            image = cls._abs_asset(img.get('data-lg-src') or img.get('src'))
+        anchor_el = block.find('a', href=re.compile('/cms/asset/'))
+        if anchor_el is not None:
+            image = cls._abs_asset(anchor_el['href'])
+
+        clone = BeautifulSoup(str(block), 'html.parser')
+        for el in clone.select('figure, div.figure-extra, script, style'):
+            el.decompose()
+        parts = []
+        for node in clone.find_all(['p', 'div']):
+            if node.find(['p', 'div']) is not None:
+                continue
+            text = cls._text_md(node)
+            if text and text not in parts and not cls._is_noise(text):
+                parts.append(text)
+        if not parts:
+            text = cls._text_md(clone)
+            if text and not cls._is_noise(text):
+                parts.append(text)
+        return '\n\n'.join(parts), image
 
     @classmethod
     def extract_abstract_from_html(cls, html: str) -> str:
@@ -295,27 +344,97 @@ class WileyHandler(PublisherHandler):
     # Figures
     # ==================================================================
 
+    # Everything that becomes a downloadable image, in document order:
+    # figures, and the GIFs older Wiley articles use instead of MathML
+    # (10.1002/cssc.201000245 renders each equation as tex2gif-eqn-N.gif).
+    _ASSET_SELECTOR = 'figure, img[src*="tex2gif"]'
+
+    @classmethod
+    def _number_assets(cls, soup: BeautifulSoup) -> None:
+        """Stamp every downloadable asset with its document-order index.
+
+        The figure scan and the body walk parse the page separately; numbering
+        the nodes in the markup means they cannot disagree about which asset is
+        which, however either one is later changed. An equation GIF inside a
+        figure is skipped so it is not counted twice.
+        """
+        index = 0
+        for node in soup.select(cls._ASSET_SELECTOR):
+            if node.name == 'img' and node.find_parent('figure') is not None:
+                continue
+            index += 1
+            node['data-dp-asset'] = str(index)
+
+    @staticmethod
+    def _asset_index(node: Tag) -> str:
+        return (node.get('data-dp-asset') or '').strip()
+
+    @classmethod
+    def _equation_image(cls, node: Tag) -> Optional[Tag]:
+        """The GIF standing in for a formula, if this block uses one."""
+        img = node.find('img', src=re.compile('tex2gif'))
+        return img
+
     @classmethod
     def extract_figures_from_html(cls, html: str) -> dict:
         """``{'fig_N': {'url', 'original_url', 'caption', 'label'}}``."""
         if not html:
             return {}
         soup = BeautifulSoup(html, 'html.parser')
+        cls._number_assets(soup)
         figures = {}
-        for index, fig in enumerate(soup.select('figure.figure, figure[id]'), 1):
-            large, inline = cls._figure_urls(fig)
+        for node in soup.select(cls._ASSET_SELECTOR):
+            index = cls._asset_index(node)
+            if not index:
+                continue
+            if node.name == 'img':
+                # An equation GIF: no caption, and its number comes from the
+                # article ("((1))"), not from the asset sequence.
+                url = cls._abs_asset(node.get('data-lg-src') or node.get('src'))
+                if not url:
+                    continue
+                figures[f'fig_{index}'] = {
+                    'url': url,
+                    'original_url': url,
+                    'caption': '',
+                    'label': cls._equation_label(node) or 'Equation',
+                }
+                continue
+            large, inline = cls._figure_urls(node)
             if not (large or inline):
                 continue
-            label_el = fig.find(class_='figure__title')
+            label_el = node.find(class_='figure__title')
             label = (label_el.get_text(' ', strip=True)
                      if label_el is not None else f'Figure {index}')
             figures[f'fig_{index}'] = {
                 'url': large or inline,
                 'original_url': inline or large,
-                'caption': cls._figure_caption(fig),
+                'caption': cls._figure_caption(node),
                 'label': label,
             }
         return figures
+
+    @classmethod
+    def _abs_asset(cls, url: str) -> str:
+        url = (url or '').strip()
+        if not url:
+            return ''
+        if url.startswith('//'):
+            return 'https:' + url
+        return urljoin(cls.WILEY_BASE, url)
+
+    @staticmethod
+    def _equation_label(img: Tag) -> str:
+        """The "(1)" printed beside an equation, if the article numbers it."""
+        block = img.find_parent('div', class_='inline-equation')
+        if block is None:
+            return ''
+        label_el = block.find('span', class_='inline-equation__label')
+        if label_el is None:
+            return ''
+        # Wiley writes the number as "((1))".
+        text = label_el.get_text(' ', strip=True).strip()
+        return re.sub(r'^\((\(.*\))\)$', r'\1', text) or text
 
     @classmethod
     def _figure_urls(cls, fig: Tag) -> Tuple[str, str]:
@@ -638,21 +757,45 @@ class WileyHandler(PublisherHandler):
 
     @classmethod
     def _render_equation(cls, node: Tag) -> List[str]:
-        """A display equation, with its number when Wiley prints one."""
+        """A display equation: LaTeX where Wiley has it, else its image.
+
+        Articles predating Wiley's MathML rendering (2010-era ChemSusChem,
+        say) ship each formula as a pre-rendered GIF with no machine-readable
+        source at all. Dropping those would silently lose every equation in
+        the paper, so the image is emitted as a figure instead -- downloaded
+        like any other asset and kept with its printed number.
+        """
+        label_el = (node.find('span', class_='inline-equation__label')
+                    or node.find(class_=re.compile('equation-label|disp-formula__label')))
+        label = ''
+        if label_el is not None:
+            label = re.sub(r'^\((\(.*\))\)$', r'\1',
+                           label_el.get_text(' ', strip=True).strip())
+
         latex = cls._math_latex(node)
-        if not latex:
-            return []
-        label_el = node.find(class_=re.compile('equation-label|disp-formula__label'))
-        label = label_el.get_text(' ', strip=True) if label_el is not None else ''
-        line = f"$${latex}$$"
-        if label:
-            line += f" {label}"
-        return [line, '']
+        if latex:
+            line = f"$${latex}$$"
+            if label:
+                line += f" {label}"
+            return [line, '']
+
+        img = cls._equation_image(node)
+        if img is not None:
+            index = cls._asset_index(img)
+            alt = f"Equation {label}" if label else 'Equation'
+            if index:
+                line = f"![{alt}](__WILEY_FIG_{index}__)"
+            else:
+                line = f"![{alt}]({cls._abs_asset(img.get('src'))})"
+            if label:
+                line += f" {label}"
+            return [line, '']
+        return []
 
     @classmethod
     def _render_figure(cls, node: Tag, ctx: dict) -> List[str]:
         ctx['fig_seq'] += 1
-        index = ctx['fig_seq']
+        index = cls._asset_index(node) or ctx['fig_seq']
         label_el = node.find(class_='figure__title')
         label = (label_el.get_text(' ', strip=True)
                  if label_el is not None else f'Figure {index}')
@@ -674,6 +817,11 @@ class WileyHandler(PublisherHandler):
         if body is None:
             return ''
 
+        # Number assets on the *whole* document first, so the indices match
+        # the ones extract_figures_from_html() hands the downloader; then
+        # narrow to the body.
+        cls._number_assets(soup)
+        body = soup.select_one('section.article-section__full')
         body = BeautifulSoup(str(body), 'html.parser')
         for selector in _WILEY_DROP_SELECTORS:
             for el in body.select(selector):
@@ -860,6 +1008,17 @@ class WileyHandler(PublisherHandler):
                    abstract or '[No abstract available.]', ''])
         if metadata.get('_keywords'):
             md.extend(['**Keywords:** ' + ', '.join(metadata['_keywords']), ''])
+
+        # Graphical Abstract: the plain-language summary and its cover image.
+        graphical = (metadata.get('_graphical_abstract_md') or '').strip()
+        key_image = (kwargs.get('key_image_filename')
+                     or metadata.get('key_image_url') or '')
+        if graphical or key_image:
+            md.extend(['## Graphical Abstract', ''])
+            if key_image:
+                md.extend([f"![Graphical Abstract]({key_image})", ''])
+            if graphical:
+                md.extend([graphical, ''])
 
         body_md = (metadata.get('_body_md') or '').strip()
         if not body_md and isinstance(article_text, str) and article_text.strip():
