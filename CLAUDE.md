@@ -54,6 +54,26 @@ python batch_process.py --file dois.txt                     # 批量
 | `10.1109` | IEEEHandler | 有头 | 完整（REST 接口） |
 | `10.1021` | ACSHandler | 有头 | 完整 |
 | `10.1002` | WileyHandler | 有头 | 完整 |
+| `10.1117` / spiedigitallibrary.org | SPIEHandler | 有头 | 完整 |
+
+### SPIE (`10.1117`、spiedigitallibrary.org)
+
+- landing page 只有元数据（`citation_*` + `ld+json`），正文要 **POST**
+  `/api/journals/article/fulltexthtml`，body `{"urlId": "<doi>"}`，
+  用页面内 `fetch()` 发（DOI 不分大小写）。响应存 `fulltexthtml.json`
+- ⚠️ **必须在文章自己的页面上调这个 API**：实测在 SPIE 首页上调用没有响应，
+  在文章 `.full` 页上调用返回 926 KB
+- ⚠️ `10.3788` **不是 SPIE 的前缀**，是中国激光杂志社，doi.org 会跳到
+  researching.cn；Photonics Insights 这类是 SPIE 联合出版的镜像。所以
+  **不按 `10.3788` 路由**，要用 SPIE 版就在 `--json` 里传 `link`
+- 正文里 **每个 float 都包在 `<p>` 里**（`div.fig`/`div.disp-formula`/
+  `div.article-table` 的父节点都是 `<p>`），段落只按行内渲染会把公式、图片
+  占位、表格全部拍平成正文
+- 章节号和标题是**两个独立的 heading**（`<h2 class="label">2.1.</h2>` +
+  `<h3>标题</h3>`），要合并；表格的 label 在表**外面**，接到 caption 上
+- `<!-- named anchor -->` 是注释，bs4 的 Comment 是 NavigableString 子类，
+  不特判会把"named anchor"当正文输出
+- 图片优先 `FigureImages/`（高清），`WebImages/` 是预览
 
 ### Wiley (`10.1002`, onlinelibrary.wiley.com)
 
