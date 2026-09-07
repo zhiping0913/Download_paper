@@ -492,6 +492,29 @@ class ACSHandler(PublisherHandler):
     # Figures
     # ==================================================================
 
+    # Every float that can carry a downloadable image, in document order.
+    # Tables belong here too: ACS ships many of them as a picture inside
+    # div.table-wrap (this paper's Table 1 is ja-2015-000337_0018.png), and
+    # the body walk numbers floats with the same selector, so the two stay in
+    # lockstep and __ACS_FIG_n__ always names the right file.
+    _FLOAT_SELECTOR = 'div.fig.fig-section, div.table-wrap'
+
+    @classmethod
+    def _iter_floats(cls, soup: BeautifulSoup):
+        """Yield ``(index, node, large_url, medium_url)`` for image-bearing floats.
+
+        Floats with no image are skipped without consuming an index -- the
+        body walk applies the same rule, so a text-only table cannot shift
+        every later figure's placeholder by one.
+        """
+        index = 0
+        for node in soup.select(cls._FLOAT_SELECTOR):
+            large, medium = cls._figure_urls(node)
+            if not (large or medium):
+                continue
+            index += 1
+            yield index, node, large, medium
+
     @classmethod
     def extract_figures_from_html(cls, html: str) -> dict:
         """``{'fig_N': {'url', 'original_url', 'caption', 'label'}}``."""
@@ -499,17 +522,14 @@ class ACSHandler(PublisherHandler):
             return {}
         soup = BeautifulSoup(html, 'html.parser')
         figures = {}
-        for index, fig in enumerate(soup.select('div.fig.fig-section'), 1):
-            large, medium = cls._figure_urls(fig)
-            if not (large or medium):
-                continue
-            caption_el = fig.find('div', class_='caption')
+        for index, node, large, medium in cls._iter_floats(soup):
+            caption_el = node.find('div', class_='caption')
             caption = cls._text_md(caption_el) if caption_el is not None else ''
             figures[f'fig_{index}'] = {
                 'url': large or medium,
                 'original_url': medium or large,
                 'caption': caption,
-                'label': cls._float_label(fig) or f'Figure {index}',
+                'label': cls._float_label(node) or f'Figure {index}',
             }
         return figures
 
@@ -523,7 +543,8 @@ class ACSHandler(PublisherHandler):
         rendered label keeps the two apart -- deriving it from the class or
         assuming "Figure" would relabel every scheme.
         """
-        label_el = fig.find('div', class_='label')
+        label_el = (fig.find('div', class_='label')
+                    or fig.select_one('div.table-wrap-title span.label'))
         if label_el is None:
             return ''
         return label_el.get_text(' ', strip=True).rstrip('. ')
@@ -658,7 +679,12 @@ class ACSHandler(PublisherHandler):
             ctx['fig_seq'] += 1
             return cls._render_figure(node, ctx['fig_seq'])
         if 'table-wrap' in classes:
-            return cls._render_table_wrap(node)
+            large, medium = cls._figure_urls(node)
+            index = 0
+            if large or medium:
+                ctx['fig_seq'] += 1
+                index = ctx['fig_seq']
+            return cls._render_table_wrap(node, index)
         if 'formula-wrap' in classes:
             return cls._render_figure_free_formula(node)
 
@@ -726,7 +752,7 @@ class ACSHandler(PublisherHandler):
         return lines
 
     @classmethod
-    def _render_table_wrap(cls, node: Tag) -> List[str]:
+    def _render_table_wrap(cls, node: Tag, index: int = 0) -> List[str]:
         """A table float: title, the grid itself, then its footnotes.
 
         ACS renders the table twice -- once in ``div.table-overflow`` and
@@ -758,6 +784,12 @@ class ACSHandler(PublisherHandler):
             md = cls._render_table(table)
             if md:
                 out.extend([md, ''])
+
+        # Tables shipped as a picture (or as a grid with an accompanying
+        # scheme drawing) carry their own image, downloaded like any figure.
+        if index:
+            label = cls._float_label(node) or f'Table {index}'
+            out.extend([f"![{label}](__ACS_FIG_{index}__)", ''])
 
         out.extend(cls._render_float_notes(node))
         return out
