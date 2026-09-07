@@ -673,7 +673,18 @@ async def get_supplemental_links(page, doi: str = None, journal_prefix: str = No
         # paragraph pairs. That text is the only place the individual movies
         # are explained (the ZIP itself is just an archive), so it belongs in
         # the markdown even when there is a single downloadable file.
+        #
+        # Only when there ARE files, though. APS serves /supplemental/<doi>
+        # for every article and returns its "Not Found" page for the ones
+        # without supplemental material; summarising that gave papers a
+        # "## Supplemental Material / # Not Found" section describing files
+        # that do not exist.
         summary_md = ''
+        if not supp_links:
+            print("  ℹ️  该文章没有补充材料")
+            page.remove_listener("response", handle_response)
+            return [], {}, ''
+
         try:
             summary_html = await page.evaluate(_SUPP_SUMMARY_JS)
         except Exception as e:
@@ -1391,7 +1402,10 @@ class APSHandler(PublisherHandler):
         supp_downloads = kwargs.get('supplemental_downloads', [])
         supp_summary = (metadata.get('_supplemental_summary_md') or '').strip()
 
-        if supp_summary:
+        # No files means no section at all. The summary only ever describes
+        # the files, so printing it alone would announce supplemental
+        # material the paper does not have.
+        if supp_summary and (supp_urls or supp_downloads):
             # The page's own prose explains each file; the per-file
             # descriptions below are derived from the same text, so emit the
             # narrative once and then just list what was downloaded.
