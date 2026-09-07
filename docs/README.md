@@ -137,6 +137,23 @@ complete_extraction_workflow(doi, output_file=None, force_headed=False)
 
 8. 保存 Markdown 和 metadata JSON。
 
+### PDF 下载用独立 Chrome
+
+共享浏览器从打开论文页起就被 Playwright 接管，带上了自动化指纹；而且不少出版商的
+PDF 在**另一个域名**上（ScienceDirect 的 `pdf.sciencedirectassets.com`），论文页过了
+Cloudflare 也不算数 —— clearance cookie 绑定在签发它的主机上。
+
+所以 PDF 由 `fresh_chrome.py` 单独起一个 Chrome 下载：独立端口、从真实 profile 复制
+一份、全程不接 Playwright，用完即删。
+
+- `open_url_in_fresh_chrome(url, ...)` — 起新 Chrome + 打开页面，返回 session
+- `open_url_via_cdp(url, port, ...)` — 「不接 Playwright、纯 CDP 打开并过挑战」这一步，
+  论文页预载和 PDF 下载共用同一个实现
+
+环境变量：`CHROME_PDF_DEBUG_PORT`(默认 9333，被占用会自动顺延)、
+`CHROME_PROFILE_SOURCE_DIR`、`CHROME_PROFILE`、`CHROME_PDF_PROFILE_ROOT`、
+`DP_PDF_FRESH_CHROME=0`(关闭该路径，直接走 Playwright)
+
 ## Publisher 判断
 
 当前 `detect_publisher_from_url()` 的主要规则：

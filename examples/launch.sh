@@ -78,6 +78,17 @@ export CHROME_USER_DATA_DIR="${CHROME_USER_DATA_DIR:-${HOME}/.config/google-chro
 # export CHROME_PROFILE_ROOT=/tmp/download_paper_chrome_profiles
 
 # ---------------------------------------------------------------------------
+# 3a. PDF 下载用的独立 Chrome
+# ---------------------------------------------------------------------------
+# 共享浏览器从打开论文页起就被 Playwright 接管，带着自动化指纹；而且不少出版商的
+# PDF 在另一个域名上（如 ScienceDirect 的 pdf.sciencedirectassets.com），论文页过了
+# Cloudflare 也不算数 —— clearance cookie 绑定在签发它的主机上。
+# 所以 PDF 单独起一个 Chrome 下载：独立端口 + 真实 profile 的副本，用完即删。
+export CHROME_PDF_DEBUG_PORT=9333       # 默认 9333；被占用会自动顺延
+# export CHROME_PDF_PROFILE_ROOT=/tmp   # 临时 profile 的落脚处，默认系统 tmp
+# export DP_PDF_FRESH_CHROME=0          # 设为 0 关闭该路径，直接走 Playwright
+
+# ---------------------------------------------------------------------------
 # 3b. 抓取 profile 的定期重置
 # ---------------------------------------------------------------------------
 # CDP 驱动的 profile 会逐篇累积自动化指纹（以及 Cloudflare 给它打的标记），
@@ -152,6 +163,7 @@ for v in DP_PAGE_LOAD_TIMEOUT DP_CLOUDFLARE_TIMEOUT DP_PDF_WAIT \
          BATCH_SLEEP_MIN BATCH_SLEEP_MAX \
          CHROME_PATH CHROME_DEBUG_PORT CHROME_USER_DATA_DIR CHROME_PROFILE \
          CHROME_PROFILE_ROOT CHROME_PROFILE_REFRESH_EVERY CHROME_PROFILE_SOURCE_DIR \
+         CHROME_PDF_DEBUG_PORT CHROME_PDF_PROFILE_ROOT DP_PDF_FRESH_CHROME \
          DOWNLOAD_PAPER_HEADLESS_AUTH_STATE; do
     val="${!v:-<default>}"
     printf "  %-38s = %s\n" "$v" "$val"
