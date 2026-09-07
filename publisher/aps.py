@@ -1137,6 +1137,22 @@ class APSHandler(PublisherHandler):
                 if saved_data.get('abstract_html'):
                     captured['abstract_html'] = saved_data['abstract_html']
 
+        # Last resort: the live page. abstract_html is filled by the passive
+        # network listener watching for a /abstract/ document, but the CDP
+        # preload loads that page before Playwright is attached, so the
+        # listener never sees it and everything downstream — the fuller
+        # abstract, the Popular Summary and its key image — was silently
+        # skipped. The page in hand *is* the abstract page, and reading it
+        # costs no extra request.
+        if not captured.get('abstract_html') and page is not None:
+            try:
+                live_html = await page.content()
+            except Exception:
+                live_html = ''
+            if live_html and ('citation_doi' in live_html or (doi or '') in live_html):
+                captured['abstract_html'] = live_html
+                print(f"  ✓ 使用当前页面作为 abstract HTML: {len(live_html)} 字节")
+
         # 2.5 Extract abstract from abstract page HTML (优先于meta tag)
         if captured.get('abstract_html'):
             html_abstract = _extract_abstract_from_abstract_html(captured['abstract_html'])
@@ -1371,11 +1387,14 @@ class APSHandler(PublisherHandler):
         if popular_summary:
             md_content += "## Popular Summary\n\n"
 
-            # 如果有key image URL，添加图片
-            if key_image_url:
-                # 提取图片文件名并创建本地引用
-                key_image_filename = "key_image.png"
-                md_content += f"![Key Image]({key_image_filename})\n\n"
+            # Prefer the downloaded file; fall back to the remote URL so a
+            # failed download leaves a working link rather than a reference
+            # to a file that is not there.
+            key_image_local = kwargs.get('key_image_filename')
+            if key_image_local:
+                md_content += f"![Key Image]({key_image_local})\n\n"
+            elif key_image_url:
+                md_content += f"![Key Image]({key_image_url})\n\n"
 
             # 转换HTML为markdown
             if isinstance(popular_summary, str) and '<' in popular_summary:
