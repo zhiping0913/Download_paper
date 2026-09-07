@@ -2358,25 +2358,30 @@ class ScienceDirectHandler(PublisherHandler):
                 filename = figure_filenames.get(fig_num)
                 if not filename:
                     continue
-                label = (fig_info.get('label') or '').strip().rstrip('.')
-                if label:
-                    # Build a regex from the visible label, e.g. "Fig. 4(a)".
-                    label_re = re.escape(label).replace(r'\.', r'\.?')
-                    pattern = rf'(\*\*{label_re}[.:]\*\*[^\n]*)'
-                    alt_text = label
-                    body_md = re.sub(
-                        pattern,
-                        rf'\1\n\n![{alt_text}.]({filename})',
-                        body_md,
-                    )
-                # Always do a URL→filename rewrite as a safety net.  This
-                # handles uncaptioned inline figures (e.g. algorithm-cycle
-                # illustrations like fg0160 in 10.1016/j.cpc.2022.108457)
-                # that ``_render_figure`` emitted as ``![](URL)`` rather than
-                # via the labelled caption pattern above.
+                # Rewrite URL→filename FIRST. ``_render_figure`` already
+                # emitted an ``![label](URL)`` for every captioned float, so
+                # doing this first turns that into the finished local image —
+                # and lets the caption-insertion below see that the figure is
+                # already present. Doing it the other way round emitted the
+                # image twice, once inserted after the caption and once from
+                # the rewritten original.
                 src_url = (fig_info.get('url') or '').strip()
                 if src_url:
                     body_md = body_md.replace(src_url, filename)
+
+                # Caption insertion is the fallback for figures the body did
+                # not already carry an <img> for (composite sub-figures whose
+                # caption exists but whose image lives only in ``floats``).
+                label = (fig_info.get('label') or '').strip().rstrip('.')
+                if label and f']({filename})' not in body_md:
+                    # Build a regex from the visible label, e.g. "Fig. 4(a)".
+                    label_re = re.escape(label).replace(r'\.', r'\.?')
+                    pattern = rf'(\*\*{label_re}[.:]\*\*[^\n]*)'
+                    body_md = re.sub(
+                        pattern,
+                        rf'\1\n\n![{label}.]({filename})',
+                        body_md,
+                    )
 
         md_parts.extend([
             "---",
