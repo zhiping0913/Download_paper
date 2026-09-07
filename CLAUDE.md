@@ -52,6 +52,24 @@ python batch_process.py --file dois.txt                     # 批量
 | `10.1093` | OupHandler | 无头 | 完整 |
 | `10.1145` | ACMHandler | **有头** | **abstract-only** — 见下 |
 | `10.1109` | IEEEHandler | 有头 | 完整（REST 接口） |
+| `10.1021` | ACSHandler | 有头 | 完整 |
+
+### ACS (`10.1021`, pubs.acs.org)
+
+- Silverchair 平台，服务端渲染，无正文 API：元数据来自 `<meta name="citation_*">`，
+  正文在 `div.article-body div.content`
+- **图/表/Scheme 共用 `div.fig.fig-section` 包装，但各自独立编号** —— 同一篇里
+  "Figure 1" 和 "Scheme 1" 并存。图片占位符必须用**文档顺序**编号（与
+  `extract_figures_from_html` 的 key 一致），用 `data-id` 里的数字会撞车
+- 标签要读渲染出来的 `div.label`（"Scheme 11."），不能假定是 "Figure"
+- 公式在 `span.mathFormula`；MathJax 跑过之后该 span 被清空，只剩
+  `mjx-assistive-mml` 里的 MathML —— **绝不能把 assistive MathML 当噪声删掉**
+- 图片全尺寸链接 = 内联图去掉 `m_` 前缀。"Download to Slide" 的 `image=` 参数
+  ACS 自己都会写错（本例 Figure 2 指向一个无关的行内公式 GIF），只在 basename
+  一致时才采信
+- `div.fig-modal` / `div.table-modal` 是灯箱副本，会重复整段图注和脚注，要删
+- 不能用「跳到下一个 h2」来切段：摘要 h2、正文、各个后置 h2 是**同级兄弟**，而
+  正文自己没有 h2，那样会把整篇论文丢掉。改为按标记直接删除不需要的小节
 
 ### IEEE (`10.1109`, ieeexplore.ieee.org)
 

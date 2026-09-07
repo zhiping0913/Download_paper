@@ -1106,7 +1106,8 @@ async def _download_all_resources(
     downloads = {
         'pdf': None,
         'figures': {},
-        'supplemental': []
+        'supplemental': [],
+        'key_image': None,
     }
 
     download_playwright = None
@@ -1209,6 +1210,9 @@ async def _download_all_resources(
                     # Rename to key_image.png
                     key_image_path = output_dir / "key_image.png"
                     (output_dir / img_filename).rename(key_image_path)
+                    # Record it so convert_to_markdown can link the local file
+                    # instead of the (signed, expiring) CDN URL.
+                    downloads['key_image'] = key_image_path.name
                     print(f"  ✓ Key image已保存: key_image.png")
             except Exception as e:
                 print(f"  ⚠️  Key image下载失败: {e}")
@@ -2307,6 +2311,7 @@ async def complete_extraction_workflow(
                 supplemental_urls=links.get('supplemental_urls', []),
                 supplemental_descriptions=links.get('supplemental_descriptions', {}),
                 supplemental_downloads=downloads.get('supplemental', []),
+                key_image_filename=downloads.get('key_image'),
                 table_data=links.get('table_data', {}),
             )
         except Exception as e:

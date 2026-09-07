@@ -65,6 +65,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Optional
@@ -218,6 +219,9 @@ def chrome_argv(user_data_dir, port: int, headless: bool = False) -> list:
     ]
     if headless:
         args.append('--headless=new')
+    # Start on about:blank rather than chrome://new-tab-page: the reusable tab
+    # is then a normal page that JS navigation can leave.
+    args.append('about:blank')
     return args
 
 
@@ -679,14 +683,26 @@ async def bypass_cloudflare_cdp(
         # 找不到 New Tab 就新建一个
         # 注意：绝不复用 about:blank tab——它很可能是 Playwright 创建的，
         # 带有自动化指纹，会导致 Cloudflare 直接 403
+        created_at_target = False
         if not ws_url:
-            print(f"  🔧  新建 New Tab（跳过 about:blank，避免 Playwright 指纹）")
-            ws_url = await _create_new_tab(debug_port, "chrome://newtab")
+            # Create the tab *at the target URL*.
+            #
+            # It used to be created at chrome://newtab and then navigated with
+            # JS, which cannot work: a WebUI target refuses JS navigation to
+            # the open web, and this CDP session cannot even Runtime.evaluate
+            # against it -- so the poll loop below saw title='New Tab' body=0
+            # forever. Letting Chrome open the URL itself avoids both problems
+            # and is an ordinary browser navigation, not an automated one.
+            #
+            # about:blank is still avoided as a *reuse* target (it is usually
+            # a Playwright-created tab carrying an automation fingerprint), but
+            # that concern does not apply to a tab we open ourselves.
+            print(f"  🔧  新建 tab 并直接打开目标 URL")
+            ws_url = await _create_new_tab(debug_port, url)
             if ws_url:
-                print(f"  📄 已新建 New Tab")
-                # 等一下让 New Tab 加载完成
-                import asyncio as _aio
-                _aio.sleep(1)
+                created_at_target = True
+                print(f"  📄 已新建 tab")
+                await asyncio.sleep(1)
         
         # 最后 fallback：任意 page（排除 about:blank）
         if not ws_url:
@@ -714,14 +730,51 @@ async def bypass_cloudflare_cdp(
             await _send(ws, "Network.enable")
             await _send(ws, "Runtime.enable")
 
-            # 用 JS location.href 导航（比 Page.navigate 指纹更自然）
-            print(f"  🚀  导航到目标页面 (JS location.href)...")
-            await _send(ws, "Runtime.evaluate", {
-                "expression": f"location.href = {json.dumps(url)}"
-            })
+            if created_at_target:
+                # Chrome already opened the URL when the tab was created.
+                print(f"  🚀  tab 已直接打开目标页面")
+                await asyncio.sleep(2)
+            else:
+                # 用 JS location.href 导航（比 Page.navigate 指纹更自然）
+                print(f"  🚀  导航到目标页面 (JS location.href)...")
+                await _send(ws, "Runtime.evaluate", {
+                    "expression": f"location.href = {json.dumps(url)}"
+                })
 
-            # 等待页面开始加载
-            await asyncio.sleep(3)
+                # 等待页面开始加载
+                await asyncio.sleep(3)
+
+            # Verify the renderer actually left, and force it if not.
+            #
+            # A chrome:// page refuses JS navigation to the open web and does
+            # so *silently*: the CDP target list reports the new URL while the
+            # renderer stays on chrome://new-tab-page. The tab this function
+            # prefers is exactly such a page, so on a browser whose only tab
+            # is the new-tab page the poll loop below would spin on
+            # title='New Tab' body=0 until it timed out.
+            #
+            # The check is "did we reach the target host", not "are we still
+            # on chrome://": Runtime.evaluate against a WebUI target can come
+            # back empty or as an error, and an unreadable location is just as
+            # much a reason to force the navigation as a chrome:// one.
+            if not created_at_target:
+                try:
+                    where = await _send(ws, "Runtime.evaluate", {
+                        "expression": "location.href", "returnByValue": True})
+                    current = (where.get("result", {})
+                                    .get("result", {})
+                                    .get("value") or "")
+                except Exception:
+                    current = ""
+
+                target_host = urllib.parse.urlparse(url).netloc.lower()
+                arrived = bool(current) and urllib.parse.urlparse(
+                    current).netloc.lower() == target_host
+                if not arrived:
+                    print(f"  ↪ JS 导航未生效 (当前 {current or '未知'})，"
+                          "改用 Page.navigate")
+                    await _send(ws, "Page.navigate", {"url": url})
+                    await asyncio.sleep(3)
 
             deadline = asyncio.get_event_loop().time() + timeout_s
             challenge_detected = False
