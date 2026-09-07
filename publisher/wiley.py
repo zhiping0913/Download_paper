@@ -74,7 +74,11 @@ _WILEY_DROP_SELECTORS = (
     'div.figure-extra',         # "Open in figure viewer" / "Download PowerPoint"
     'a.open-figure-link',
     'a.ppt-figure-link',
-    'span.fallback__mathEquation',   # empty placeholder for the MathJax image
+    # NOT dropped: span.fallback__mathEquation. It looks like an empty
+    # placeholder, but its data-altimg is the only copy of the formula on
+    # articles whose <math> arrives empty (De Gruyter titles hosted on Wiley,
+    # e.g. 10.1515/nanoph-2021-0059). _inline_md() ignores the ones that do
+    # have real MathML beside them.
     'script',
     'style',
     'noscript',
@@ -158,7 +162,12 @@ class WileyHandler(PublisherHandler):
             latex = cls._math_latex(node)
             return f"${latex}$" if latex else ''
         if 'fallback__mathEquation' in classes:
-            return ''
+            if not node.get('data-altimg') or not cls._needs_equation_image(node):
+                return ''
+            index = cls._asset_index(node)
+            if index:
+                return f" ![Equation](__WILEY_FIG_{index}__) "
+            return f" ![Equation]({cls._abs_asset(cls._fallback_image_url(node))}) "
         if name == 'img' and 'tex2gif' in (node.get('src') or ''):
             # An inline formula shipped as an image; keep it in the text flow.
             index = cls._asset_index(node)
@@ -347,7 +356,8 @@ class WileyHandler(PublisherHandler):
     # Everything that becomes a downloadable image, in document order:
     # figures, and the GIFs older Wiley articles use instead of MathML
     # (10.1002/cssc.201000245 renders each equation as tex2gif-eqn-N.gif).
-    _ASSET_SELECTOR = 'figure, img[src*="tex2gif"]'
+    _ASSET_SELECTOR = ('figure, img[src*="tex2gif"], '
+                       'span.fallback__mathEquation[data-altimg]')
 
     @classmethod
     def _number_assets(cls, soup: BeautifulSoup) -> None:
@@ -360,10 +370,33 @@ class WileyHandler(PublisherHandler):
         """
         index = 0
         for node in soup.select(cls._ASSET_SELECTOR):
-            if node.name == 'img' and node.find_parent('figure') is not None:
+            if node.name != 'figure' and node.find_parent('figure') is not None:
                 continue
+            if (node.name == 'span'
+                    and not cls._needs_equation_image(node)):
+                continue          # real MathML beside it; the image is unused
             index += 1
             node['data-dp-asset'] = str(index)
+
+    @classmethod
+    def _needs_equation_image(cls, span: Tag) -> bool:
+        """True when a fallback span's image is the only copy of the formula.
+
+        Wiley emits the span on every equation, but on modern articles it sits
+        next to a populated <math> whose annotation carries the LaTeX -- using
+        the picture there would replace a real formula with a screenshot.
+        """
+        construct = span.find_parent(class_='inline-equation__construct') or span.parent
+        if construct is None:
+            return True
+        for math in construct.find_all('math'):
+            if math.find('annotation') is not None or math.find(True) is not None:
+                return False
+        return True
+
+    @staticmethod
+    def _fallback_image_url(span: Tag) -> str:
+        return (span.get('data-altimg') or '').strip()
 
     @staticmethod
     def _asset_index(node: Tag) -> str:
@@ -371,9 +404,19 @@ class WileyHandler(PublisherHandler):
 
     @classmethod
     def _equation_image(cls, node: Tag) -> Optional[Tag]:
-        """The GIF standing in for a formula, if this block uses one."""
+        """The image standing in for a formula, if this block uses one.
+
+        Two shapes: an <img src=...tex2gif...> on older articles, and a
+        span.fallback__mathEquation carrying data-altimg where the <math>
+        came through empty.
+        """
         img = node.find('img', src=re.compile('tex2gif'))
-        return img
+        if img is not None:
+            return img
+        for span in node.select('span.fallback__mathEquation[data-altimg]'):
+            if cls._needs_equation_image(span):
+                return span
+        return None
 
     @classmethod
     def extract_figures_from_html(cls, html: str) -> dict:
@@ -387,10 +430,12 @@ class WileyHandler(PublisherHandler):
             index = cls._asset_index(node)
             if not index:
                 continue
-            if node.name == 'img':
-                # An equation GIF: no caption, and its number comes from the
+            if node.name in ('img', 'span'):
+                # An equation image: no caption, and its number comes from the
                 # article ("((1))"), not from the asset sequence.
-                url = cls._abs_asset(node.get('data-lg-src') or node.get('src'))
+                url = cls._abs_asset(
+                    cls._fallback_image_url(node) if node.name == 'span'
+                    else (node.get('data-lg-src') or node.get('src')))
                 if not url:
                     continue
                 figures[f'fig_{index}'] = {
@@ -783,10 +828,12 @@ class WileyHandler(PublisherHandler):
         if img is not None:
             index = cls._asset_index(img)
             alt = f"Equation {label}" if label else 'Equation'
+            src = (cls._fallback_image_url(img) if img.name == 'span'
+                   else img.get('src'))
             if index:
                 line = f"![{alt}](__WILEY_FIG_{index}__)"
             else:
-                line = f"![{alt}]({cls._abs_asset(img.get('src'))})"
+                line = f"![{alt}]({cls._abs_asset(src)})"
             if label:
                 line += f" {label}"
             return [line, '']
