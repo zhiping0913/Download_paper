@@ -783,14 +783,34 @@ class ACSHandler(PublisherHandler):
             md = cls._render_table(node)
             return [md, ''] if md else []
 
-        # A wrapper: recurse. A container holding inline content directly
-        # (ACS writes some body text straight into a <div>) is rendered as one
-        # paragraph -- descending into it would emit every link, formula and
-        # text run as its own block and shred the prose into fragments.
+        # A wrapper: recurse, but buffer runs of inline children into one
+        # paragraph and flush only at a block child.
+        #
+        # A paragraph that contains a display equation (ACS writes those as a
+        # div.formula-wrap *inside* div.block-child-p) has a block-level
+        # descendant, so a plain recursion emitted each link, inline formula
+        # and text run as its own block -- which is why paragraphs around an
+        # equation came out shredded into one line each while ordinary
+        # paragraphs were fine.
         if cls._has_block_descendant(node):
             out: List[str] = []
+            buffer: List[str] = []
+
+            def _flush() -> None:
+                text = re.sub(r'\s+', ' ', ''.join(buffer)).strip()
+                buffer.clear()
+                if text and not cls._is_noise(text):
+                    out.extend([text, ''])
+
             for child in node.children:
-                out.extend(cls._render_block(child, level, ctx))
+                is_block_child = isinstance(child, Tag) and (
+                    cls._is_block(child) or cls._has_block_descendant(child))
+                if is_block_child:
+                    _flush()
+                    out.extend(cls._render_block(child, level, ctx))
+                else:
+                    buffer.append(cls._inline_md(child))
+            _flush()
             return out
 
         text = cls._text_md(node)
