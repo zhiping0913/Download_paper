@@ -19,6 +19,7 @@ import random
 import re
 import requests
 import shutil
+import tempfile
 import time
 import sys
 import signal
@@ -1297,6 +1298,20 @@ async def _download_all_resources(
 # ============================================================================
 
 
+async def _close_fresh_pdf_session(session, download_dir) -> None:
+    """Shut down the throwaway PDF browser and remove its download directory."""
+    if session is not None:
+        try:
+            await session.close()
+        except Exception as exc:
+            print(f"  ⚠️  关闭独立 Chrome 失败: {type(exc).__name__}: {exc}")
+    if download_dir:
+        try:
+            shutil.rmtree(download_dir, ignore_errors=True)
+        except OSError:
+            pass
+
+
 async def download_pdf(
     page,
     pdf_url: str,
@@ -1324,34 +1339,47 @@ async def download_pdf(
         print(f"  📥 下载 PDF...")
         print(f"     链接: {pdf_url}")
 
-        # ── AIP/Cloudflare PDF：先用纯 CDP 预载+下载，避免 Playwright 指纹触发高难度挑战 ──
-        # CDP 模式下浏览器自己下载到默认目录；若成功可直接落盘，Playwright 只需兜底。
+        # ── PDF 用一个全新的 Chrome 下载 ──
+        # The shared browser has had Playwright attached to it since the
+        # article page loaded, so it carries an automation fingerprint that
+        # Cloudflare rejects. And clearing the challenge on the article host
+        # does not help: publishers like ScienceDirect serve the PDF from a
+        # different host (pdf.sciencedirectassets.com), and a clearance cookie
+        # is bound to the host that issued it — the PDF is a fresh challenge
+        # against a browser that now looks automated.
+        #
+        # So: a throwaway Chrome on its own port, seeded from the real
+        # profile, never touched by Playwright. Set DP_PDF_FRESH_CHROME=0 to
+        # skip it and go straight to the Playwright path.
         cdp_downloaded_path: str = None
-        # 对已知使用 Cloudflare 保护的出版商 PDF 先用纯 CDP 预载，避免 Playwright 指纹
-        if pdf_url and ('pubs.aip.org' in pdf_url or 'aip.org' in pdf_url):
+        _fresh_session = None
+        _fresh_dl_dir = None
+        _use_fresh = (os.environ.get('DP_PDF_FRESH_CHROME', '1').strip().lower()
+                      not in ('0', 'false', 'no', 'off'))
+        if pdf_url and _use_fresh and _CF_BYPASS_AVAILABLE:
             try:
-                from cf_bypass_cdp import bypass_cloudflare_cdp
-                _chrome_download_dir = os.environ.get('CHROME_DOWNLOAD_DIR', '/root/Downloads')
-                _cdp_port = int(os.environ.get('CHROME_DEBUG_PORT', CHROME_DEBUG_PORT))
-                print(f"  🛡️  AIP PDF 先用纯 CDP 过 Cloudflare（端口 {_cdp_port}, 监控 {_chrome_download_dir}）...")
-                _cf_result = await bypass_cloudflare_cdp(
-                    url=pdf_url,
-                    debug_port=_cdp_port,
-                    timeout_s=int(DP_CLOUDFLARE_TIMEOUT),
+                from fresh_chrome import open_url_in_fresh_chrome
+                # A dedicated download directory per attempt, so "which file
+                # appeared" is unambiguous.
+                _fresh_dl_dir = tempfile.mkdtemp(prefix='dp_pdf_')
+                print(f"  🛡️  用独立 Chrome 下载 PDF（避开共享浏览器的自动化指纹）...")
+                _fresh_session = await open_url_in_fresh_chrome(
+                    pdf_url,
                     pdf_mode=True,
-                    download_dir=_chrome_download_dir,
+                    download_dir=_fresh_dl_dir,
+                    timeout_s=int(DP_CLOUDFLARE_TIMEOUT),
                 )
-                if _cf_result.get('success'):
-                    _dl_file = _cf_result.get('downloaded_file')
-                    if _dl_file and os.path.isfile(_dl_file):
-                        cdp_downloaded_path = _dl_file
-                        print(f"  ✓ CDP 已触发下载: {cdp_downloaded_path}")
-                    else:
-                        print(f"  ✓ CDP Cloudflare 已通过，但未检测到下载文件，回退 Playwright 导航")
+                _cf_result = _fresh_session.result or {}
+                _dl_file = _cf_result.get('downloaded_file')
+                if _dl_file and os.path.isfile(_dl_file):
+                    cdp_downloaded_path = _dl_file
+                    print(f"  ✓ 独立 Chrome 已触发下载: {cdp_downloaded_path}")
+                elif _cf_result.get('success'):
+                    print(f"  ✓ 挑战已通过，但未检测到下载文件，回退 Playwright 导航")
                 else:
-                    print(f"  ⚠️  CDP 模式未通过，回退 Playwright 导航")
+                    print(f"  ⚠️  独立 Chrome 未拿到 PDF，回退 Playwright 导航")
             except Exception as _e:
-                print(f"  ⚠️  CDP 绕过 PDF 异常: {_e}，回退 Playwright 导航")
+                print(f"  ⚠️  独立 Chrome 下载 PDF 异常: {_e}，回退 Playwright 导航")
 
         # 若 CDP 已直接拿到下载文件（可能是 .crdownload），等其落盘后复制到目标目录
         if cdp_downloaded_path:
@@ -1377,15 +1405,13 @@ async def download_pdf(
             if os.path.isfile(_src) and not _src.endswith('.crdownload'):
                 shutil.copy(str(_src), str(_final_pdf))
                 _size_mb = _final_pdf.stat().st_size / (1024 * 1024)
-                print(f"    ✓ 保存: {filename} ({_size_mb:.2f} MB) [CDP 直接下载]")
-                if _src.startswith('/root/Downloads') or _src.startswith('/tmp/'):
-                    try:
-                        os.remove(_src)
-                    except Exception:
-                        pass
+                print(f"    ✓ 保存: {filename} ({_size_mb:.2f} MB) [独立 Chrome 下载]")
+                await _close_fresh_pdf_session(_fresh_session, _fresh_dl_dir)
                 return filename
             else:
-                print(f"    ⚠️  CDP 下载文件异常，回退 Playwright 导航")
+                print(f"    ⚠️  下载文件异常，回退 Playwright 导航")
+        await _close_fresh_pdf_session(_fresh_session, _fresh_dl_dir)
+        _fresh_session = None
 
         pdf_downloaded = False
         # ── 单次导航 + context级 download 事件 作为「真实拿到 PDF」的实体判据 ──
@@ -2884,12 +2910,15 @@ async def complete_extraction_workflow(
     if _CF_BYPASS_AVAILABLE:
         print("🛡️  预载：纯CDP过 Cloudflare 并加载页面（Playwright未连接，无自动化指纹）...")
         try:
-            _cf_pre_result = await bypass_cloudflare_cdp(
-                url=url,
-                debug_port=CHROME_DEBUG_PORT,
-                timeout_s=DP_CLOUDFLARE_TIMEOUT,
-                wait_for_content=True,
+            # Same "open + clear Cloudflare over raw CDP" helper the PDF
+            # download uses, just pointed at the batch's shared browser
+            # instead of a throwaway one.
+            from fresh_chrome import open_url_via_cdp
+            _cf_pre_result = await open_url_via_cdp(
+                url,
+                CHROME_DEBUG_PORT,
                 expected_doi=doi,
+                timeout_s=int(DP_CLOUDFLARE_TIMEOUT),
             )
             if _cf_pre_result["success"]:
                 print(f"  ✅ 预载成功：挑战通过，页面已加载")
