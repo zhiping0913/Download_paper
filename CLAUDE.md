@@ -132,6 +132,17 @@ python batch_process.py --file dois.txt                     # 批量
 - 不能用「跳到下一个 h2」来切段：摘要 h2、正文、各个后置 h2 是**同级兄弟**，而
   正文自己没有 h2，那样会把整篇论文丢掉。改为按标记直接删除不需要的小节
 
+### PDF 下载顺序（有头 / 无头）
+
+- **有头**：先用一次性 Chrome（`chrome_session.open_url_in_fresh_chrome`），
+  失败再回退 Playwright 导航 —— 共享浏览器自打开正文页起就被 Playwright 接管，
+  带自动化指纹；而且正文域名过的 Cloudflare 对 PDF 域名（如
+  `pdf.sciencedirectassets.com`）不算数
+- **无头**：反过来，先用手头这个无头浏览器下，失败了才起一次性 Chrome ——
+  能无头访问到的出版商本来就没在拦我们，每篇都弹一个窗口就失去无头的意义了
+- 补充材料没有独立浏览器路径，一直用传进去的 page/context，所以无头时本来就是无头下载
+- `DP_PDF_FRESH_CHROME=0` 两种模式下都彻底禁用一次性 Chrome
+
 ### IEEE (`10.1109`, ieeexplore.ieee.org)
 
 - 页面是 Angular 客户端渲染，**正文不在 DOM 里**。全部内容走 REST 接口，键是数字

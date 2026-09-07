@@ -19,6 +19,7 @@ import random
 import re
 import requests
 import shutil
+from typing import Optional
 import tempfile
 import time
 import sys
@@ -167,7 +168,18 @@ DP_SUPP_MAX_RETRIES = int(_env_seconds('DP_SUPP_MAX_RETRIES', 5)) # supplemental
 # "Oxford University Press", so we keep both 'oup' and 'oxford' here to
 # catch both forms. The URL/DOI detector still returns the canonical
 # 'oup' handler name.
-HEADLESS_ACCESSIBLE_PUBLISHERS = ['nature', 'aip', 'cambridge', 'springer', 'springer_book', 'oup', 'oup_book', 'oxford', 'pleiades']
+HEADLESS_ACCESSIBLE_PUBLISHERS = [
+    'nature', 
+    'aip', 
+    'cambridge', 
+    'springer', 
+    'springer_book', 
+    'oup', 
+    'oup_book', 
+    'oxford', 
+    'pleiades',
+    'acs'
+    ]
 
 # Crossref `type` values that indicate the DOI belongs to a book or one of
 # its chapters. When we see one of these on an OUP DOI, route to the book
@@ -1319,6 +1331,85 @@ async def _download_all_resources(
 # ============================================================================
 
 
+def _fresh_chrome_enabled() -> bool:
+    """Whether the throwaway-Chrome PDF path may be used at all."""
+    return (os.environ.get('DP_PDF_FRESH_CHROME', '1').strip().lower()
+            not in ('0', 'false', 'no', 'off')) and _CF_BYPASS_AVAILABLE
+
+
+async def _try_fresh_chrome_pdf(pdf_url: str, output_dir: Path,
+                                filename: str) -> Optional[str]:
+    """Download *pdf_url* with a throwaway Chrome seeded from the real profile.
+
+    Used when the ordinary browser cannot get the file: the shared instance
+    has been driven by Playwright since the article loaded and carries that
+    fingerprint, and a clearance won on the article host does not transfer to
+    the separate host several publishers serve PDFs from.
+
+    Returns the saved filename, or None so the caller can fall back.
+    """
+    if not pdf_url or not _fresh_chrome_enabled():
+        return None
+
+    from chrome_session import open_url_in_fresh_chrome
+
+    session = None
+    # A dedicated download directory per attempt, so "which file appeared" is
+    # unambiguous.
+    download_dir = tempfile.mkdtemp(prefix='dp_pdf_')
+    try:
+        print("  🛡️  用独立 Chrome 下载 PDF（避开共享浏览器的自动化指纹）...")
+        session = await open_url_in_fresh_chrome(
+            pdf_url,
+            pdf_mode=True,
+            download_dir=download_dir,
+            timeout_s=int(DP_CLOUDFLARE_TIMEOUT),
+        )
+        result = session.result or {}
+        landed = result.get('downloaded_file')
+        if not (landed and os.path.isfile(landed)):
+            if result.get('success'):
+                print("  ✓ 挑战已通过，但未检测到下载文件")
+            else:
+                print("  ⚠️  独立 Chrome 未拿到 PDF")
+            return None
+        print(f"  ✓ 独立 Chrome 已触发下载: {landed}")
+        return _finalize_downloaded_pdf(landed, output_dir, filename)
+    except Exception as exc:
+        print(f"  ⚠️  独立 Chrome 下载 PDF 异常: {exc}")
+        return None
+    finally:
+        await _close_fresh_pdf_session(session, download_dir)
+
+
+def _finalize_downloaded_pdf(src: str, output_dir: Path,
+                             filename: str) -> Optional[str]:
+    """Wait for a .crdownload to settle, then copy the file into place."""
+    final_pdf = Path(output_dir) / filename
+    waited = 0
+    base, _ = os.path.splitext(src)
+    if src.endswith('.crdownload'):
+        print("  ⏳ 等待下载完成（源文件仍为 .crdownload）...")
+        while src.endswith('.crdownload') and waited < DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT:
+            time.sleep(2)
+            waited += 2
+            if os.path.isfile(base):
+                src = base
+                break
+            if not os.path.isfile(src):
+                break
+        if src.endswith('.crdownload'):
+            print(f"    ⏰  下载在 {DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT}s 内未完成")
+            return None
+    if not (os.path.isfile(src) and not src.endswith('.crdownload')):
+        print("    ⚠️  下载文件异常")
+        return None
+    shutil.copy(str(src), str(final_pdf))
+    size_mb = final_pdf.stat().st_size / (1024 * 1024)
+    print(f"    ✓ 保存: {filename} ({size_mb:.2f} MB) [独立 Chrome 下载]")
+    return filename
+
+
 async def _close_fresh_pdf_session(session, download_dir) -> None:
     """Shut down the throwaway PDF browser and remove its download directory."""
     if session is not None:
@@ -1360,79 +1451,24 @@ async def download_pdf(
         print(f"  📥 下载 PDF...")
         print(f"     链接: {pdf_url}")
 
-        # ── PDF 用一个全新的 Chrome 下载 ──
-        # The shared browser has had Playwright attached to it since the
-        # article page loaded, so it carries an automation fingerprint that
-        # Cloudflare rejects. And clearing the challenge on the article host
-        # does not help: publishers like ScienceDirect serve the PDF from a
-        # different host (pdf.sciencedirectassets.com), and a clearance cookie
-        # is bound to the host that issued it — the PDF is a fresh challenge
-        # against a browser that now looks automated.
+        # ── 下载顺序取决于当前是有头还是无头 ──
         #
-        # So: a throwaway Chrome on its own port, seeded from the real
-        # profile, never touched by Playwright. Set DP_PDF_FRESH_CHROME=0 to
-        # skip it and go straight to the Playwright path.
-        cdp_downloaded_path: str = None
-        _fresh_session = None
-        _fresh_dl_dir = None
-        _use_fresh = (os.environ.get('DP_PDF_FRESH_CHROME', '1').strip().lower()
-                      not in ('0', 'false', 'no', 'off'))
-        if pdf_url and _use_fresh and _CF_BYPASS_AVAILABLE:
-            try:
-                from chrome_session import open_url_in_fresh_chrome
-                # A dedicated download directory per attempt, so "which file
-                # appeared" is unambiguous.
-                _fresh_dl_dir = tempfile.mkdtemp(prefix='dp_pdf_')
-                print(f"  🛡️  用独立 Chrome 下载 PDF（避开共享浏览器的自动化指纹）...")
-                _fresh_session = await open_url_in_fresh_chrome(
-                    pdf_url,
-                    pdf_mode=True,
-                    download_dir=_fresh_dl_dir,
-                    timeout_s=int(DP_CLOUDFLARE_TIMEOUT),
-                )
-                _cf_result = _fresh_session.result or {}
-                _dl_file = _cf_result.get('downloaded_file')
-                if _dl_file and os.path.isfile(_dl_file):
-                    cdp_downloaded_path = _dl_file
-                    print(f"  ✓ 独立 Chrome 已触发下载: {cdp_downloaded_path}")
-                elif _cf_result.get('success'):
-                    print(f"  ✓ 挑战已通过，但未检测到下载文件，回退 Playwright 导航")
-                else:
-                    print(f"  ⚠️  独立 Chrome 未拿到 PDF，回退 Playwright 导航")
-            except Exception as _e:
-                print(f"  ⚠️  独立 Chrome 下载 PDF 异常: {_e}，回退 Playwright 导航")
-
-        # 若 CDP 已直接拿到下载文件（可能是 .crdownload），等其落盘后复制到目标目录
-        if cdp_downloaded_path:
-            _final_pdf = output_dir / filename
-            _waited = 0
-            _src = cdp_downloaded_path
-            _base, _ext = os.path.splitext(_src)
-            # 若 Chrome 还没下载完，文件名以 .crdownload 结尾；循环等它完成
-            if _src.endswith('.crdownload'):
-                print(f"  ⏳ 等待 CDP 下载完成（源文件仍为 .crdownload）...")
-                while _src.endswith('.crdownload') and _waited < DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT:
-                    await asyncio.sleep(2)
-                    _waited += 2
-                    # Chrome 完成后会把 .crdownload 重命名为原扩展名
-                    if os.path.isfile(_base):
-                        _src = _base
-                        break
-                    if not os.path.isfile(_src):
-                        # 文件消失且没出现目标文件：下载失败
-                        break
-                if _src.endswith('.crdownload'):
-                    print(f"    ⏰  CDP 下载文件在 {DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT}s 内未完成")
-            if os.path.isfile(_src) and not _src.endswith('.crdownload'):
-                shutil.copy(str(_src), str(_final_pdf))
-                _size_mb = _final_pdf.stat().st_size / (1024 * 1024)
-                print(f"    ✓ 保存: {filename} ({_size_mb:.2f} MB) [独立 Chrome 下载]")
-                await _close_fresh_pdf_session(_fresh_session, _fresh_dl_dir)
-                return filename
-            else:
-                print(f"    ⚠️  下载文件异常，回退 Playwright 导航")
-        await _close_fresh_pdf_session(_fresh_session, _fresh_dl_dir)
-        _fresh_session = None
+        # Headed runs try the throwaway Chrome first: the shared instance has
+        # been driven by Playwright since the article page loaded, so it
+        # carries an automation fingerprint, and a Cloudflare clearance won on
+        # the article host does not transfer to the separate host publishers
+        # like ScienceDirect serve PDFs from.
+        #
+        # Headless runs are the opposite. Reaching a publisher headless at all
+        # means it is not challenging us, so the browser already in hand can
+        # fetch the PDF -- and launching a windowed Chrome for every paper
+        # would defeat the point of running headless. The throwaway browser
+        # stays available as the fallback for when that fails.
+        if force_headed:
+            saved = await _try_fresh_chrome_pdf(pdf_url, output_dir, filename)
+            if saved:
+                return saved
+            print("  ↪ 回退 Playwright 导航")
 
         pdf_downloaded = False
         # ── 单次导航 + context级 download 事件 作为「真实拿到 PDF」的实体判据 ──
@@ -1571,9 +1607,15 @@ async def download_pdf(
 
         if done:
             return filename
-        else:
-            print(f"    ⚠️  未成功下载PDF")
-            return None
+
+        print(f"    ⚠️  未成功下载PDF")
+        # Headless could not get it (a challenge, or a viewer that never fires
+        # a download event). Now the throwaway Chrome is worth the launch.
+        if not force_headed:
+            saved = await _try_fresh_chrome_pdf(pdf_url, output_dir, filename)
+            if saved:
+                return saved
+        return None
 
     except Exception as e:
         print(f"    ❌ 下载失败: {e}")
