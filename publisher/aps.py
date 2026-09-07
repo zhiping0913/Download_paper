@@ -396,6 +396,62 @@ async def extract_metadata_from_page(page) -> dict:
     return metadata
 
 
+# The supplemental page's own body: <h1>Supplemental Material</h1> followed by
+# alternating "<filename>:" and description paragraphs, then the file list.
+# Returns inner HTML (not text) so the shared converter can keep any markup.
+_SUPP_SUMMARY_JS = """
+() => {
+    const panel = document.querySelector('#article-body .panel')
+                  || document.querySelector('#article-body')
+                  || document.querySelector('article, main');
+    if (!panel) return '';
+    const clone = panel.cloneNode(true);
+    // Drop the download list — the links are reported separately.
+    clone.querySelectorAll('.supplemental-files, script, style, nav, form')
+         .forEach(el => el.remove());
+    return clone.innerHTML || '';
+}
+"""
+
+
+def _supplemental_summary_md(html: str) -> str:
+    """Convert the supplemental page's prose block to markdown.
+
+    Goes through the shared HTML->markdown converter rather than reading
+    ``innerText``, so any math or emphasis in the descriptions survives.
+    The leading "Supplemental Material" heading is dropped because
+    convert_to_markdown emits its own section heading.
+    """
+    if not html:
+        return ''
+    try:
+        md = convert_html_to_markdown(html)
+        md = cleanup_markdown(md)
+    except Exception:
+        return ''
+    md = re.sub(r'^#+\s*Supplemental\s+Material\s*$', '', md,
+                flags=re.IGNORECASE | re.MULTILINE)
+    md = re.sub(r'\n{3,}', '\n\n', md).strip()
+    return md
+
+
+def _supp_timeout_ms() -> int:
+    """Navigation timeout for the supplemental page, in milliseconds.
+
+    Mirrors DP_PAGE_LOAD_TIMEOUT so a slow network can be accommodated from
+    the environment like every other wait in the pipeline.
+    """
+    import os
+    raw = (os.environ.get('DP_PAGE_LOAD_TIMEOUT') or '').strip()
+    try:
+        seconds = float(raw)
+        if seconds > 0:
+            return int(seconds * 1000)
+    except ValueError:
+        pass
+    return 60000
+
+
 async def get_supplemental_links(page, doi: str = None, journal_prefix: str = None,
                                  captured_data_dir: Path = None) -> tuple:
     """获取补充材料的所有下载链接和描述信息
@@ -452,15 +508,39 @@ async def get_supplemental_links(page, doi: str = None, journal_prefix: str = No
 
         page.on("response", handle_response)
 
-        await page.goto(supplemental_url, wait_until='networkidle', timeout=60000)
+        # APS supplemental pages keep analytics / long-poll sockets open, so
+        # 'networkidle' never fires and goto() raises after its full timeout —
+        # even though the document arrived (status 200) and the file links are
+        # already in the DOM. The raised timeout used to propagate out of this
+        # function, so link extraction, descriptions and the HTML save were
+        # all skipped and the paper silently lost its supplemental section.
+        #
+        # Wait for the document only, then treat network-idle as a bonus.
+        try:
+            await page.goto(supplemental_url, wait_until='domcontentloaded',
+                            timeout=_supp_timeout_ms())
+        except Exception as e:
+            # Even a hard timeout can leave a usable page behind; carry on and
+            # let the extraction below decide, rather than aborting here.
+            print(f"  ⚠️  补充材料页面导航超时，继续尝试提取: {str(e)[:80]}")
+        try:
+            await page.wait_for_load_state('networkidle', timeout=5000)
+        except Exception:
+            pass
 
         # 保存补充材料页面HTML
         if captured_data_dir:
             try:
                 supp_html = await page.content()
-                supp_file = Path(captured_data_dir) / "supplemental.html"
-                with open(supp_file, 'w', encoding='utf-8') as f:
-                    f.write(supp_html)
+                # Land it directly in the paper's html/ subdirectory when that
+                # already exists; otherwise write beside the other captures and
+                # let the end-of-run move collect it.
+                supp_dir = Path(captured_data_dir)
+                if (supp_dir / 'html').is_dir():
+                    supp_dir = supp_dir / 'html'
+                supp_dir.mkdir(parents=True, exist_ok=True)
+                supp_file = supp_dir / "supplemental.html"
+                supp_file.write_text(supp_html, encoding='utf-8')
                 print(f"  ✓ 补充材料页面已保存: {supp_file}")
             except Exception as e:
                 print(f"  ⚠️  保存补充材料页面失败: {e}")
@@ -493,7 +573,7 @@ async def get_supplemental_links(page, doi: str = None, journal_prefix: str = No
         supp_links = await page.evaluate(links_js)
 
         # 从页面HTML中提取补充材料描述
-        descriptions_js = """
+        descriptions_js = r"""
         () => {
             const descriptions = {};
 
@@ -588,17 +668,32 @@ async def get_supplemental_links(page, doi: str = None, journal_prefix: str = No
             for filename, desc in list(descriptions.items())[:2]:
                 print(f"    - {filename}: {desc[:50]}...")
 
+        # The page also carries a prose block above the file list — a
+        # "Supplemental Material" heading followed by "<file>:" / description
+        # paragraph pairs. That text is the only place the individual movies
+        # are explained (the ZIP itself is just an archive), so it belongs in
+        # the markdown even when there is a single downloadable file.
+        summary_md = ''
+        try:
+            summary_html = await page.evaluate(_SUPP_SUMMARY_JS)
+        except Exception as e:
+            print(f"  ⚠️  提取补充材料说明失败: {str(e)[:80]}")
+            summary_html = ''
+        if summary_html:
+            summary_md = _supplemental_summary_md(summary_html)
+            if summary_md:
+                print(f"  📄 补充材料说明: {len(summary_md)} 字符")
+
         page.remove_listener("response", handle_response)
 
         if supp_links:
             print(f"  ✓ 找到 {len(supp_links)} 个补充材料")
-            return supp_links, descriptions
-        else:
-            return [], {}
+            return supp_links, descriptions, summary_md
+        return [], {}, summary_md
 
     except Exception as e:
         print(f"  ⚠️  获取补充材料链接失败: {e}")
-        return [], {}
+        return [], {}, ''
 
 
 class APSHandler(PublisherHandler):
@@ -1165,11 +1260,13 @@ class APSHandler(PublisherHandler):
         actual_doi = self.doi or doi
         if actual_doi:
             try:
-                supp_links, supp_descriptions = await get_supplemental_links(
+                supp_links, supp_descriptions, supp_summary = await get_supplemental_links(
                     page, actual_doi, self.journal_prefix, captured_data_dir=self.captured_data_dir
                 )
                 links['supplemental_urls'] = supp_links
                 links['supplemental_descriptions'] = supp_descriptions
+                if supp_summary:
+                    metadata['_supplemental_summary_md'] = supp_summary
             except Exception as e:
                 print(f"  ⚠️  获取补充材料链接失败: {str(e)[:100]}")
         else:
@@ -1292,7 +1389,29 @@ class APSHandler(PublisherHandler):
         supp_urls = kwargs.get('supplemental_urls', [])
         supp_descriptions = kwargs.get('supplemental_descriptions', {})
         supp_downloads = kwargs.get('supplemental_downloads', [])
-        if supp_descriptions:
+        supp_summary = (metadata.get('_supplemental_summary_md') or '').strip()
+
+        if supp_summary:
+            # The page's own prose explains each file; the per-file
+            # descriptions below are derived from the same text, so emit the
+            # narrative once and then just list what was downloaded.
+            md_content += "---\n\n## Supplemental Material\n\n"
+            md_content += supp_summary + "\n\n"
+            for url in supp_urls:
+                target = url.get('url', '') if isinstance(url, dict) else url
+                label = url.get('text', target) if isinstance(url, dict) else target
+                downloaded_file = ''
+                for df in supp_downloads:
+                    if label and label in df:
+                        downloaded_file = df
+                        break
+                if downloaded_file:
+                    md_content += f"- `{downloaded_file}`\n"
+                elif target:
+                    md_content += f"- [{label or target}]({target})\n"
+            if supp_urls:
+                md_content += "\n"
+        elif supp_descriptions:
             md_content += "---\n\n## Supplemental Material\n\n"
             for filename, desc in supp_descriptions.items():
                 # Find matching downloaded file
