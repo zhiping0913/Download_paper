@@ -105,6 +105,9 @@
 10.1117/1.JEI.33.1.013036   #figure, inline and display-formula, table, nested list with multiline formula
 10.1117/12.3056515   #figure, inline and display-formula in jpg
 
+## opticsjournal
+10.3788/CJL231490   #中英双摘要, figure, table with nested wrapper, display-formula (MathML)
+
 ## researching
 10.3788/PI.2023.R05   #figure, inline and display-formula, nested list with formula, table with formula and note
 

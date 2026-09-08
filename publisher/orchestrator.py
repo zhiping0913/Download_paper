@@ -20,6 +20,7 @@ from publisher.ieee import IEEEHandler
 from publisher.acs import ACSHandler
 from publisher.wiley import WileyHandler
 from publisher.spie import SPIEHandler
+from publisher.opticsjournal import OpticsJournalHandler
 from publisher.researching import ResearchingHandler
 
 
@@ -97,6 +98,12 @@ def detect_publisher_from_url(url: str) -> str:
         return 'acm'
     elif '10.1145' in url_lower:
         return 'acm'
+
+    # Chinese Laser Press's Chinese-language site. Same publisher as
+    # researching.cn but a different platform, and 10.3788 does not resolve
+    # here -- the host is the only signal, so it is tested before the DOI.
+    elif 'opticsjournal.net' in url_lower:
+        return 'opticsjournal'
 
     # Chinese Laser Press (researching.cn) -- where 10.3788 actually resolves.
     # The host test must come before the DOI one below, since a co-published
@@ -229,6 +236,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return WileyHandler(**kwargs)
     elif publisher == 'spie':
         return SPIEHandler(**kwargs)
+    elif publisher == 'opticsjournal':
+        return OpticsJournalHandler(**kwargs)
     elif publisher == 'researching':
         return ResearchingHandler(**kwargs)
     elif publisher == 'science':
