@@ -2416,7 +2416,8 @@ async def complete_extraction_workflow(
 
         # Save metadata
         save_metadata_json(paper_output_dir, metadata, crossref_data, doi,
-                         downloads['pdf'], downloads['supplemental'])
+                         downloads['pdf'], downloads['supplemental'],
+                         pdf_link=links.get('pdf_url') or '')
 
         # Statistics
         print("\n" + "=" * 80)

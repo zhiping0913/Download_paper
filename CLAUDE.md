@@ -68,7 +68,13 @@ python batch_process.py --file dois.txt                     # 批量
   "2.1.1 Physics origin"，层级只能从编号推
 - 正文根是 `div.text_area`（`div#mainView` 还包着站点导航和页脚）
 - 关键词是一串**没有分隔符的 `<a>`**，按文本切会连成一坨
-- 页面里**没有 `<table>` 元素**，表格在原网页就没渲染出来 —— 尊重原页面，不重建
+- ⚠️ `p.figure` 是**所有 float 的图注**（图和表共用）。图注跟在 `p.text_pic` 后面，
+  由 `_render_figure` 一起输出；**表格没有 `p.text_pic`**，无脑丢掉 `p.figure`
+  会把表标题（"Table 1. Summary of..."）吞掉而表格本身照常渲染。靠前一个兄弟
+  节点区分（见 `_render_float_caption`）
+- 表格的图注在**表格后面**，这是原页面顺序，不调整
+- 有的文章页面里确实**没有 `<table>` 元素**（表格在原网页就没渲染），
+  那就尊重原页面，不重建
 
 ### SPIE (`10.1117`、spiedigitallibrary.org)
 
