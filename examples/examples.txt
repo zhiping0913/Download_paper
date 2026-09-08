@@ -1,11 +1,11 @@
-aps
+## aps
 10.1103/PhysRevLett.124.185004   #PhysRevLett, supplemental
 10.1103/RevModPhys.79.1267
-10.1103/PhysRevX.7.041003   #Physical Review X, table, Popular Summary, figure, formula, supplemental (mp4, description)
+10.1103/PhysRevX.7.041003   #Physical Review X, table, Popular Summary with key image, figure, formula, supplemental (mp4, description)
 10.1103/PhysRevAccelBeams.20.043401   #Physical Review Accelerators and Beams, figure, formula, supplemental (wmv, description)
 10.1103/PhysRevA.98.043407   #Physical Review A, table, figure, formula (lagre number), nested list, supplemental (mp4, description)
 
-nature, springer
+## nature, springer
 10.1038/s41566-023-01311-z   #nature photonics, article-equation, Supplementary information
 10.1038/nphys2439
 10.1140/epjs/s11734-023-00909-2   #section-title, article-equation, figure, table with formula, nested list, Formula
@@ -18,7 +18,7 @@ nature, springer
 10.1007/978-3-032-08930-4   #springer book, chapter(34>20, multiple pages), figure, table, article-equation
 
 
-aip
+## aip
 10.1063/5.0331671   #Applied Physics Letters, figure, supplementary
 10.1063/5.0326077   #section-title, figure, table, mathFormula
 10.1063/5.0321661   #section-title, figure, mathFormula, supplementary (mp4)
@@ -28,7 +28,7 @@ aip
 10.1063/1.3152994   #Publisher's Note (errata), bullet list with inline mathFormula
 10.1063/5.0083990   #h3,h4,h5,h6 section-title with formula, figure, mathFormula, table with formula
 
-iop
+## iop
 10.1088/1361-6463/ae36b8   #Journal of Physics D: Applied Physics, figure, mathFormula, table, supplementary
 10.1016/j.medengphy.2020.07.010   #Medical Engineering & Physics, figure, mathFormula, table, supplementary
 10.1209/0295-5075/122/14004   #A Letters journal serving all areas of physics, figure, mathFormula, footnotes, supplementary
@@ -37,7 +37,7 @@ iop
 10.1088/1367-2630/ac6f16   #figure, mathFormula, nested list, table
 10.1088/1367-2630/16/9/093003   #abstract figure
 
-optica
+## optica
 10.1364/OE.444043   #Optics Express, Formula, figure, Supplemental (figshare)
 10.1364/OPTICA.420520   #Optica, Formula, figure, table, Supplemental (figshare)
 10.1364/AO.54.00F103   #Applied Optics, figure (a large number of high-resolution images), table, nested list
@@ -45,11 +45,11 @@ optica
 10.1364/OL.35.002314   #Optics Letters, figure, table with caption, No article body tag
 10.1364/aop.525163   #, Formula, figure, nested list, Supplemental (figshare)
 
-cambridge
+## cambridge
 10.1017/hpl.2019.36   #High Power Laser Science and Engineering, figure (a large number of high-resolution images),
 10.1017/hpl.2018.33   #High Power Laser Science and Engineering, figure, mathFormula (hidden latex behind svg), table
 
-sciencedirect, Elsevier
+## sciencedirect, Elsevier
 10.1016/j.jcp.2019.109131   #figure, formula(matrix in multiple lines), table with formula
 10.1016/j.cocom.2026.e01326   #Supplementary, key_image, table with formula
 10.1016/S1369-7021(12)70017-2   #news
@@ -61,29 +61,51 @@ sciencedirect, Elsevier
 10.1016/j.cpc.2008.10.004   #figure, formula, table with formula and note, nested list, multiple algorithm diagrams not in figure block, supplemental
 10.1016/B978-0-08-030275-1.50008-4   #figure, formula, nested list with formula, footnote (multi-line formula)
 
-Science
+## Science
 10.1126/science.1059413   #figure, table, display-formula
 10.1126/science.1132838   #figure, display-formula, supplemental
 10.1126/science.aam8393   #figure, table with caption, display-formula, supplemental
 10.1126/science.324.5925.326   #figure, supplemental(mp3)
 
-oup
+## oup
 10.1093/mnras/stz656   #figure, display-formula, table, nested list, supplemental
 10.1093/ptep/pts067   #figure, display-formula, nested list, footnote, supplemental
 10.1093/acprof:oso/9780198562641.001.0001   #book
 
-mdpi
+## mdpi
 10.3390/photonics4020026   #figure, display-formula, nested list
 10.3390/particles3010018   #nested list, figure, display-formula
 10.3390/sym17111873   #table, figure, display-formula
 
-acm
+## acm
 10.1145/3731599.3767493   #figure, nested list, table with footnote, algorithm diagram not in figure block, supplemental (mp4)
 10.1145/3712285.3771783   #figure, formula, nested list, table with footnote, algorithm diagram not in figure block, footnote, supplemental (mp4)
 
-ieee
+## ieee
 10.1109/TDSC.2024.3353536   #figure, nested list with formula, display-formula, footnote with multiline formula, supplemental
 10.1109/TIE.2024.3376832   #figure, nested list with formula, display-formula, Code & Datasets
 10.1109/TPS.2010.2064310   #figure, nested list with formula, footnote with formula
 10.1109/ACCESS.2020.2991812   #figure, key_image, display-formula, supplemental
+
+## acs
+10.1021/acs.nanolett.8b05070   #figure, inline and display-formula, Visual Abstract, supporting information
+10.1021/jacs.5b00033   #Visual Abstract, table with figure and footnote, figure (scheme) caption with footnote in nested lists, reference with nested list, supporting information (pdf and cif)
+10.1021/jacs.5c18820   #Visual Abstract, article text without their own h2, supporting information 
+10.1021/acsaem.5c03054   #Visual Abstract, h3, display-formula, nested list, supporting information
+
+## wiley
+10.1002/eng2.70157   #figure, inline and display-formula, nested list with formula, table with formula
+10.1002/lpor.202401986   #figure, inline and display-formula, supporting information
+10.1002/eng2.70294   #figure, inline and display-formula, nested list, table with footnote
+10.1002/cssc.201000245   #figure, table with footnote, Graphical Abstract, formula in gif, supporting information
+
+## spie
+10.3788/PI.2023.R05   #figure, inline and display-formula, nested list with formula, table with formula and note  (use link https://www.spiedigitallibrary.org/journals/photonics-insights/volume-2/issue-2/R05/Optical-manipulation-from-fluid-to-solid-domains/10.3788%2FPI.2023.R05.full)
+10.1117/1.OE.64.11.115106   #figure, inline and display-formula, table and algorithm with formula
+10.1117/1.JEI.33.1.013036   #figure, inline and display-formula, table, nested list with multiline formula
+
+## researching
+10.3788/PI.2023.R05   #figure, inline and display-formula, nested list with formula, table with formula and note
+
+
 
