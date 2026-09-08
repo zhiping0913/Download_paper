@@ -33,8 +33,10 @@ from playwright.async_api import async_playwright
 from chrome_session import (
     PROFILE_SEED_FILES,
     PROFILE_SEED_ROOT_FILES,
+    kill_chrome,
     launch_chrome,
     seed_profile,
+    sweep_stale_profiles,
 )
 try:
     from chrome_session import bypass_cloudflare_cdp, has_cf_clearance_cdp
@@ -64,6 +66,7 @@ from config import (
     CHROME_PROFILE,
     CHROME_PROFILE_REFRESH_EVERY,
     CHROME_PROFILE_SOURCE_DIR,
+    FRESH_PROFILE,
     OUTPUT_DIR_DEFAULT,
     SAVE_WITHOUT_REFERENCES,
 )
@@ -669,12 +672,26 @@ class SharedBrowserSession:
         """只启动独立 Chrome，不连接 Playwright。
         目的：chrome_session 过 Cloudflare 之前，避免 Playwright 注入自动化指纹。"""
         if self._check_cdp_port():
-            print("  ✓ Chrome 已在运行 (CDP 端口就绪)")
-            return True
+            if not FRESH_PROFILE:
+                print("  ✓ Chrome 已在运行 (CDP 端口就绪)")
+                return True
+            # FRESH_PROFILE 下复用是错的：端口上那个实例是上次运行留下的，
+            # 带着它累积的自动化指纹，接管它等于把"全新 profile"悄悄作废。
+            print("  ⚠️  端口上有上次残留的 Chrome，FRESH_PROFILE=1 下不复用，先关掉")
+            kill_chrome()
+            await asyncio.sleep(2)
+
+        sweep_stale_profiles()
+
         print("  启动独立 Chrome...")
         try:
-            proc = launch_chrome(use_user_config=True)
+            proc, profile_dir, owns = launch_chrome(use_user_config=True,
+                                                    return_details=True)
             self.headed_process = proc
+            # 记下来才删得掉 —— 以前这里丢掉了返回值，下面那段 rmtree
+            # 因此是死代码，临时 profile 只增不减。
+            self.headed_profile_dir = profile_dir
+            self.owns_headed_profile = owns
             for _ in range(30):
                 await asyncio.sleep(1)
                 if self._check_cdp_port():
@@ -855,6 +872,11 @@ class SharedBrowserSession:
 
         Returns True when the profile was actually replaced.
         """
+        if FRESH_PROFILE:
+            print("  ⚠️  跳过 profile 重置: FRESH_PROFILE=1"
+                  "（每次都是全新空 profile，重置只会重新播种真实 profile 的 cookie）")
+            return False
+
         scraping_dir = (os.environ.get('CHROME_USER_DATA_DIR', '') or '').strip()
         if not scraping_dir:
             print("  ⚠️  跳过 profile 重置: 未设置 CHROME_USER_DATA_DIR"

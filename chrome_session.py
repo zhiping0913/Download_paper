@@ -51,6 +51,8 @@ Environment
 ``CHROME_PDF_PROFILE_ROOT``     where the throwaway profile is built
 ``CHROME_PROFILE_SOURCE_DIR``   real profile that gets copied
 ``CHROME_DOWNLOAD_DIR``         default download directory
+``FRESH_PROFILE``               1 = every instance gets a brand-new empty
+                                profile, with no seeding from the real one
 """
 
 from __future__ import annotations
@@ -79,6 +81,7 @@ try:
         CHROME_PROFILE,
         CHROME_PROFILE_SOURCE_DIR,
         CHROME_USER_DATA_DIR,
+        FRESH_PROFILE,
         IS_WINDOWS,
     )
 except ImportError:                                  # standalone use
@@ -91,6 +94,8 @@ except ImportError:                                  # standalone use
         if IS_WINDOWS else str(Path.home() / '.config' / 'google-chrome')
     )
     CHROME_PROFILE_SOURCE_DIR = CHROME_USER_DATA_DIR
+    FRESH_PROFILE = os.environ.get('FRESH_PROFILE', '').strip().lower() in (
+        '1', 'true', 'yes', 'on')
 
 
 # ==========================================================================
@@ -288,6 +293,54 @@ def kill_chrome() -> None:
     print("✓ Chrome processes killed")
 
 
+# Temporary-profile name prefixes owned by this module. Anything matching
+# these in the temp directory was created by a previous run.
+TEMP_PROFILE_PREFIXES = ('chrome_fresh_', 'chrome_pdf_', 'chrome_9', 'chrome_')
+
+
+def _profile_dirs_in_use() -> set:
+    """user-data-dir paths held by Chrome processes that are still alive."""
+    in_use = set()
+    for proc_dir in glob.glob('/proc/[0-9]*'):
+        try:
+            cmdline = Path(proc_dir, 'cmdline').read_bytes().decode(
+                'utf-8', 'replace')
+        except OSError:
+            continue                             # process exited mid-scan
+        for arg in cmdline.split('\x00'):
+            if arg.startswith('--user-data-dir='):
+                in_use.add(arg.split('=', 1)[1])
+    return in_use
+
+
+def sweep_stale_profiles(quiet: bool = False) -> int:
+    """Delete temp profiles left behind by earlier runs. Returns the count.
+
+    A profile that outlives its run is not merely wasted disk: a leftover
+    Chrome still holding the debug port makes the next run *reuse* it, so a
+    run that asked for a clean profile silently inherits the previous one's
+    accumulated automation fingerprint. Sweeping at startup keeps that from
+    happening.
+
+    Only directories no live Chrome has open are removed, so a concurrent run
+    (a second batch, the user's own session) is never touched.
+    """
+    in_use = _profile_dirs_in_use()
+    removed = 0
+    for prefix in TEMP_PROFILE_PREFIXES:
+        for path in glob.glob(str(Path(tempfile.gettempdir()) / (prefix + '*'))):
+            if path in in_use or not Path(path).is_dir():
+                continue
+            try:
+                shutil.rmtree(path, ignore_errors=True)
+                removed += 1
+            except OSError:
+                pass
+    if removed and not quiet:
+        print(f"  🧹 清理了 {removed} 个上次运行残留的临时 profile")
+    return removed
+
+
 def launch_chrome(use_user_config: bool = False, headless: bool = False,
                   return_details: bool = False):
     """Start the shared scraping Chrome and wait for its debugging port.
@@ -299,7 +352,17 @@ def launch_chrome(use_user_config: bool = False, headless: bool = False,
         across papers)
       * otherwise a fresh temporary directory
     """
-    if use_user_config:
+    if FRESH_PROFILE:
+        # 全新 profile 优先于一切：use_user_config 走的是 config.CHROME_USER_DATA_DIR，
+        # 而那个变量在环境变量为空时回退到用户日常的 ~/.config/google-chrome，
+        # 正是这里要避开的东西。
+        profile_root = os.environ.get('CHROME_PROFILE_ROOT')
+        if profile_root:
+            profile_root = str(Path(profile_root).expanduser())
+            Path(profile_root).mkdir(parents=True, exist_ok=True)
+        user_data_dir = tempfile.mkdtemp(prefix='chrome_fresh_', dir=profile_root)
+        print(f"🆕 全新 profile（未播种）: {user_data_dir}")
+    elif use_user_config:
         user_data_dir = CHROME_USER_DATA_DIR
         print(f"使用用户配置: {user_data_dir}")
     else:
@@ -322,7 +385,8 @@ def launch_chrome(use_user_config: bool = False, headless: bool = False,
     print(f"正在启动 Chrome ({CHROME_PATH})...")
     proc = spawn_chrome(user_data_dir, CHROME_DEBUG_PORT, headless)
     if proc is None:
-        return (None, user_data_dir, not use_user_config) if return_details else None
+        return ((None, user_data_dir, FRESH_PROFILE or not use_user_config)
+                if return_details else None)
 
     print(f"✓ Chrome 已启动 (PID: {proc.pid})")
     print(f"✓ 远程调试端口: {CHROME_DEBUG_PORT}")
@@ -340,7 +404,8 @@ def launch_chrome(use_user_config: bool = False, headless: bool = False,
                 break
             time.sleep(0.5)
 
-    return (proc, user_data_dir, not use_user_config) if return_details else proc
+    return ((proc, user_data_dir, FRESH_PROFILE or not use_user_config)
+            if return_details else proc)
 
 
 def _default_pdf_port() -> int:
@@ -1272,12 +1337,13 @@ class FreshChromeSession:
             target = Path(tempfile.mkdtemp(prefix='chrome_pdf_'))
         self._owns_profile = True
 
-        source = Path(
-            (os.environ.get('CHROME_PROFILE_SOURCE_DIR') or '').strip()
-            or CHROME_PROFILE_SOURCE_DIR
-        ).expanduser()
         profile_name = os.environ.get('CHROME_PROFILE', CHROME_PROFILE) or 'Default'
-        seed_profile(target, source, profile_name)
+        if not FRESH_PROFILE:
+            source = Path(
+                (os.environ.get('CHROME_PROFILE_SOURCE_DIR') or '').strip()
+                or CHROME_PROFILE_SOURCE_DIR
+            ).expanduser()
+            seed_profile(target, source, profile_name)
         write_chrome_preferences(target, profile_name=profile_name,
                                  download_dir=self.download_dir, quiet=True)
         return target
@@ -1293,7 +1359,8 @@ class FreshChromeSession:
         if self.download_dir:
             Path(self.download_dir).mkdir(parents=True, exist_ok=True)
 
-        print(f"  🌐 启动独立 Chrome (端口 {self.port}, 真实 profile 副本)...")
+        flavour = '全新空 profile' if FRESH_PROFILE else '真实 profile 副本'
+        print(f"  🌐 启动独立 Chrome (端口 {self.port}, {flavour})...")
         self.process = spawn_chrome(self.profile_dir, self.port,
                                     start_url=start_url)
         if self.process is None:
