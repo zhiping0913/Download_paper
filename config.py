@@ -129,6 +129,15 @@ CHROME_PROFILE_SOURCE_DIR = (
     or _default_chrome_source_dir()
 )
 
+# FRESH_PROFILE=1 —— 每个 Chrome 实例都用一个全新的空 profile，且**不从真实
+# profile 播种**。共享实例（论文页面）和一次性实例（PDF / 补充材料）都适用。
+#
+# 需要它的场合：站点按浏览器指纹打分（SPIE 走 Imperva Incapsula），播种进来的
+# cookie 和累积的自动化痕迹反而会被扣分。代价是零登录态 —— 依赖机构订阅
+# cookie 的文章抓不到全文，那种情况别开这个开关。
+FRESH_PROFILE = os.environ.get("FRESH_PROFILE", "").strip().lower() in (
+    "1", "true", "yes", "on")
+
 # ============================================================================
 # 输出目录配置
 # ============================================================================
