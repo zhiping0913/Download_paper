@@ -79,8 +79,23 @@ python batch_process.py --file dois.txt                     # 批量
 ### SPIE (`10.1117`、spiedigitallibrary.org)
 
 - landing page 只有元数据（`citation_*` + `ld+json`），正文要 **POST**
-  `/api/journals/article/fulltexthtml`，body `{"urlId": "<doi>"}`，
+  `/api/{family}/article/fulltexthtml`，body `{"urlId": "<doi>"}`，
   用页面内 `fetch()` 发（DOI 不分大小写）。响应存 `fulltexthtml.json`
+- ⚠️ **接口按内容族分三个**：`journals` / `proceedings` / `ebooks`。**问错了族不报错**，
+  只回一个 `hasAccess=False` 的空壳，看着像没权限（会议论文集 `10.1117/12.x` 就踩过）。
+  族名从 landing page 的 `<meta name="citation_article_type">` 读——SPIE 自己声明的；
+  缺失时按 URL 路径段兜底（`/conference-proceedings-of-spie/` → proceedings）。
+  **不要去解析 JS bundle**：里面那个映射的变量名（`ar`/`ir`/`lr`）每次构建都会变
+- ⚠️ 正文里 **`div.fig.panel` 不都是插图** —— 行内/独立公式也用它包，且用同一个
+  `FigureImages/` 目录存 jpg。带 `<h2 class="label">` 的才是真插图（本例 37 个里只有 4 个）。
+  无标签的当公式图渲染，不能编号成 `Fig. N`
+- ⚠️ **图注里也嵌公式图**，而真正的图片链接在 **caption 之后**（div 里最后一个链接）。
+  取第一个 `FigureImages` 锚点会抓到图注里的公式 —— 必须跳过 `div.caption` 内的锚点
+- 公式 jpg **不下载**，在 md 里引用远程 URL：下载键是按 panel 编号的，一个图注里有好几张
+  塞不进去；而且公式图片本身没法用（要还原公式得对 PDF 做 OCR）
+- 正文 API 被拒时（`hasAccess=False`）landing page 上图还在，`extract_figures_from_landing()`
+  兜底。它靠 `DetailFigure-module__buttonContainer`（"Download"/"Full-size Image" 按钮）
+  认图，不能直接扫 `FigureImages/` —— 那页上有 ~50 个，绝大多数是公式
 - ⚠️ **必须在文章自己的页面上调这个 API**：实测在 SPIE 首页上调用没有响应，
   在文章 `.full` 页上调用返回 926 KB
 - ⚠️ `10.3788` **不是 SPIE 的前缀**，是中国激光杂志社，doi.org 会跳到
@@ -148,6 +163,16 @@ python batch_process.py --file dois.txt                     # 批量
   能无头访问到的出版商本来就没在拦我们，每篇都弹一个窗口就失去无头的意义了
 - 补充材料没有独立浏览器路径，一直用传进去的 page/context，所以无头时本来就是无头下载
 - `DP_PDF_FRESH_CHROME=0` 两种模式下都彻底禁用一次性 Chrome
+- `FRESH_PROFILE=1` 每个实例都用全新空 profile，且**不从真实 profile 播种**——
+  正文页的共享实例和 PDF 的一次性实例都适用。SPIE 走 Imperva Incapsula（不是
+  Cloudflare，那套 Turnstile 点击逻辑对它无效），播种进来的 cookie 反而扣分。
+  代价是零登录态，靠机构订阅的文章别开
+- ⚠️ **端口上有残留 Chrome 时不能复用** —— 上次运行崩了/被杀，Chrome 还占着调试端口，
+  新运行接管它就等于继承了那个被污染的 profile，`FRESH_PROFILE` 被悄悄作废
+  （现象：设了 `FRESH_PROFILE=1` 却还是被 SPIE 拦）。所以该模式下先 `kill_chrome()` 再起
+- 启动时 `sweep_stale_profiles()` 扫掉 `/tmp/chrome_fresh_*`、`/tmp/chrome_pdf_*`：
+  只删**没有活进程持有**的（读 `/proc/*/cmdline` 的 `--user-data-dir=` 判断），
+  并行跑的另一个批次不受影响
 - **两个 Chrome 实例、两个端口**，都能用环境变量改：
   `CHROME_DEBUG_PORT`(主实例，默认 9222) 和
   `CHROME_PDF_DEBUG_PORT`(一次性实例，默认 9333，被占用自动顺延)
