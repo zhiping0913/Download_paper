@@ -2201,6 +2201,7 @@ async def complete_extraction_workflow(
     print("\n" + "=" * 80)
     print("🔍 论文完整提取工作流 (Phase 4-5)")
     print("=" * 80)
+    print(f"🕒 {datetime.now():%Y-%m-%d %H:%M:%S}")
     print(f"📌 DOI: {doi}\n")
 
     # 构建URL
