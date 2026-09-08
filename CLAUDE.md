@@ -142,6 +142,9 @@ python batch_process.py --file dois.txt                     # 批量
   能无头访问到的出版商本来就没在拦我们，每篇都弹一个窗口就失去无头的意义了
 - 补充材料没有独立浏览器路径，一直用传进去的 page/context，所以无头时本来就是无头下载
 - `DP_PDF_FRESH_CHROME=0` 两种模式下都彻底禁用一次性 Chrome
+- **两个 Chrome 实例、两个端口**，都能用环境变量改：
+  `CHROME_DEBUG_PORT`(主实例，默认 9222) 和
+  `CHROME_PDF_DEBUG_PORT`(一次性实例，默认 9333，被占用自动顺延)
 
 ### IEEE (`10.1109`, ieeexplore.ieee.org)
 
