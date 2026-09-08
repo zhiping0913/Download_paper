@@ -369,7 +369,7 @@ class ResearchingHandler(PublisherHandler):
         if 'text_pic' in classes:
             return cls._render_figure(node, ctx)
         if 'figure' in classes:
-            return []                       # emitted with its image
+            return cls._render_float_caption(node)
         if name == 'disp-formula':
             return cls._render_equation(node)
         if name in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
@@ -508,6 +508,36 @@ class ResearchingHandler(PublisherHandler):
             number = re.search(r'\(?([\d.]+)\)?', label)
             line += f" ({number.group(1)})" if number else f" {label}"
         return [line, '']
+
+    @classmethod
+    def _render_float_caption(cls, node: Tag) -> List[str]:
+        """Render a ``p.figure`` that is NOT a figure's caption.
+
+        researching.cn uses ``p.figure`` for the caption of any float. After
+        an image it follows a ``p.text_pic`` and :meth:`_render_figure` has
+        already emitted it, so it must be skipped -- but a table has no
+        ``p.text_pic``, and dropping every ``p.figure`` swallowed its title
+        ("Table 1. Summary of Modulation Results Dictated by Symmetry") while
+        the grid itself rendered fine.
+
+        The preceding element sibling tells the two apart.
+        """
+        for sibling in node.previous_siblings:
+            if not isinstance(sibling, Tag) or not sibling.name:
+                continue
+            if 'text_pic' in (sibling.get('class') or []):
+                return []                   # already emitted with its image
+            break
+
+        text = cls._text_md(node)
+        if not text or cls._is_noise(text):
+            return []
+        m = re.match(r'^((?:Table|Figure|Fig\.?|Scheme|Chart)\s*\d+)\s*[.:]?\s*(.*)$',
+                     text, re.IGNORECASE | re.DOTALL)
+        if m:
+            label, caption = m.group(1).strip(), m.group(2).strip()
+            return [f"**{label}.** {caption}".strip(), '']
+        return [text, '']
 
     @classmethod
     def _render_figure(cls, node: Tag, ctx: dict) -> List[str]:

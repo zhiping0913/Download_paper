@@ -245,7 +245,7 @@ def organize_paper_output(output_dir: Path, metadata: dict, s2_data: dict) -> Pa
 
 def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
                       pdf_filename: str = None, supplemental_files: list = None,
-                      link: str = None):
+                      link: str = None, pdf_link: str = None):
     """Save paper metadata as JSON file
 
     Args:
@@ -253,6 +253,9 @@ def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
               (or the explicit ``link`` from the --json input). Useful to
               cache the direct publisher URL so future runs can bypass
               doi.org (see --json mode).
+        pdf_link: The URL the PDF was downloaded from. Recorded alongside the
+              local filename so a paper whose PDF failed can be retried, and
+              so the source is traceable without re-running extraction.
     """
     try:
         year = s2_data.get('year') or metadata.get('year') or '0000'
@@ -279,6 +282,7 @@ def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
             'corresponding_author_emails': metadata.get('corresponding_author_emails', []),
             'extracted_at': datetime.now().isoformat(),
             'pdf': pdf_filename,
+            'pdf_link': pdf_link or metadata.get('pdf_url') or '',
             'supplemental': supplemental_files if supplemental_files else []
         }
 
