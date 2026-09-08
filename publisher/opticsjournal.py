@@ -355,21 +355,20 @@ class OpticsJournalHandler(PublisherHandler):
         return ''
 
     @classmethod
-    def _float_captions(cls, holder: Tag) -> Tuple[str, str]:
-        """``(label, caption)`` from a float's two <h4> headings.
+    def _float_parts(cls, holder: Tag) -> List[Tuple[str, str]]:
+        """``[(label, caption), …]`` for a float's headings, in page order.
 
-        Figures and tables both carry a Chinese caption ("图 1. …" / "表 1. …")
-        and an English one ("Fig. 1. …" / "Table 1. …"). The label is the
-        leading span; both caption texts are kept, since the two are not
-        translations of the same length and the English one often carries
-        detail the Chinese one compresses.
+        Figures and tables each carry two <h4>: a Chinese one ("图 1. …" /
+        "表 1. …") and an English one ("Fig. 1. …" / "Table 1. …"). Both are
+        kept, each with its own label, because the two are not translations of
+        equal length -- the English caption routinely spells out what the
+        Chinese one compresses -- and a reader looking for "Fig. 1" should
+        find that string in the markdown.
         """
-        texts: List[str] = []
-        label = ''
+        parts: List[Tuple[str, str]] = []
         for h4 in holder.find_all('h4', recursive=False):
             span = h4.find('span')
-            if span is not None and not label:
-                label = span.get_text(' ', strip=True).rstrip('. ')
+            label = span.get_text(' ', strip=True).rstrip('. ') if span else ''
             marker = span.get_text(' ', strip=True) if span is not None else ''
             text = cls._text_md(h4)
             if marker:
@@ -378,8 +377,26 @@ class OpticsJournalHandler(PublisherHandler):
                 text = re.sub(r'^(Fig|Table)\.?\s*\d+\s*[.．]\s*', '', text,
                               flags=re.IGNORECASE)
             if text and not cls._is_noise(text):
-                texts.append(text)
-        return label, ' '.join(texts).strip()
+                parts.append((label, text))
+        return parts
+
+    @classmethod
+    def _float_caption_lines(cls, holder: Tag, fallback_label: str) -> List[str]:
+        """The float's captions as markdown lines, one per language."""
+        parts = cls._float_parts(holder)
+        if not parts:
+            return [f"**{fallback_label}.**", '']
+        lines: List[str] = []
+        for label, text in parts:
+            lines.extend([f"**{label or fallback_label}.** {text}".strip(), ''])
+        return lines
+
+    @classmethod
+    def _float_captions(cls, holder: Tag) -> Tuple[str, str]:
+        """``(label, caption)`` — the flattened form, for figure metadata."""
+        parts = cls._float_parts(holder)
+        label = parts[0][0] if parts else ''
+        return label, ' '.join(text for _, text in parts).strip()
 
     # ==================================================================
     # References
@@ -500,9 +517,8 @@ class OpticsJournalHandler(PublisherHandler):
     def _render_figure(cls, node: Tag, ctx: dict) -> List[str]:
         ctx['fig_seq'] += 1
         index = ctx['fig_seq']
-        label, caption = cls._float_captions(node)
-        label = label or f'图 {index}'
-        out: List[str] = [f"**{label}.** {caption}".strip(), '']
+        label = cls._float_captions(node)[0] or f'图 {index}'
+        out: List[str] = cls._float_caption_lines(node, f'图 {index}')
         out.extend([f"![{label}](__OJ_FIG_{index}__)", ''])
         return out
 
@@ -514,8 +530,7 @@ class OpticsJournalHandler(PublisherHandler):
         real table; rendering the outer one gives a 1x1 grid with everything
         flattened inside it.
         """
-        label, caption = cls._float_captions(node)
-        out: List[str] = [f"**{label}.** {caption}".strip(), '']
+        out: List[str] = cls._float_caption_lines(node, '表')
 
         table = cls._innermost_table(node)
         rendered = cls._render_table(table) if table is not None else ''
