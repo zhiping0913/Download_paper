@@ -62,7 +62,36 @@ class SPIEHandler(PublisherHandler):
     """Full-text handler for the SPIE Digital Library."""
 
     SPIE_BASE = 'https://www.spiedigitallibrary.org'
-    FULLTEXT_API = f'{SPIE_BASE}/api/journals/article/fulltexthtml'
+    # SPIE 的正文接口按内容族分三个，路径里的那一段就是族名：
+    #   /api/journals/article/fulltexthtml      期刊
+    #   /api/proceedings/article/fulltexthtml   会议论文集
+    #   /api/ebooks/article/fulltexthtml        电子书
+    # 问错了族不会报错，只会回一个 hasAccess=False 的空壳，看着像没权限。
+    FULLTEXT_API_TMPL = SPIE_BASE + '/api/{family}/article/fulltexthtml'
+    FULLTEXT_FAMILIES = ('journals', 'proceedings', 'ebooks')
+    FULLTEXT_API = FULLTEXT_API_TMPL.format(family='journals')
+
+    # citation_article_type 的取值 -> 族名。SPIE 在 landing page 上自己声明，
+    # 比解析压缩过的 JS bundle 稳（bundle 里的 ar/ir/lr 每次构建都会换名字）。
+    _ARTICLE_TYPE_FAMILY = {
+        'proceedings': 'proceedings',
+        'proceeding': 'proceedings',
+        'conference': 'proceedings',
+        'ebook': 'ebooks',
+        'ebooks': 'ebooks',
+        'book': 'ebooks',
+        'chapter': 'ebooks',
+        'journal': 'journals',
+        'journals': 'journals',
+        'article': 'journals',
+    }
+
+    # URL 路径里的族标记，作为 meta 缺失时的兜底。
+    _URL_FAMILY = (
+        ('/conference-proceedings-of-spie/', 'proceedings'),
+        ('/ebooks/', 'ebooks'),
+        ('/journals/', 'journals'),
+    )
 
     def __init__(self, page=None, captured_data_dir=None, doi: str = None):
         super().__init__(page=page, captured_data_dir=captured_data_dir, doi=doi)
@@ -132,6 +161,19 @@ class SPIEHandler(PublisherHandler):
             latex = cls._math_latex(node)
             return f"${latex}$" if latex else ''
 
+        if name == 'img':
+            # Equations inside prose and captions are shipped as images, not
+            # MathML. They stay as remote references: the download pipeline
+            # keys figures per panel, and a caption holds several of these,
+            # so they have no slot -- and a GIF of a formula is not usable
+            # content anyway (an OCR pass over the PDF is what recovers it).
+            src = (node.get('src') or node.get('data-src') or '').strip()
+            if not src:
+                return ''
+            resolved = urljoin(cls.SPIE_BASE + '/', src)
+            alt = (node.get('alt') or '').strip()
+            return f"![{alt}]({cls._md_url(resolved)})"
+
         inner = ''.join(cls._inline_md(c) for c in node.children)
 
         if name in ('b', 'strong'):
@@ -152,6 +194,8 @@ class SPIEHandler(PublisherHandler):
                 return inner
             resolved = urljoin(cls.SPIE_BASE, href)
             if not urlparse(resolved).netloc:
+                return inner
+            if text.startswith('!['):        # <a> wrapping an equation image
                 return inner
             return f"[{text}]({cls._md_url(resolved)})" if text else ''
 
@@ -269,7 +313,32 @@ class SPIEHandler(PublisherHandler):
     # Full-text API
     # ==================================================================
 
-    async def fetch_fulltext_html(self, page, referer: str = '') -> str:
+    @classmethod
+    def fulltext_family(cls, landing_html: str = '', url: str = '') -> str:
+        """Which ``/api/<family>/article/fulltexthtml`` this article belongs to.
+
+        SPIE states it outright in the landing page:
+        ``<meta name="citation_article_type" content="proceedings">``. The URL
+        path is the fallback, and a journal is the default because that is the
+        only family whose landing page has been seen without the meta tag.
+        """
+        if landing_html:
+            soup = BeautifulSoup(landing_html, 'html.parser')
+            declared = cls._meta(soup, 'citation_article_type').strip().lower()
+            if declared:
+                family = cls._ARTICLE_TYPE_FAMILY.get(declared)
+                if family:
+                    return family
+                print(f"  ⚠️  未知 citation_article_type={declared!r}，按 URL 判断")
+
+        url_lower = (url or '').lower()
+        for marker, family in cls._URL_FAMILY:
+            if marker in url_lower:
+                return family
+        return 'journals'
+
+    async def fetch_fulltext_html(self, page, referer: str = '',
+                                  landing_html: str = '', page_url: str = '') -> str:
         """POST the fulltext API from inside the page and return the HTML.
 
         The call is made with the page's own ``fetch()`` rather than an
@@ -283,9 +352,23 @@ class SPIEHandler(PublisherHandler):
         doi = (self.doi or '').strip()
         if not doi:
             return ''
-        referer = referer or f"{self.SPIE_BASE}/journals"
+        family = self.fulltext_family(landing_html, page_url)
+        referer = referer or f"{self.SPIE_BASE}/{family}"
 
-        print(f"  ↪ 请求正文 API: /api/journals/article/fulltexthtml ({doi})")
+        # 判定出的族先试；万一 SPIE 改了 meta 的写法，再把其余两个补上，
+        # 总共最多 3 次请求 —— 有界，不是漫无目的地猜。
+        families = [family] + [f for f in self.FULLTEXT_FAMILIES if f != family]
+        for attempt, fam in enumerate(families):
+            api = self.FULLTEXT_API_TMPL.format(family=fam)
+            note = '' if attempt == 0 else '（回退）'
+            print(f"  ↪ 请求正文 API{note}: /api/{fam}/article/fulltexthtml ({doi})")
+            html = await self._post_fulltext(page, api, doi, referer)
+            if html:
+                return html
+        return ''
+
+    async def _post_fulltext(self, page, api: str, doi: str, referer: str) -> str:
+        """One POST to a fulltext endpoint; '' when it yields no body."""
         try:
             payload = await page.evaluate(
                 """async ([api, urlId, referer]) => {
@@ -306,7 +389,7 @@ class SPIEHandler(PublisherHandler):
                         return {__err: String(e)};
                     }
                 }""",
-                [self.FULLTEXT_API, doi, referer],
+                [api, doi, referer],
             )
         except Exception as exc:
             print(f"  ⚠️  正文 API 异常: {type(exc).__name__}: {str(exc)[:120]}")
@@ -374,19 +457,95 @@ class SPIEHandler(PublisherHandler):
             }
         return figures
 
+    # Landing-page figure markup. SPIE's React bundle hashes its class names
+    # (``DetailFigure-module__figureCaption___GCZEy``), so the suffix cannot be
+    # matched literally -- only the stable module prefix can.
+    _LANDING_FIG_BUTTONS = re.compile(r'DetailFigure-module__buttonContainer')
+    _LANDING_FIG_CAPTION = re.compile(r'DetailFigure-module__figureCaption')
+
+    @classmethod
+    def extract_figures_from_landing(cls, html: str) -> dict:
+        """Figures from the article page itself, for when the API says no.
+
+        Paywalled articles (conference proceedings, typically) answer the
+        fulltext API with ``hasAccess=False``, but the landing page still
+        renders every figure. It cannot simply be scanned for
+        ``FigureImages/`` links: this page carries ~50 of them, because each
+        inline equation is a page fragment image under the same directory.
+        The real figures are the ones with a "Download" / "Full-size Image"
+        button pair next to them, so the button container is what identifies
+        a figure -- 4 hits here instead of 50.
+        """
+        if not html:
+            return {}
+        soup = BeautifulSoup(html, 'html.parser')
+
+        figures = {}
+        for buttons in soup.find_all('div', class_=cls._LANDING_FIG_BUTTONS):
+            href = ''
+            for a in buttons.find_all('a', href=True):
+                if 'FigureImages' in a['href']:
+                    href = urljoin(cls.SPIE_BASE + '/', a['href'].strip())
+                    break
+            if not href:
+                continue
+
+            index = len(figures) + 1
+            figures[f'fig_{index}'] = {
+                'url': href,
+                'original_url': href,
+                'caption': cls._landing_figure_caption(buttons),
+                'label': f'Figure {index}',
+            }
+        return figures
+
+    @classmethod
+    def _landing_figure_caption(cls, buttons: Tag) -> str:
+        """The caption block sitting alongside a figure's button container."""
+        container = buttons.parent
+        for _ in range(3):                       # caption is a near sibling
+            if container is None:
+                break
+            cap = container.find('div', class_=cls._LANDING_FIG_CAPTION)
+            if cap is not None:
+                return cls._text_md(cap)
+            container = container.parent
+        return ''
+
+    @staticmethod
+    def _in_caption(node: Tag) -> bool:
+        """True for a node sitting inside the figure's caption text."""
+        for parent in node.parents:
+            classes = parent.get('class') or []
+            if 'caption' in classes:
+                return True
+            if 'fig' in classes:            # reached the figure itself
+                return False
+        return False
+
     @classmethod
     def _figure_urls(cls, fig: Tag) -> Tuple[str, str]:
+        """The figure's own image, ignoring anything inside its caption.
+
+        A caption routinely embeds inline equations, and SPIE renders those as
+        images from the very same ``FigureImages/`` directory. Taking the
+        first matching anchor therefore lands on equation art rather than the
+        figure -- and on this paper the real image is the *last* link in the
+        div, because it follows the caption.
+        """
         hires = ''
         for a in fig.find_all('a', href=True):
-            if 'FigureImages' in a['href']:
+            if 'FigureImages' in a['href'] and not cls._in_caption(a):
                 hires = urljoin(cls.SPIE_BASE + '/', a['href'].strip())
                 break
         preview = ''
-        img = fig.find('img')
-        if img is not None:
+        for img in fig.find_all('img'):
+            if cls._in_caption(img):
+                continue
             src = (img.get('src') or img.get('data-src') or '').strip()
             if src:
                 preview = urljoin(cls.SPIE_BASE + '/', src)
+                break
         return hires, preview
 
     @classmethod
@@ -644,11 +803,19 @@ class SPIEHandler(PublisherHandler):
         ctx['fig_seq'] += 1
         index = ctx['fig_seq']
         label_el = node.find(class_='label')
-        label = (label_el.get_text(' ', strip=True)
-                 if label_el is not None else f'Fig. {index}')
+
+        # Only a labelled div.fig is an actual figure. SPIE wraps display
+        # equations in the same div.fig.panel and gives them no label -- on
+        # this paper that is 33 of the 37 panels, and calling them "Fig. 1"…
+        # "Fig. 37" both invents figures and pushes the real Figure 1 out of
+        # place. They are rendered as the bare equation images they are.
+        if label_el is None:
+            return [f"![]( __SPIE_FIG_{index}__)".replace('( ', '('), '']
+
+        label = label_el.get_text(' ', strip=True).rstrip('.')
         caption = cls._figure_caption(node)
         out: List[str] = []
-        out.extend([f"**{label}.** {caption}".strip() if caption else f"**{label}.**", ''])
+        out.extend([f"**{label}.** {caption}".strip(), ''])
         out.extend([f"![{label}](__SPIE_FIG_{index}__)", ''])
         return out
 
@@ -729,7 +896,12 @@ class SPIEHandler(PublisherHandler):
             pdf_url = metadata.pop('_pdf_url', None)
             referer = metadata.pop('_fulltext_referer', '')
 
-            fulltext = await self.fetch_fulltext_html(page, referer=referer)
+            try:
+                page_url = page.url or ''
+            except Exception:
+                page_url = ''
+            fulltext = await self.fetch_fulltext_html(
+                page, referer=referer, landing_html=landing, page_url=page_url)
 
             figure_urls = {}
             if fulltext:
@@ -747,6 +919,12 @@ class SPIEHandler(PublisherHandler):
                     print(f"  ✓ 正文: {len(body_md):,} 字符")
             else:
                 metadata.setdefault('references', [])
+
+            # hasAccess=False 时正文 API 什么都不给，但 landing page 上图还在
+            if not figure_urls:
+                figure_urls = self.extract_figures_from_landing(landing)
+                if figure_urls:
+                    print(f"  ✓ 图片（来自 landing page）: {len(figure_urls)} 个")
 
             return {
                 'metadata': metadata,
