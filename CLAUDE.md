@@ -56,6 +56,7 @@ python batch_process.py --file dois.txt                     # 批量
 | `10.1002` | WileyHandler | 有头 | 完整 |
 | `10.1117` / spiedigitallibrary.org | SPIEHandler | 有头 | 完整 |
 | `10.3788` / researching.cn | ResearchingHandler | 有头 | 完整 |
+| opticsjournal.net | OpticsJournalHandler | 有头 | 完整（无补充材料） |
 
 ### researching.cn（中国激光杂志社，`10.3788`）
 
@@ -75,6 +76,29 @@ python batch_process.py --file dois.txt                     # 批量
 - 表格的图注在**表格后面**，这是原页面顺序，不调整
 - 有的文章页面里确实**没有 `<table>` 元素**（表格在原网页就没渲染），
   那就尊重原页面，不重建
+
+### opticsjournal.net（中国光学期刊网，中文刊）
+
+- 中国激光杂志社的**另一个站点**，登的是中文刊（中国激光、光学学报……）。
+  `10.3788` 的 DOI 解析到 researching.cn，**不解析到这里**，所以只能按域名路由，
+  域名判断必须排在 `10.3788` 的 DOI 判断前面
+- 整页服务端渲染，元数据全在 `citation_*`；PDF 就是 `citation_pdf_url`
+  （`/Articles/GetArticlePDF/<id>`）。注意 `citation_doi` 写成 `doi:10.3788/...`，要剥前缀
+- ⚠️ **两个摘要**：`div.abstract-cn` 有两块，标题分别是「摘要」和「Abstract」，
+  `dc.description` 只有中文那份。英文那份用 **`<title>` 当小标题**
+  （Significance / Progress / Conclusions and Prospects），拍平就丢了结构
+- ⚠️ 中文摘要块里混着**语音播报组件** —— `<audio>` 的降级文本「您的浏览器不支持 audio 元素」
+  和「AI语音播报」链接，不滤掉就成了摘要开头两行
+- 正文根是 `div.fullText-con`，章节是 `h2`，编号和标题之间是**表意空格 U+3000**
+  （"1　引言"）。层级只能从编号推——所有章节都是 `h2`
+- 图是 `div.ArticleFigure-list`，⚠️ **懒加载**：`src` 是 `/NV_LEGCY/images/` 的占位图，
+  真实地址在 `data-src`
+- 表是 `div.tableDirectory`，⚠️ **表格嵌套**：`div.tableDiv` 里是 `table#topTable`，
+  它唯一的单元格里才是真表格。渲染外层会得到一个 1×1 的格子，整张表拍平在里面
+- 图和表都有**两个 `<h4>` 图注**（中文「图 1. 」/「表 1. 」+ 英文「Fig. 1. 」/「Table 1. 」），
+  两份都留——英文那份常带中文压缩掉的细节
+- 公式是 MathML（`<disp-formula>` 和行内 `<math>`），没有 annotation，走 pandoc
+- 目前没见过带补充材料的文章，`get_supplemental_url()` 返回 None
 
 ### SPIE (`10.1117`、spiedigitallibrary.org)
 
