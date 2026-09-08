@@ -36,12 +36,26 @@
 export CHROME_PATH=/opt/google/chrome/chrome          # Chrome 可执行文件路径
 export CHROME_USER_DATA_DIR=/root/.config/google-chrome-scraping  # 持久化 profile（含 cookies）
 export CHROME_PROFILE=Default                          # profile 名称
-export CHROME_DEBUG_PORT=9222                          # CDP 远程调试端口
+export CHROME_DEBUG_PORT=9222                          # 主实例 CDP 端口
+export CHROME_PDF_DEBUG_PORT=9333                      # 下载 PDF 的一次性实例 CDP 端口
+export CHROME_PDF_PROFILE_ROOT=/tmp                    # 一次性 profile 的落脚处（可选）
+export DP_PDF_FRESH_CHROME=1                           # 0 = 禁用一次性实例
 export CHROME_DOWNLOAD_DIR=/root/Downloads             # Chrome 默认下载目录
 export CHROME_PROFILE_ROOT=/tmp/chrome-profiles        # 临时 profile 根目录（可选）
 export USE_CHROME_MODE=persistent                      # persistent 或 remote
 export HEADLESS=false                                  # true/false；Cloudflare 站点建议 false
 ```
+
+> **程序会用到两个 Chrome 实例，各占一个端口**，两个端口都可用环境变量指定：
+>
+> | 实例 | 端口变量 | 默认 | 用途 |
+> |---|---|---|---|
+> | 主实例 | `CHROME_DEBUG_PORT` | 9222 | 打开论文页面、提取正文，整批论文复用同一个 |
+> | 一次性实例 | `CHROME_PDF_DEBUG_PORT` | 9333 | 只下载 PDF，每次现复制一份真实 profile，用完即删 |
+>
+> 两个端口必须不同。一次性实例的端口若被占用会自动顺延（9333 → 9334 → …），
+> 所以同时跑多个任务不会互相抢浏览器。有头运行时优先用一次性实例下载 PDF，
+> 无头运行时反过来 —— 先用主实例，失败了才起一次性实例（见「PDF 下载顺序」）。
 
 **输出目录：**
 
