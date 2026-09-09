@@ -609,7 +609,6 @@ class CambridgeHandler(PublisherHandler):
     # Figure extraction
     # ------------------------------------------------------------------
 
-    @classmethod
     @staticmethod
     def _cambridge_img_url(img) -> str:
         """Resolve the real CDN URL for a Cambridge lazy-load <img>.
