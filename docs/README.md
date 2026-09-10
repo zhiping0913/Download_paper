@@ -34,24 +34,71 @@
 
 ```bash
 export CHROME_PATH=/opt/google/chrome/chrome          # Chrome 可执行文件路径
-export CHROME_USER_DATA_DIR=/root/.config/google-chrome-scraping  # 持久化 profile（含 cookies）
 export CHROME_PROFILE=Default                          # profile 名称
 export CHROME_DEBUG_PORT=9222                          # 主实例 CDP 端口
 export CHROME_PDF_DEBUG_PORT=9333                      # 下载 PDF 的一次性实例 CDP 端口
-export CHROME_PDF_PROFILE_ROOT=/tmp                    # 一次性 profile 的落脚处（可选）
 export DP_PDF_FRESH_CHROME=1                           # 0 = 禁用一次性实例
 export CHROME_DOWNLOAD_DIR=/root/Downloads             # Chrome 默认下载目录
-export CHROME_PROFILE_ROOT=/tmp/chrome-profiles        # 临时 profile 根目录（可选）
-export USE_CHROME_MODE=persistent                      # persistent 或 remote
 export HEADLESS=false                                  # true/false；Cloudflare 站点建议 false
+
+# profile（见下节「程序怎么用你的 Chrome profile」）
+export CHROME_PROFILE_ROOT=/tmp/dp_profiles_ab12cd     # 抓取 profile 的根目录（可选）
+export CHROME_PROFILE_SOURCE_DIR=/root/.config/google-chrome   # 播种来源（可选）
+export FRESH_PROFILE=0                                 # 1 = 不播种，用空 profile
 ```
+
+### 程序怎么用你的 Chrome profile
+
+**你的真实 profile 只被读取，永远不会被写入或删除。** 程序抓取时用的是另外两个
+一次性目录：
+
+```
+$CHROME_PROFILE_ROOT/
+├── main_dir   ← 主实例（打开论文页、提取正文）
+└── pdf_dir    ← 一次性实例（只下载 PDF）
+```
+
+**每次拉起 Chrome 都会重建这两个目录**（先 `rm -rf` 再新建），批量任务里每篇论文
+结束后浏览器也会关掉，下一篇重来一遍。原因是被 CDP 驱动过的 profile 会累积自动化
+指纹，用着用着 Cloudflare 就不放行了 —— 所以干脆不复用。
+
+重建时往里面填什么，只看两个条件：
+
+| 条件 | 结果 |
+|---|---|
+| `FRESH_PROFILE=0`（默认）且 `CHROME_PROFILE_SOURCE_DIR` 有效 | 从你的真实 profile 复制 cookies 等文件（**播种**） |
+| `FRESH_PROFILE=1`，或源目录无效 | 空 profile（零登录态） |
+
+- **「有效」** = 该目录存在**且**含 `CHROME_PROFILE` 指定的子目录（默认 `Default`）。
+  路径写错会被当作「没有源」，不会静默产出一个没 cookie 的 profile。
+- **播种复制哪些文件**：`Cookies`、`Cookies-journal`、`Login Data`、`Preferences`、
+  `Secure Preferences`、`Web Data`、`Local State`。不复制 History / Cache / 扩展 /
+  Sessions —— 甩掉累积状态正是重建的目的。
+  ⚠️ `Local State` 必须跟 `Cookies` 一起复制：它是 cookie 的加密密钥，只复制其一
+  的话所有 cookie 都解不开。
+- **什么时候该用 `FRESH_PROFILE=1`**：站点按浏览器指纹打分时（如 SPIE 走 Imperva
+  Incapsula），播种进来的 cookie 反而扣分。代价是零登录态 —— 依赖机构订阅才能看
+  全文的文章别开这个开关。
+
+**`CHROME_PROFILE_ROOT` 默认值**是 `/tmp/dp_profiles_xxxxxx`，后缀按启动时间 + pid
+做种随机生成，**每个进程一个**，所以并发跑多个批次天然互不干扰。
+⚠️ 如果你显式指定了 root，并发的批次必须各给各的 —— 两个 Chrome 抢同一个 profile
+锁会打架。
+
+**运行结束时会自动清理**（正常退出、异常、Ctrl-C 都会走到）：自动生成的 root 整个
+删除；你显式指定的 root 只清掉里面的 `main_dir`/`pdf_dir`，root 本身保留。被活着的
+Chrome 占用的目录会跳过。
+
+**安全护栏**：目标目录一旦解析成真实 Chrome profile（日常 profile、播种来源、或平台
+默认路径），程序直接拒绝并改用临时目录 —— 重建是 `rm -rf`，不能让它落到你自己的
+Chrome 数据上。
 
 > **程序会用到两个 Chrome 实例，各占一个端口**，两个端口都可用环境变量指定：
 >
 > | 实例 | 端口变量 | 默认 | 用途 |
 > |---|---|---|---|
-> | 主实例 | `CHROME_DEBUG_PORT` | 9222 | 打开论文页面、提取正文，整批论文复用同一个 |
-> | 一次性实例 | `CHROME_PDF_DEBUG_PORT` | 9333 | 只下载 PDF，每次现复制一份真实 profile，用完即删 |
+> | 主实例 | `CHROME_DEBUG_PORT` | 9222 | 打开论文页面、提取正文；用 `main_dir`，每篇论文结束后关闭重开 |
+> | 一次性实例 | `CHROME_PDF_DEBUG_PORT` | 9333 | 只下载 PDF，用 `pdf_dir`，每次重建、用完即删 |
 >
 > 两个端口必须不同。一次性实例的端口若被占用会自动顺延（9333 → 9334 → …），
 > 所以同时跑多个任务不会互相抢浏览器。有头运行时优先用一次性实例下载 PDF，
@@ -89,7 +136,7 @@ export DP_SUPP_MAX_RETRIES=5
 
 ```bash
 cd /path/to/Download_paper
-export CHROME_USER_DATA_DIR=/root/.config/google-chrome-scraping
+export CHROME_PROFILE_SOURCE_DIR=/root/.config/google-chrome   # 播种来源（可选）
 export CHROME_DEBUG_PORT=9222
 export DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT=600
 export DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT=1200
@@ -97,7 +144,9 @@ python3 -u complete_paper_extraction.py --doi 10.1063/5.0256231
 ```
 
 > **提示**：
-> - 涉及 Cloudflare / AIP / Radware 等反爬验证的站点，建议先按 `CHROME_USER_DATA_DIR` 启动 Chrome 并手动过一次验证，让 cookies 落入 profile，再运行脚本。
+> - 涉及 Cloudflare / AIP / Radware 等反爬验证的站点，建议先用你**日常的 Chrome**
+>   手动访问一次并过掉验证，让 cookies 落入真实 profile —— 抓取时会从那里播种。
+>   注意别去改抓取用的 `main_dir`/`pdf_dir`，它们每次启动都会被重建。
 > - 路径类变量建议使用绝对路径，避免 relative path 在不同工作目录下解析错误。
 > - 未设置的变量会自动使用上表中的默认值。
 
@@ -157,8 +206,8 @@ complete_extraction_workflow(doi, output_file=None, force_headed=False)
 PDF 在**另一个域名**上（ScienceDirect 的 `pdf.sciencedirectassets.com`），论文页过了
 Cloudflare 也不算数 —— clearance cookie 绑定在签发它的主机上。
 
-所以 PDF 由 `chrome_session.py` 单独起一个 Chrome 下载：独立端口、从真实 profile 复制
-一份、全程不接 Playwright，用完即删。
+所以 PDF 由 `chrome_session.py` 单独起一个 Chrome 下载：独立端口、独立 profile
+（`pdf_dir`，每次重建）、全程不接 Playwright，用完即删。
 
 `chrome_session.py` 合并了原来的 `chrome_launcher.py`(启动/关闭)、`cf_bypass_cdp.py`
 (纯 CDP 过挑战) 与 `fresh_chrome.py`(一次性实例) —— 三者做的是同一件事，且各自
@@ -169,11 +218,14 @@ Cloudflare 也不算数 —— clearance cookie 绑定在签发它的主机上�
 - `open_url_via_cdp(url, port, ...)` — 「不接 Playwright、纯 CDP 打开并过挑战」，
   论文页预载与 PDF 下载共用
 - `open_url_in_fresh_chrome(url, ...)` — 起新 Chrome + 打开页面，返回 session
+- `prepare_profile_dir()` — 「先删再建，再决定播种或留空」，两个实例共用这一条路径
+- `cleanup_profile_root()` / `sweep_stale_profiles()` — 运行结束时清理、启动时扫掉
+  上次崩溃留下的目录（只删没有活进程持有的）
 - `seed_profile()` / `write_chrome_preferences()` — profile 播种与偏好写入
 
 环境变量：`CHROME_PDF_DEBUG_PORT`(默认 9333，被占用会自动顺延)、
-`CHROME_PROFILE_SOURCE_DIR`、`CHROME_PROFILE`、`CHROME_PDF_PROFILE_ROOT`、
-`DP_PDF_FRESH_CHROME=0`(关闭该路径，直接走 Playwright)
+`CHROME_PROFILE_ROOT`、`CHROME_PROFILE_SOURCE_DIR`、`CHROME_PROFILE`、
+`FRESH_PROFILE`、`DP_PDF_FRESH_CHROME=0`(关闭该路径，直接走 Playwright)
 
 ## Publisher 判断
 

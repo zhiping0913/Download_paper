@@ -52,7 +52,7 @@ python batch_process.py --dois "10.1103/..." "10.1063/..."
 | 文件 | 用途 |
 |---|---|
 | `config.py` | Chrome 路径、输出目录、批处理延迟、`SAVE_WITHOUT_REFERENCES` 等全局配置 |
-| `chrome_session.py` | 所有「开浏览器 + 过 Cloudflare」的逻辑：跨平台启动/关闭、profile 播种与偏好、纯 CDP 过挑战、PDF 专用的一次性 Chrome。合并自原 `chrome_launcher.py` / `cf_bypass_cdp.py` / `fresh_chrome.py` |
+| `chrome_session.py` | 所有「开浏览器 + 过 Cloudflare」的逻辑：跨平台启动/关闭、profile 生命周期（每次启动先删再建，播种或留空）、纯 CDP 过挑战、PDF 专用的一次性 Chrome。合并自原 `chrome_launcher.py` / `cf_bypass_cdp.py` / `fresh_chrome.py` |
 | `html_to_md_converter.py` | HTML → Markdown 转换工具函数（pandoc、LaTeX清理、MathML→LaTeX），可被任意 publisher handler 独立调用 |
 
 ### `html_to_md_converter.py` 可复用的关键函数
@@ -173,7 +173,8 @@ BATCH_SLEEP_MIN = 60                        # 最小睡眠秒数
 BATCH_SLEEP_MAX = 300                       # 最大睡眠秒数
 SAVE_WITHOUT_REFERENCES = False             # 参考文献为空时仍保存
 CHROME_PATH = "/usr/bin/google-chrome"       # Chrome 可执行文件路径
-CHROME_USER_DATA_DIR = "~/.config/google-chrome"  # 用户数据目录
+CHROME_USER_DATA_DIR = "~/.config/google-chrome"  # 用户【真实】profile，只读（播种来源）
+CHROME_PROFILE_ROOT  = "/tmp/dp_profiles_xxxxxx"   # 抓取 profile 的根，每次运行重建并清理
 ```
 
 ---
