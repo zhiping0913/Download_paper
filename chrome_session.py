@@ -44,12 +44,10 @@ Environment
 -----------
 ``CHROME_PATH``                 executable (else auto-detected by config.py)
 ``CHROME_DEBUG_PORT``           shared instance's port (default 9222)
-``CHROME_USER_DATA_DIR``        shared instance's profile
 ``CHROME_PROFILE``              profile name inside it (default ``Default``)
-``CHROME_PROFILE_ROOT``         parent for temporary shared profiles
+``CHROME_PROFILE_ROOT``         holds both scraping profiles: ``main_dir``
+                                and ``pdf_dir``
 ``CHROME_PDF_DEBUG_PORT``       throwaway instance's port (default 9333)
-``CHROME_PDF_USER_DATA_DIR``    the throwaway instance's profile directory
-``CHROME_PDF_PROFILE_ROOT``     parent for temporary throwaway profiles
 ``CHROME_PROFILE_SOURCE_DIR``   real profile that gets copied
 ``CHROME_DOWNLOAD_DIR``         default download directory
 ``FRESH_PROFILE``               1 = every instance gets a brand-new empty
@@ -296,7 +294,8 @@ def kill_chrome() -> None:
 
 # Temporary-profile name prefixes owned by this module. Anything matching
 # these in the temp directory was created by a previous run.
-TEMP_PROFILE_PREFIXES = ('chrome_fresh_', 'chrome_pdf_', 'chrome_9', 'chrome_')
+TEMP_PROFILE_PREFIXES = ('dp_profiles_', 'chrome_fresh_', 'chrome_pdf_',
+                         'chrome_fallback_', 'chrome_9', 'chrome_')
 
 
 def _profile_dirs_in_use() -> set:
@@ -342,6 +341,39 @@ def sweep_stale_profiles(quiet: bool = False) -> int:
     return removed
 
 
+# Both scraping profiles live under one root, named for the instance that
+# opens them. A run's process-wide default root is created lazily so two
+# concurrent runs that do not set CHROME_PROFILE_ROOT cannot collide on the
+# same directories.
+_DEFAULT_PROFILE_ROOT: Optional[Path] = None
+
+MAIN_PROFILE_NAME = 'main_dir'
+PDF_PROFILE_NAME = 'pdf_dir'
+
+
+def profile_root() -> Path:
+    """The directory holding ``main_dir`` and ``pdf_dir``."""
+    global _DEFAULT_PROFILE_ROOT
+    raw = (os.environ.get('CHROME_PROFILE_ROOT') or '').strip()
+    if raw:
+        root = Path(raw).expanduser()
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    if _DEFAULT_PROFILE_ROOT is None:
+        _DEFAULT_PROFILE_ROOT = Path(tempfile.mkdtemp(prefix='dp_profiles_'))
+    return _DEFAULT_PROFILE_ROOT
+
+
+def scraping_profile_dir(name: str) -> Path:
+    """Where one instance keeps its profile. Disposable, rebuilt every launch.
+
+    ⚠️ The names are fixed, so two runs sharing a CHROME_PROFILE_ROOT would
+    fight over Chrome's profile lock -- give each concurrent run its own root
+    (or leave it unset, which does that automatically).
+    """
+    return profile_root() / name
+
+
 def profile_source_dir() -> Optional[Path]:
     """The profile to seed from, or None when there isn't a usable one.
 
@@ -362,16 +394,13 @@ def _protected_profile_dirs() -> set:
     """Directories prepare_profile_dir() must never delete.
 
     Two kinds: the profile seeding copies *from*, and the user's own Chrome
-    data wherever the platform puts it. Deliberately NOT here:
-    ``config.CHROME_USER_DATA_DIR``. That variable *is* the scraping target
-    whenever the environment sets it, so including it would make every
-    configured scraping profile protect itself; and when the environment
-    leaves it unset it falls back to the platform default, which the loop
-    below covers anyway.
+    data wherever the platform puts it. Scraping profiles are never in here --
+    they live under CHROME_PROFILE_ROOT, which no environment variable can
+    point at a real profile without this refusing to wipe it.
     """
     protected = set()
 
-    for raw in (CHROME_PROFILE_SOURCE_DIR,
+    for raw in (CHROME_USER_DATA_DIR, CHROME_PROFILE_SOURCE_DIR,
                 os.environ.get('CHROME_PROFILE_SOURCE_DIR') or ''):
         if raw:
             try:
@@ -454,27 +483,12 @@ def launch_chrome(headless: bool = False, return_details: bool = False):
 
     The profile is always rebuilt first -- see :func:`prepare_profile_dir` --
     so a session never opens on a directory a previous run left behind.
-
-    Where it lives, most specific first:
-      * ``CHROME_USER_DATA_DIR`` -> that directory (launch.sh's dedicated
-        scraping profile)
-      * otherwise a temporary directory under ``CHROME_PROFILE_ROOT``
-
-    There is no longer an option to open the user's real profile: this
-    function wipes what it is about to open, so it only ever points at a
-    scraping directory, and :func:`prepare_profile_dir` refuses outright if
-    that resolves to the user's own Chrome data.
+    It always lives at ``<CHROME_PROFILE_ROOT>/main_dir``. There is no option
+    to open the user's real profile: this function wipes what it is about to
+    open, and :func:`prepare_profile_dir` refuses outright if the target
+    resolves to the user's own Chrome data.
     """
-    explicit = (os.environ.get('CHROME_USER_DATA_DIR') or '').strip()
-    if explicit:
-        user_data_dir = Path(explicit).expanduser()
-    else:
-        profile_root = os.environ.get('CHROME_PROFILE_ROOT')
-        if profile_root:
-            profile_root = str(Path(profile_root).expanduser())
-            Path(profile_root).mkdir(parents=True, exist_ok=True)
-        user_data_dir = Path(tempfile.mkdtemp(
-            prefix=f'chrome_{CHROME_DEBUG_PORT}_', dir=profile_root))
+    user_data_dir = scraping_profile_dir(MAIN_PROFILE_NAME)
 
     try:
         prepare_profile_dir(user_data_dir)
@@ -1431,27 +1445,8 @@ class FreshChromeSession:
     # ------------------------------------------------------------------
 
     def _make_profile(self) -> Path:
-        """Where this throwaway browser keeps its profile.
-
-        ``CHROME_PDF_USER_DATA_DIR`` names the directory outright -- the
-        counterpart of ``CHROME_USER_DATA_DIR`` for the shared browser. It is
-        wiped and rebuilt on every launch like any other scraping profile, so
-        pointing two concurrent runs at the same path would have them fight
-        over Chrome's profile lock; give each run its own, or leave this unset
-        and let each launch take a fresh temporary directory (under
-        ``CHROME_PDF_PROFILE_ROOT`` when that is set).
-        """
-        explicit = (os.environ.get('CHROME_PDF_USER_DATA_DIR') or '').strip()
-        if explicit:
-            target = Path(explicit).expanduser()
-        else:
-            root = (os.environ.get('CHROME_PDF_PROFILE_ROOT') or '').strip()
-            if root:
-                Path(root).expanduser().mkdir(parents=True, exist_ok=True)
-                target = Path(tempfile.mkdtemp(prefix='chrome_pdf_',
-                                               dir=str(Path(root).expanduser())))
-            else:
-                target = Path(tempfile.mkdtemp(prefix='chrome_pdf_'))
+        """``<CHROME_PROFILE_ROOT>/pdf_dir`` -- rebuilt on every launch."""
+        target = scraping_profile_dir(PDF_PROFILE_NAME)
         self._owns_profile = True
         try:
             self._started_empty = not prepare_profile_dir(

@@ -218,12 +218,12 @@ python batch_process.py --file dois.txt                     # 批量
 
   | | 端口 | profile 目录 |
   |---|---|---|
-  | 主实例（正文页） | `CHROME_DEBUG_PORT`（默认 9222） | `CHROME_USER_DATA_DIR` |
-  | 一次性实例（PDF） | `CHROME_PDF_DEBUG_PORT`（默认 9333，被占用自动顺延） | `CHROME_PDF_USER_DATA_DIR` |
+  | 主实例（正文页） | `CHROME_DEBUG_PORT`（默认 9222） | `$CHROME_PROFILE_ROOT/main_dir` |
+  | 一次性实例（PDF） | `CHROME_PDF_DEBUG_PORT`（默认 9333，被占用自动顺延） | `$CHROME_PROFILE_ROOT/pdf_dir` |
 
-  两个 profile 目录都不设时各自 `mkdtemp`（一次性实例的父目录可用
-  `CHROME_PDF_PROFILE_ROOT` 指定）。⚠️ 目录是**每次启动先删再建**的，所以
-  两个并发的运行不能指向同一个路径，会抢 Chrome 的 profile 锁
+  只有 `CHROME_PROFILE_ROOT` 一个旋钮，两个目录名固定、都是一次性的。不设 root
+  时每个进程自动 `mkdtemp` 一个（并发天然隔离）。⚠️ 显式指定 root 时，并发跑的
+  多个批次要各给各的 —— 名字固定，会抢 Chrome 的 profile 锁
 
 ### IEEE (`10.1109`, ieeexplore.ieee.org)
 

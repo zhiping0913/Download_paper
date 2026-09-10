@@ -28,7 +28,7 @@ cd "$(dirname "$0")/.."
 # ---------------------------------------------------------------------------
 #
 #   主实例      CHROME_DEBUG_PORT      打开论文页面、提取正文；整批论文复用同一个
-#   一次性实例  CHROME_PDF_DEBUG_PORT  只用来下载 PDF；profile 每次重建（播种或留空），
+#   一次性实例  CHROME_PDF_DEBUG_PORT  只用来下载 PDF；用 pdf_dir，每次重建，
 #                                      用完即删，从不被 Playwright 接管
 #
 # 为什么要两个：主实例自打开正文页起就被 Playwright 接管，带上了自动化指纹；
@@ -50,20 +50,18 @@ export CHROME_PDF_DEBUG_PORT=9333        # 一次性实例 CDP 端口。默认 9
                                          # (9333 → 9334 → …)，并发跑不会互抢
 
 # export DP_PDF_FRESH_CHROME=0           # 设 0 彻底禁用一次性实例（两种模式都禁）
-# export CHROME_PDF_USER_DATA_DIR="${HOME}/.config/google-chrome-pdf"
-#                                        # 一次性实例的 profile 目录（对应主实例的
-#                                        # CHROME_USER_DATA_DIR）。不设 → 每次 mkdtemp
-# export CHROME_PDF_PROFILE_ROOT=/tmp    # 未设上一个时，临时目录的父目录。默认系统 tmp
 
-# ★ 抓取用的 profile 目录 —— 用一个专用目录，别指向你日常上网那个。
-# Chrome 的 profile 锁一次只允许一个进程持有：指向日常 profile 且浏览器正开着时，
-# launcher 起的 Chrome 会把 URL 转发给现有实例然后自杀，CDP 端口永远不响应
-# （表现就是「Chrome 开了但不导航」）。
-# 不设这个变量 → 每次新建临时目录，没有 cookie 累积，每篇都要重过 Cloudflare。
-export CHROME_USER_DATA_DIR="${CHROME_USER_DATA_DIR:-${HOME}/.config/google-chrome-scraping}"
+# ★ 抓取 profile 的根目录。程序在它下面建两个一次性目录：
+#     main_dir  正文页的共享实例
+#     pdf_dir   下载 PDF 的一次性实例
+# 两个都是每次开浏览器「先删再建」，绝不复用被自动化污染过的 profile，
+# 所以不需要指向你日常上网那个 profile（那个只作为播种来源，程序只读不写）。
+# 不设 → 每次运行自动在系统 tmp 下开一个独立的根目录。
+# ⚠️ 并发跑多个批次时每个批次给不同的 root —— 目录名是固定的，会抢 Chrome 的
+#    profile 锁（不设则自动隔离）。
+export CHROME_PROFILE_ROOT="${CHROME_PROFILE_ROOT:-/tmp/dp_profiles}"
 
 # export CHROME_PROFILE=Default          # profile 名。默认 Default
-# export CHROME_PROFILE_ROOT=/tmp/dp     # 临时 profile 的父目录（未设 USER_DATA_DIR 时用）
 # export CHROME_DOWNLOAD_DIR="${HOME}/Downloads"   # Chrome 默认下载目录
 # export USE_CHROME_MODE=persistent      # persistent（复用 profile）| remote（连已在跑的）
 # export HEADLESS=false                  # true/false。Cloudflare 站点建议 false
@@ -171,9 +169,9 @@ echo "────────────────────────�
 echo " Download_paper env vars in effect"
 echo "──────────────────────────────────────────────────────"
 for v in CHROME_PATH CHROME_DEBUG_PORT CHROME_PDF_DEBUG_PORT \
-         CHROME_USER_DATA_DIR CHROME_PROFILE CHROME_PROFILE_ROOT \
-         CHROME_PDF_PROFILE_ROOT DP_PDF_FRESH_CHROME CHROME_DOWNLOAD_DIR \
-         FRESH_PROFILE CHROME_PROFILE_SOURCE_DIR CHROME_PDF_USER_DATA_DIR \
+         CHROME_PROFILE_ROOT CHROME_PROFILE \
+         DP_PDF_FRESH_CHROME CHROME_DOWNLOAD_DIR \
+         FRESH_PROFILE CHROME_PROFILE_SOURCE_DIR \
          USE_CHROME_MODE HEADLESS \
          DP_PAGE_LOAD_TIMEOUT DP_CLOUDFLARE_TIMEOUT DP_PDF_WAIT \
          DP_PDF_DOWNLOAD_TIMEOUT DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT \

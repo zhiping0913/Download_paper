@@ -57,11 +57,12 @@ def _detect_chrome_path() -> str:
 
 
 def _detect_chrome_user_data_dir() -> str:
-    """Auto-detect Chrome user data directory across platforms."""
-    # 优先使用环境变量覆盖（脚本以非 profile 所有者运行时很有用）
-    env_dir = os.environ.get('CHROME_USER_DATA_DIR', '')
-    if env_dir:
-        return env_dir
+    """The user's own Chrome profile, per platform.
+
+    Not a scraping directory: those live under CHROME_PROFILE_ROOT and are
+    rebuilt every launch. Override the seed source with
+    CHROME_PROFILE_SOURCE_DIR instead.
+    """
     if IS_WINDOWS:
         local_appdata = os.environ.get('LOCALAPPDATA', '')
         if local_appdata:
@@ -183,6 +184,6 @@ USE_CHROME_MODE = os.environ.get("USE_CHROME_MODE", "persistent")  # 使用持�
 
 print("✓ 配置已加载")
 print(f"  - Chrome: {CHROME_PATH}")
-print(f"  - Chrome用户数据目录: {CHROME_USER_DATA_DIR}")
+print(f"  - Chrome 真实 profile: {CHROME_USER_DATA_DIR}")
 print(f"  - Chrome模式: {USE_CHROME_MODE}")
 print(f"  - 平台: {'Windows' if IS_WINDOWS else 'Linux'}")
