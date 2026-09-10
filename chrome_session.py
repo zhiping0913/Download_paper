@@ -46,7 +46,7 @@ Environment
 ``CHROME_DEBUG_PORT``           shared instance's port (default 9222)
 ``CHROME_PROFILE``              profile name inside it (default ``Default``)
 ``CHROME_PROFILE_ROOT``         holds both scraping profiles: ``main_dir``
-                                and ``pdf_dir``
+                                and ``pdf_dir`` (default: <tmp>/dp_profiles)
 ``CHROME_PDF_DEBUG_PORT``       throwaway instance's port (default 9333)
 ``CHROME_PROFILE_SOURCE_DIR``   real profile that gets copied
 ``CHROME_DOWNLOAD_DIR``         default download directory
@@ -342,34 +342,29 @@ def sweep_stale_profiles(quiet: bool = False) -> int:
 
 
 # Both scraping profiles live under one root, named for the instance that
-# opens them. A run's process-wide default root is created lazily so two
-# concurrent runs that do not set CHROME_PROFILE_ROOT cannot collide on the
-# same directories.
-_DEFAULT_PROFILE_ROOT: Optional[Path] = None
-
+# opens them.
 MAIN_PROFILE_NAME = 'main_dir'
 PDF_PROFILE_NAME = 'pdf_dir'
+
+# gettempdir() rather than a literal "/tmp" so Windows and macOS get their own
+# temp location; on Linux this is exactly /tmp/dp_profiles.
+DEFAULT_PROFILE_ROOT = Path(tempfile.gettempdir()) / 'dp_profiles'
 
 
 def profile_root() -> Path:
     """The directory holding ``main_dir`` and ``pdf_dir``."""
-    global _DEFAULT_PROFILE_ROOT
     raw = (os.environ.get('CHROME_PROFILE_ROOT') or '').strip()
-    if raw:
-        root = Path(raw).expanduser()
-        root.mkdir(parents=True, exist_ok=True)
-        return root
-    if _DEFAULT_PROFILE_ROOT is None:
-        _DEFAULT_PROFILE_ROOT = Path(tempfile.mkdtemp(prefix='dp_profiles_'))
-    return _DEFAULT_PROFILE_ROOT
+    root = Path(raw).expanduser() if raw else DEFAULT_PROFILE_ROOT
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def scraping_profile_dir(name: str) -> Path:
     """Where one instance keeps its profile. Disposable, rebuilt every launch.
 
-    ⚠️ The names are fixed, so two runs sharing a CHROME_PROFILE_ROOT would
-    fight over Chrome's profile lock -- give each concurrent run its own root
-    (or leave it unset, which does that automatically).
+    ⚠️ Both the root and the two names are fixed, so concurrent runs share
+    these directories by default and would fight over Chrome's profile lock.
+    Give each concurrent run its own ``CHROME_PROFILE_ROOT``.
     """
     return profile_root() / name
 

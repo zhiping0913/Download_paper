@@ -56,9 +56,9 @@ export CHROME_PDF_DEBUG_PORT=9333        # 一次性实例 CDP 端口。默认 9
 #     pdf_dir   下载 PDF 的一次性实例
 # 两个都是每次开浏览器「先删再建」，绝不复用被自动化污染过的 profile，
 # 所以不需要指向你日常上网那个 profile（那个只作为播种来源，程序只读不写）。
-# 不设 → 每次运行自动在系统 tmp 下开一个独立的根目录。
-# ⚠️ 并发跑多个批次时每个批次给不同的 root —— 目录名是固定的，会抢 Chrome 的
-#    profile 锁（不设则自动隔离）。
+# 不设 → 默认 /tmp/dp_profiles。
+# ⚠️ 默认值是固定的，所以并发跑多个批次时**必须**给每个批次不同的 root，
+#    否则两个 Chrome 会抢同一个 profile 锁。
 export CHROME_PROFILE_ROOT="${CHROME_PROFILE_ROOT:-/tmp/dp_profiles}"
 
 # export CHROME_PROFILE=Default          # profile 名。默认 Default
