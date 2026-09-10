@@ -222,9 +222,13 @@ python batch_process.py --file dois.txt                     # 批量
   | 一次性实例（PDF） | `CHROME_PDF_DEBUG_PORT`（默认 9333，被占用自动顺延） | `$CHROME_PROFILE_ROOT/pdf_dir` |
 
   只有 `CHROME_PROFILE_ROOT` 一个旋钮，两个目录名固定、都是一次性的。
-  默认 `/tmp/dp_profiles_xxxxxx` —— 后缀按启动时间做种随机生成，每个进程一个，
+  默认 `/tmp/dp_profiles_xxxxxx` —— 后缀按启动时间+pid 做种随机生成，每个进程一个，
   所以并发跑多个批次天然隔离。⚠️ 显式指定 root 时，并发的批次要各给各的，
   否则两个 Chrome 抢同一个 profile 锁
+- 运行结束时 `cleanup_profile_root()` 收尾（挂在 `_cleanup_chrome_launcher()` 上，
+  正常退出/异常/SIGINT 都会走到）：**自动生成的 root 整个删掉**；用户显式指定的
+  root 只清 `main_dir`/`pdf_dir`，root 本身保留（那是用户选的路径）；
+  被活着的 Chrome 占用的目录跳过不动
 
 ### IEEE (`10.1109`, ieeexplore.ieee.org)
 

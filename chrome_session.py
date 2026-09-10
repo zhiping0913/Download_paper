@@ -439,6 +439,51 @@ def _protected_profile_dirs() -> set:
     return protected
 
 
+def cleanup_profile_root(quiet: bool = False) -> bool:
+    """Remove this run's scraping profiles once the browsers are gone.
+
+    The two profile directories are always cleared. The root itself goes too
+    when it is the auto-generated ``dp_profiles_xxxxxx`` -- that name belongs
+    to this process and nothing else will ever look in it. A root the user
+    named through ``CHROME_PROFILE_ROOT`` is left in place: it may be somewhere
+    they keep other things, and deleting a path someone chose is not ours to
+    do.
+
+    A directory a live Chrome still holds is skipped rather than yanked out
+    from under it, which also keeps a concurrent run that shares the root safe.
+
+    Returns True when the root itself was removed.
+    """
+    raw = (os.environ.get('CHROME_PROFILE_ROOT') or '').strip()
+    root = Path(raw).expanduser() if raw else DEFAULT_PROFILE_ROOT
+    if not root.exists():
+        return False
+
+    in_use = _profile_dirs_in_use()
+
+    def _held(path: Path) -> bool:
+        target = str(path)
+        return any(u == target or u.startswith(target + os.sep) for u in in_use)
+
+    for name in (MAIN_PROFILE_NAME, PDF_PROFILE_NAME):
+        d = root / name
+        if d.exists() and not _held(d):
+            shutil.rmtree(d, ignore_errors=True)
+
+    if raw:                                  # user-chosen root: leave it alone
+        return False
+    if _held(root):
+        return False
+    try:
+        shutil.rmtree(root, ignore_errors=True)
+    except OSError:
+        return False
+    removed = not root.exists()
+    if removed and not quiet:
+        print(f"  🧹 已清理本次运行的 profile 目录: {root}")
+    return removed
+
+
 def prepare_profile_dir(target: Path, download_dir: str = '',
                         quiet: bool = False) -> bool:
     """Put *target* into a known-clean state, ready for Chrome to open.
