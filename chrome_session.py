@@ -46,7 +46,8 @@ Environment
 ``CHROME_DEBUG_PORT``           shared instance's port (default 9222)
 ``CHROME_PROFILE``              profile name inside it (default ``Default``)
 ``CHROME_PROFILE_ROOT``         holds both scraping profiles: ``main_dir``
-                                and ``pdf_dir`` (default: <tmp>/dp_profiles)
+                                and ``pdf_dir`` (default: a per-run
+                                <tmp>/dp_profiles_xxxxxx)
 ``CHROME_PDF_DEBUG_PORT``       throwaway instance's port (default 9333)
 ``CHROME_PROFILE_SOURCE_DIR``   real profile that gets copied
 ``CHROME_DOWNLOAD_DIR``         default download directory
@@ -60,8 +61,10 @@ import asyncio
 import glob
 import json
 import os
+import random
 import shutil
 import socket
+import string
 import subprocess
 import sys
 import tempfile
@@ -346,9 +349,24 @@ def sweep_stale_profiles(quiet: bool = False) -> int:
 MAIN_PROFILE_NAME = 'main_dir'
 PDF_PROFILE_NAME = 'pdf_dir'
 
-# gettempdir() rather than a literal "/tmp" so Windows and macOS get their own
-# temp location; on Linux this is exactly /tmp/dp_profiles.
-DEFAULT_PROFILE_ROOT = Path(tempfile.gettempdir()) / 'dp_profiles'
+def _default_profile_root() -> Path:
+    """``<tmp>/dp_profiles_xxxxxx``, one per run.
+
+    The suffix comes from a generator seeded with the start time, so two runs
+    launched together land in different directories and cannot fight over
+    Chrome's profile lock. The pid goes into the seed as well: two processes
+    started inside the same clock tick would otherwise draw the same suffix.
+
+    gettempdir() rather than a literal "/tmp" so Windows and macOS get their
+    own temp location; on Linux this is exactly /tmp/dp_profiles_xxxxxx.
+    """
+    rng = random.Random(time.time_ns() ^ (os.getpid() << 16))
+    suffix = ''.join(rng.choices(string.ascii_lowercase + string.digits, k=6))
+    return Path(tempfile.gettempdir()) / f'dp_profiles_{suffix}'
+
+
+# Resolved once, so every call in this process agrees on where the profiles are.
+DEFAULT_PROFILE_ROOT = _default_profile_root()
 
 
 def profile_root() -> Path:
@@ -362,9 +380,9 @@ def profile_root() -> Path:
 def scraping_profile_dir(name: str) -> Path:
     """Where one instance keeps its profile. Disposable, rebuilt every launch.
 
-    ⚠️ Both the root and the two names are fixed, so concurrent runs share
-    these directories by default and would fight over Chrome's profile lock.
-    Give each concurrent run its own ``CHROME_PROFILE_ROOT``.
+    The two names are fixed, so concurrent runs must not share a root -- the
+    default root is per-run precisely so they do not. Setting
+    ``CHROME_PROFILE_ROOT`` to the same path in two runs brings the clash back.
     """
     return profile_root() / name
 
