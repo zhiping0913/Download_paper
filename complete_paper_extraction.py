@@ -33,6 +33,7 @@ from playwright.async_api import async_playwright
 from chrome_session import (
     PROFILE_SEED_FILES,
     PROFILE_SEED_ROOT_FILES,
+    cleanup_profile_root,
     kill_chrome,
     launch_chrome,
     seed_profile,
@@ -627,6 +628,13 @@ def _cleanup_chrome_launcher():
     """同步兜底：只清理本批次拥有的 Chrome，不误杀其他并发任务。"""
     if _active_browser_session is not None:
         _active_browser_session.cleanup_owned_chrome_sync()
+    # The browsers are down, so the profiles they held can go. Runs on the
+    # normal exit, on an exception, and from the SIGINT/SIGTERM handler, so a
+    # killed batch does not leave its profile root behind either.
+    try:
+        cleanup_profile_root()
+    except Exception as exc:
+        print(f"  ⚠️  清理 profile 目录失败: {exc}")
 
 def _signal_handler(signum, frame):
     """SIGINT信号处理器 - 清理子进程然后退出"""
