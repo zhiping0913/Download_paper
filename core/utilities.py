@@ -273,6 +273,11 @@ def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
             'link': resolved_link,
             'title': title,
             'year': year,
+            # Crossref's work type ("journal-article", "proceedings-article",
+            # "book-chapter", …). It is what tells a conference paper apart
+            # from a journal one after the fact, which the URL and the journal
+            # name often do not.
+            'type': s2_data.get('type') or metadata.get('type') or '',
             'authors': [item['author'] for item in metadata.get('author_with_affiliations', [])] or metadata.get('authors', []),
             'abstract': metadata.get('abstract', ''),
             'journal': metadata.get('journal', ''),
