@@ -48,7 +48,8 @@ Environment
 ``CHROME_PROFILE``              profile name inside it (default ``Default``)
 ``CHROME_PROFILE_ROOT``         parent for temporary shared profiles
 ``CHROME_PDF_DEBUG_PORT``       throwaway instance's port (default 9333)
-``CHROME_PDF_PROFILE_ROOT``     where the throwaway profile is built
+``CHROME_PDF_USER_DATA_DIR``    the throwaway instance's profile directory
+``CHROME_PDF_PROFILE_ROOT``     parent for temporary throwaway profiles
 ``CHROME_PROFILE_SOURCE_DIR``   real profile that gets copied
 ``CHROME_DOWNLOAD_DIR``         default download directory
 ``FRESH_PROFILE``               1 = every instance gets a brand-new empty
@@ -341,52 +342,154 @@ def sweep_stale_profiles(quiet: bool = False) -> int:
     return removed
 
 
-def launch_chrome(use_user_config: bool = False, headless: bool = False,
-                  return_details: bool = False):
+def profile_source_dir() -> Optional[Path]:
+    """The profile to seed from, or None when there isn't a usable one.
+
+    "Usable" means the directory exists *and* holds the named profile
+    subdirectory -- an empty or wrong path is treated as absent rather than
+    silently producing a profile with no cookies in it.
+    """
+    raw = (os.environ.get('CHROME_PROFILE_SOURCE_DIR') or '').strip() \
+        or CHROME_PROFILE_SOURCE_DIR
+    if not raw:
+        return None
+    source = Path(raw).expanduser()
+    profile_name = os.environ.get('CHROME_PROFILE', CHROME_PROFILE) or 'Default'
+    return source if (source / profile_name).is_dir() else None
+
+
+def _protected_profile_dirs() -> set:
+    """Directories prepare_profile_dir() must never delete.
+
+    Two kinds: the profile seeding copies *from*, and the user's own Chrome
+    data wherever the platform puts it. Deliberately NOT here:
+    ``config.CHROME_USER_DATA_DIR``. That variable *is* the scraping target
+    whenever the environment sets it, so including it would make every
+    configured scraping profile protect itself; and when the environment
+    leaves it unset it falls back to the platform default, which the loop
+    below covers anyway.
+    """
+    protected = set()
+
+    for raw in (CHROME_PROFILE_SOURCE_DIR,
+                os.environ.get('CHROME_PROFILE_SOURCE_DIR') or ''):
+        if raw:
+            try:
+                protected.add(Path(raw).expanduser().resolve())
+            except OSError:
+                pass
+
+    if IS_WINDOWS:
+        local = os.environ.get('LOCALAPPDATA', '')
+        if local:
+            candidates = [Path(local, 'Google', 'Chrome', 'User Data')]
+        else:
+            candidates = []
+    else:
+        candidates = [Path.home() / c for c in (
+            '.config/google-chrome', '.config/chromium',
+            'Library/Application Support/Google/Chrome')]
+    for candidate in candidates:
+        try:
+            protected.add(candidate.resolve())
+        except OSError:
+            protected.add(candidate)
+    return protected
+
+
+def prepare_profile_dir(target: Path, download_dir: str = '',
+                        quiet: bool = False) -> bool:
+    """Put *target* into a known-clean state, ready for Chrome to open.
+
+    One rule, both instances (the shared browser and the throwaway PDF one):
+
+        wipe the directory, then either seed it from the real profile or
+        leave it empty -- seeded when FRESH_PROFILE is off and a usable
+        CHROME_PROFILE_SOURCE_DIR exists, empty otherwise.
+
+    Wiping first is the point. A profile Chrome has driven under CDP carries
+    the automation traces of that session, and reusing it is what makes a run
+    that asked for a clean start get refused anyway; recreating it every time
+    means a session can never inherit the previous one's state.
+
+    Returns True when the profile was seeded, False when it starts empty.
+    """
+    target = Path(target).expanduser()
+    try:
+        resolved = target.resolve()
+    except OSError:
+        resolved = target
+
+    if resolved in _protected_profile_dirs():
+        # Never wipe the user's own Chrome data. Callers resolve their target
+        # before getting here, so this is a guard against a misconfiguration
+        # (CHROME_USER_DATA_DIR left unset, say), not an expected path.
+        raise ValueError(
+            f"拒绝清空 {resolved}：这是真实 Chrome profile，不是抓取用的目录"
+        )
+
+    if target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+    target.mkdir(parents=True, exist_ok=True)
+
+    profile_name = os.environ.get('CHROME_PROFILE', CHROME_PROFILE) or 'Default'
+    source = None if FRESH_PROFILE else profile_source_dir()
+
+    seeded = False
+    if source is not None:
+        seeded = seed_profile(target, source, profile_name)
+        if not seeded and not quiet:
+            print(f"  ⚠️  播种失败，使用空 profile: {target}")
+    elif not quiet:
+        reason = 'FRESH_PROFILE=1' if FRESH_PROFILE else '无可用的 CHROME_PROFILE_SOURCE_DIR'
+        print(f"  🆕 空 profile（{reason}）: {target}")
+
+    write_chrome_preferences(target, profile_name=profile_name,
+                             download_dir=download_dir, quiet=quiet)
+    return seeded
+
+
+def launch_chrome(headless: bool = False, return_details: bool = False):
     """Start the shared scraping Chrome and wait for its debugging port.
 
-    Profile selection, most specific first:
-      * ``use_user_config`` -> the real profile from config.py
-      * ``CHROME_USER_DATA_DIR`` set -> that directory (the launch.sh case: a
-        dedicated scraping profile whose cookies and clearances accumulate
-        across papers)
-      * otherwise a fresh temporary directory
+    The profile is always rebuilt first -- see :func:`prepare_profile_dir` --
+    so a session never opens on a directory a previous run left behind.
+
+    Where it lives, most specific first:
+      * ``CHROME_USER_DATA_DIR`` -> that directory (launch.sh's dedicated
+        scraping profile)
+      * otherwise a temporary directory under ``CHROME_PROFILE_ROOT``
+
+    There is no longer an option to open the user's real profile: this
+    function wipes what it is about to open, so it only ever points at a
+    scraping directory, and :func:`prepare_profile_dir` refuses outright if
+    that resolves to the user's own Chrome data.
     """
-    if FRESH_PROFILE:
-        # 全新 profile 优先于一切：use_user_config 走的是 config.CHROME_USER_DATA_DIR，
-        # 而那个变量在环境变量为空时回退到用户日常的 ~/.config/google-chrome，
-        # 正是这里要避开的东西。
+    explicit = (os.environ.get('CHROME_USER_DATA_DIR') or '').strip()
+    if explicit:
+        user_data_dir = Path(explicit).expanduser()
+    else:
         profile_root = os.environ.get('CHROME_PROFILE_ROOT')
         if profile_root:
             profile_root = str(Path(profile_root).expanduser())
             Path(profile_root).mkdir(parents=True, exist_ok=True)
-        user_data_dir = tempfile.mkdtemp(prefix='chrome_fresh_', dir=profile_root)
-        print(f"🆕 全新 profile（未播种）: {user_data_dir}")
-    elif use_user_config:
-        user_data_dir = CHROME_USER_DATA_DIR
-        print(f"使用用户配置: {user_data_dir}")
-    else:
-        explicit = (os.environ.get('CHROME_USER_DATA_DIR') or '').strip()
-        if explicit:
-            user_data_dir = str(Path(explicit).expanduser().resolve())
-            Path(user_data_dir).mkdir(parents=True, exist_ok=True)
-            print(f"使用环境变量指定的 profile: {user_data_dir}")
-        else:
-            profile_root = os.environ.get('CHROME_PROFILE_ROOT')
-            if profile_root:
-                profile_root = str(Path(profile_root).expanduser())
-                Path(profile_root).mkdir(parents=True, exist_ok=True)
-            user_data_dir = tempfile.mkdtemp(
-                prefix=f'chrome_{CHROME_DEBUG_PORT}_', dir=profile_root)
-            print(f"创建临时配置: {user_data_dir}")
+        user_data_dir = Path(tempfile.mkdtemp(
+            prefix=f'chrome_{CHROME_DEBUG_PORT}_', dir=profile_root))
 
-    write_chrome_preferences(user_data_dir)
+    try:
+        prepare_profile_dir(user_data_dir)
+    except ValueError as exc:
+        # The configured directory is the real profile. Fall back to a
+        # throwaway one rather than refusing to run -- or wiping it.
+        print(f"  ⚠️  {exc}")
+        user_data_dir = Path(tempfile.mkdtemp(prefix='chrome_fallback_'))
+        prepare_profile_dir(user_data_dir)
+    user_data_dir = str(user_data_dir)
 
     print(f"正在启动 Chrome ({CHROME_PATH})...")
     proc = spawn_chrome(user_data_dir, CHROME_DEBUG_PORT, headless)
     if proc is None:
-        return ((None, user_data_dir, FRESH_PROFILE or not use_user_config)
-                if return_details else None)
+        return (None, user_data_dir, True) if return_details else None
 
     print(f"✓ Chrome 已启动 (PID: {proc.pid})")
     print(f"✓ 远程调试端口: {CHROME_DEBUG_PORT}")
@@ -404,8 +507,7 @@ def launch_chrome(use_user_config: bool = False, headless: bool = False,
                 break
             time.sleep(0.5)
 
-    return ((proc, user_data_dir, FRESH_PROFILE or not use_user_config)
-            if return_details else proc)
+    return (proc, user_data_dir, True) if return_details else proc
 
 
 def _default_pdf_port() -> int:
@@ -1319,6 +1421,7 @@ class FreshChromeSession:
         self.process: Optional[subprocess.Popen] = None
         self.profile_dir: Optional[Path] = None
         self._owns_profile = False
+        self._started_empty = True
         self.result: dict = {}
 
     @property
@@ -1328,24 +1431,36 @@ class FreshChromeSession:
     # ------------------------------------------------------------------
 
     def _make_profile(self) -> Path:
-        root = (os.environ.get('CHROME_PDF_PROFILE_ROOT') or '').strip()
-        if root:
-            Path(root).expanduser().mkdir(parents=True, exist_ok=True)
-            target = Path(tempfile.mkdtemp(prefix='chrome_pdf_',
-                                           dir=str(Path(root).expanduser())))
-        else:
-            target = Path(tempfile.mkdtemp(prefix='chrome_pdf_'))
-        self._owns_profile = True
+        """Where this throwaway browser keeps its profile.
 
-        profile_name = os.environ.get('CHROME_PROFILE', CHROME_PROFILE) or 'Default'
-        if not FRESH_PROFILE:
-            source = Path(
-                (os.environ.get('CHROME_PROFILE_SOURCE_DIR') or '').strip()
-                or CHROME_PROFILE_SOURCE_DIR
-            ).expanduser()
-            seed_profile(target, source, profile_name)
-        write_chrome_preferences(target, profile_name=profile_name,
-                                 download_dir=self.download_dir, quiet=True)
+        ``CHROME_PDF_USER_DATA_DIR`` names the directory outright -- the
+        counterpart of ``CHROME_USER_DATA_DIR`` for the shared browser. It is
+        wiped and rebuilt on every launch like any other scraping profile, so
+        pointing two concurrent runs at the same path would have them fight
+        over Chrome's profile lock; give each run its own, or leave this unset
+        and let each launch take a fresh temporary directory (under
+        ``CHROME_PDF_PROFILE_ROOT`` when that is set).
+        """
+        explicit = (os.environ.get('CHROME_PDF_USER_DATA_DIR') or '').strip()
+        if explicit:
+            target = Path(explicit).expanduser()
+        else:
+            root = (os.environ.get('CHROME_PDF_PROFILE_ROOT') or '').strip()
+            if root:
+                Path(root).expanduser().mkdir(parents=True, exist_ok=True)
+                target = Path(tempfile.mkdtemp(prefix='chrome_pdf_',
+                                               dir=str(Path(root).expanduser())))
+            else:
+                target = Path(tempfile.mkdtemp(prefix='chrome_pdf_'))
+        self._owns_profile = True
+        try:
+            self._started_empty = not prepare_profile_dir(
+                target, download_dir=self.download_dir, quiet=True)
+        except ValueError as exc:
+            print(f"  ⚠️  {exc}")
+            target = Path(tempfile.mkdtemp(prefix='chrome_pdf_'))
+            self._started_empty = not prepare_profile_dir(
+                target, download_dir=self.download_dir, quiet=True)
         return target
 
     async def start(self, start_url: str = 'about:blank') -> bool:
@@ -1359,7 +1474,7 @@ class FreshChromeSession:
         if self.download_dir:
             Path(self.download_dir).mkdir(parents=True, exist_ok=True)
 
-        flavour = '全新空 profile' if FRESH_PROFILE else '真实 profile 副本'
+        flavour = '全新空 profile' if self._started_empty else '真实 profile 副本'
         print(f"  🌐 启动独立 Chrome (端口 {self.port}, {flavour})...")
         self.process = spawn_chrome(self.profile_dir, self.port,
                                     start_url=start_url)
@@ -1573,8 +1688,6 @@ if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(description='启动配置好的 Chrome')
-    parser.add_argument('--user-config', action='store_true',
-                        help='使用用户真实配置目录')
     parser.add_argument('--headless', action='store_true', help='无头模式')
     parser.add_argument('--kill', action='store_true', help='关闭所有 Chrome 进程')
     args = parser.parse_args()
@@ -1583,4 +1696,4 @@ if __name__ == '__main__':
         kill_chrome()
         raise SystemExit(0)
 
-    launch_chrome(use_user_config=args.user_config, headless=args.headless)
+    launch_chrome(headless=args.headless)

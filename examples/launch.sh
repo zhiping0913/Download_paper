@@ -28,8 +28,8 @@ cd "$(dirname "$0")/.."
 # ---------------------------------------------------------------------------
 #
 #   主实例      CHROME_DEBUG_PORT      打开论文页面、提取正文；整批论文复用同一个
-#   一次性实例  CHROME_PDF_DEBUG_PORT  只用来下载 PDF；每次现从真实 profile 复制
-#                                      一份，用完即删，从不被 Playwright 接管
+#   一次性实例  CHROME_PDF_DEBUG_PORT  只用来下载 PDF；profile 每次重建（播种或留空），
+#                                      用完即删，从不被 Playwright 接管
 #
 # 为什么要两个：主实例自打开正文页起就被 Playwright 接管，带上了自动化指纹；
 # 而且正文域名过掉的 Cloudflare 对 PDF 域名（如 pdf.sciencedirectassets.com）
@@ -50,7 +50,10 @@ export CHROME_PDF_DEBUG_PORT=9333        # 一次性实例 CDP 端口。默认 9
                                          # (9333 → 9334 → …)，并发跑不会互抢
 
 # export DP_PDF_FRESH_CHROME=0           # 设 0 彻底禁用一次性实例（两种模式都禁）
-# export CHROME_PDF_PROFILE_ROOT=/tmp    # 一次性 profile 的落脚处。默认系统 tmp
+# export CHROME_PDF_USER_DATA_DIR="${HOME}/.config/google-chrome-pdf"
+#                                        # 一次性实例的 profile 目录（对应主实例的
+#                                        # CHROME_USER_DATA_DIR）。不设 → 每次 mkdtemp
+# export CHROME_PDF_PROFILE_ROOT=/tmp    # 未设上一个时，临时目录的父目录。默认系统 tmp
 
 # ★ 抓取用的 profile 目录 —— 用一个专用目录，别指向你日常上网那个。
 # Chrome 的 profile 锁一次只允许一个进程持有：指向日常 profile 且浏览器正开着时，
@@ -66,12 +69,17 @@ export CHROME_USER_DATA_DIR="${CHROME_USER_DATA_DIR:-${HOME}/.config/google-chro
 # export HEADLESS=false                  # true/false。Cloudflare 站点建议 false
 
 # ---------------------------------------------------------------------------
-# 2. 抓取 profile 的定期重置
+# 2. 抓取 profile 的来源
 # ---------------------------------------------------------------------------
 # CDP 驱动的 profile 会逐篇累积自动化指纹（以及 Cloudflare 给它打的标记），
-# 抓到一定篇数后挑战就过不去了。设置下面这个值，程序会每 N 篇自动：
-#   关掉 Chrome → 删除抓取 profile → 从干净 profile 重新播种 → 下一篇重启
-export CHROME_PROFILE_REFRESH_EVERY=5    # 0 或不设 = 从不重置（默认）
+# 抓到一定篇数后挑战就过不去了。所以抓取 profile **永不复用**：每次开浏览器
+# 都是「删掉旧的 → 重建」，每篇论文结束后浏览器也会关掉，下一篇重来一遍。
+#
+# 重建时拿什么填：
+#   FRESH_PROFILE=0（默认）且下面的源目录有效 → 从真实 profile 播种 cookie
+#   FRESH_PROFILE=1 或源目录无效              → 空 profile（零登录态，
+#                                              指纹最干净，但没有机构订阅）
+# export FRESH_PROFILE=1
 
 # 播种来源（干净的、人类在用的 profile）。不设则按平台自动探测：
 #   Linux ~/.config/google-chrome
@@ -79,41 +87,18 @@ export CHROME_PROFILE_REFRESH_EVERY=5    # 0 或不设 = 从不重置（默认�
 #   Windows %LOCALAPPDATA%\Google\Chrome\User Data
 # export CHROME_PROFILE_SOURCE_DIR="${HOME}/.config/google-chrome"
 #
-# 安全护栏（重置是 rm -rf，程序在这三种情况下拒绝执行）：
-#   · CHROME_USER_DATA_DIR 未设置
-#   · 抓取目录 == 来源目录        ← 防止删掉你自己的 Chrome 数据
-#   · 抓取目录在来源 profile 内部
+# 安全护栏：重建是 rm -rf，所以目标目录一旦解析成【真实 Chrome profile】
+# （日常 profile、播种来源、或平台默认路径），程序直接拒绝，改用临时目录。
+# 你自己的 Chrome 数据不会被碰。
 #
 # 只复制这些：Cookies、Cookies-journal、Login Data、Preferences、
 #            Secure Preferences、Web Data、Local State
 # ⚠️  Local State 必须跟 Cookies 一起复制 —— 它是 cookie 的加密密钥，
 #     只复制其一的话所有 cookie 都解不开。
-# 不复制 History / Cache / 扩展 / Sessions —— 甩掉累积状态正是重置的目的。
+# 不复制 History / Cache / 扩展 / Sessions —— 甩掉累积状态正是重建的目的。
 
 # ---------------------------------------------------------------------------
-# 3. 首次运行：播种抓取 profile
-# ---------------------------------------------------------------------------
-# 程序只在【重置】时播种；profile 完全不存在时得先给它一份 cookie，
-# 否则第一篇就要从零过 Cloudflare。文件集合与程序内的重置保持一致。
-LIVE_PROFILE="${CHROME_PROFILE_SOURCE_DIR:-${HOME}/.config/google-chrome}"
-SEED_PROFILE="${CHROME_PROFILE:-Default}"
-if [ ! -d "${CHROME_USER_DATA_DIR}/${SEED_PROFILE}" ] \
-   && [ -d "${LIVE_PROFILE}/${SEED_PROFILE}" ]; then
-    echo "⚙️  首次运行：从 ${LIVE_PROFILE} 播种抓取 profile..."
-    mkdir -p "${CHROME_USER_DATA_DIR}/${SEED_PROFILE}"
-    for f in Cookies Cookies-journal "Login Data" Preferences \
-             "Secure Preferences" "Web Data"; do
-        [ -e "${LIVE_PROFILE}/${SEED_PROFILE}/${f}" ] \
-            && cp -p "${LIVE_PROFILE}/${SEED_PROFILE}/${f}" \
-                     "${CHROME_USER_DATA_DIR}/${SEED_PROFILE}/" 2>/dev/null || true
-    done
-    [ -e "${LIVE_PROFILE}/Local State" ] \
-        && cp -p "${LIVE_PROFILE}/Local State" "${CHROME_USER_DATA_DIR}/" 2>/dev/null || true
-    echo "   ✓ 播种完成"
-fi
-
-# ---------------------------------------------------------------------------
-# 4. 等待时间（秒）—— 由 _env_seconds() 读取
+# 3. 等待时间（秒）—— 由 _env_seconds() 读取
 #    空串 / 非数字 / 负数 / 0 都回退默认值
 # ---------------------------------------------------------------------------
 
@@ -141,7 +126,7 @@ export DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT=600  # 默认 600
 export DP_FIGURE_TIMEOUT=60              # 默认 60
 
 # ---------------------------------------------------------------------------
-# 5. 重试
+# 4. 重试
 # ---------------------------------------------------------------------------
 
 export DP_MAX_RETRIES=5                  # 通用下载（含 PDF）。默认 5
@@ -150,27 +135,27 @@ export DP_SUPP_MAX_RETRIES=5             # 补充材料。默认 5
 export DP_RETRY_DELAY=1                  # 每次重试之间等几秒。默认 1
 
 # ---------------------------------------------------------------------------
-# 6. 批处理间隔（秒）—— 相邻两篇论文之间的随机 sleep
+# 5. 批处理间隔（秒）—— 相邻两篇论文之间的随机 sleep
 # ---------------------------------------------------------------------------
 
 export BATCH_SLEEP_MIN=30                # 默认 30
 export BATCH_SLEEP_MAX=60                # 默认 60
 
 # ---------------------------------------------------------------------------
-# 7. 输出目录
+# 6. 输出目录
 # ---------------------------------------------------------------------------
 
 # export CAPTURED_DATA_DIR=captured_data                    # 子目录名
 # export OUTPUT_DIR_DEFAULT="${PWD}/captured_data"          # 完整输出路径
 
 # ---------------------------------------------------------------------------
-# 8. 无头登录态缓存
+# 7. 无头登录态缓存
 # ---------------------------------------------------------------------------
 # --refresh-headless-auth 会写这个文件，Phase 0 无头预检从这里加载 cookies。
 # export DOWNLOAD_PAPER_HEADLESS_AUTH_STATE="${PWD}/.auth/headless_storage_state.json"
 
 # ---------------------------------------------------------------------------
-# 9. 启用 venv（可选）
+# 8. 启用 venv（可选）
 # ---------------------------------------------------------------------------
 
 if [ -f "/home/zhiping/research-env/bin/activate" ]; then
@@ -179,7 +164,7 @@ if [ -f "/home/zhiping/research-env/bin/activate" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 10. 打印生效的环境变量
+# 9. 打印生效的环境变量
 # ---------------------------------------------------------------------------
 
 echo "──────────────────────────────────────────────────────"
@@ -188,7 +173,7 @@ echo "────────────────────────�
 for v in CHROME_PATH CHROME_DEBUG_PORT CHROME_PDF_DEBUG_PORT \
          CHROME_USER_DATA_DIR CHROME_PROFILE CHROME_PROFILE_ROOT \
          CHROME_PDF_PROFILE_ROOT DP_PDF_FRESH_CHROME CHROME_DOWNLOAD_DIR \
-         CHROME_PROFILE_REFRESH_EVERY CHROME_PROFILE_SOURCE_DIR \
+         FRESH_PROFILE CHROME_PROFILE_SOURCE_DIR CHROME_PDF_USER_DATA_DIR \
          USE_CHROME_MODE HEADLESS \
          DP_PAGE_LOAD_TIMEOUT DP_CLOUDFLARE_TIMEOUT DP_PDF_WAIT \
          DP_PDF_DOWNLOAD_TIMEOUT DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT \
@@ -203,7 +188,7 @@ done
 echo "──────────────────────────────────────────────────────"
 
 # ---------------------------------------------------------------------------
-# 11. 运行提取
+# 10. 运行提取
 # ---------------------------------------------------------------------------
 # 输入三选一（互斥）：
 #   --doi   单篇 DOI

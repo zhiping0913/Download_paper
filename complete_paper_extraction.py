@@ -64,7 +64,6 @@ from config import (
     BATCH_SLEEP_MIN,
     CHROME_DEBUG_PORT,
     CHROME_PROFILE,
-    CHROME_PROFILE_REFRESH_EVERY,
     CHROME_PROFILE_SOURCE_DIR,
     FRESH_PROFILE,
     OUTPUT_DIR_DEFAULT,
@@ -649,7 +648,6 @@ class SharedBrowserSession:
         self.headed_browser = None
         self.headed_context = None
         self.latest_headed_state = None
-        self.papers_since_profile_reset = 0
 
     @staticmethod
     def _chrome_ready() -> bool:
@@ -685,8 +683,7 @@ class SharedBrowserSession:
 
         print("  启动独立 Chrome...")
         try:
-            proc, profile_dir, owns = launch_chrome(use_user_config=True,
-                                                    return_details=True)
+            proc, profile_dir, owns = launch_chrome(return_details=True)
             self.headed_process = proc
             # 记下来才删得掉 —— 以前这里丢掉了返回值，下面那段 rmtree
             # 因此是死代码，临时 profile 只增不减。
@@ -858,95 +855,27 @@ class SharedBrowserSession:
     _PROFILE_SEED_FILES = PROFILE_SEED_FILES
     _PROFILE_SEED_ROOT_FILES = PROFILE_SEED_ROOT_FILES
 
-    @staticmethod
-    def _seed_scraping_profile(target: Path, source: Path, profile_name: str) -> bool:
-        """Copy a minimal working set from *source* profile into *target*."""
-        return seed_profile(target, source, profile_name)
+    def retire_headed_browser(self) -> bool:
+        """Shut the shared Chrome down so the next paper opens a new session.
 
-    def reset_scraping_profile(self, reason: str = '') -> bool:
-        """Tear down Chrome, wipe the scraping profile, re-seed it.
+        A profile driven over CDP wears its automation traces as it goes, so
+        it is never carried into the next paper: closing the browser here is
+        what makes the next ensure_headed_chrome() rebuild the profile from
+        scratch (see chrome_session.prepare_profile_dir). Chrome holds an
+        exclusive lock on its user-data-dir, so it has to exit before that
+        directory can be replaced.
 
-        Chrome holds an exclusive lock on its user-data-dir, so the running
-        instance has to go first; the next ensure_headed_chrome() starts a
-        fresh one against the clean directory.
-
-        Returns True when the profile was actually replaced.
+        Returns True when a browser was actually running and got closed.
         """
-        if FRESH_PROFILE:
-            print("  ⚠️  跳过 profile 重置: FRESH_PROFILE=1"
-                  "（每次都是全新空 profile，重置只会重新播种真实 profile 的 cookie）")
-            return False
-
-        scraping_dir = (os.environ.get('CHROME_USER_DATA_DIR', '') or '').strip()
-        if not scraping_dir:
-            print("  ⚠️  跳过 profile 重置: 未设置 CHROME_USER_DATA_DIR"
-                  "（当前用的是每次新建的临时 profile，本就没有累积）")
-            return False
-
-        target = Path(scraping_dir).expanduser().resolve()
-        source = Path(CHROME_PROFILE_SOURCE_DIR).expanduser().resolve()
-
-        # Never let the reset touch the profile it copies from — that would
-        # delete the user's own Chrome data.
-        if target == source:
-            print(f"  ⚠️  跳过 profile 重置: 抓取 profile 与源 profile 是同一目录 ({target})")
-            return False
-        try:
-            if source in target.parents:
-                print(f"  ⚠️  跳过 profile 重置: 抓取 profile 位于源 profile 内部 ({target})")
-                return False
-        except Exception:
-            pass
-
-        print()
-        print("=" * 80)
-        print(f"🔄 重置抓取 profile{f' ({reason})' if reason else ''}")
-        print(f"   目标: {target}")
-        print(f"   来源: {source}")
-        print("=" * 80)
-
-        # 1. Chrome must release the profile lock first.
-        self.headed_context = None
-        if self.headed_browser is not None:
-            self.headed_browser = None
-        self.cleanup_owned_chrome_sync()
-        time.sleep(2)
-
-        # 2. Wipe.
-        try:
-            if target.exists():
-                shutil.rmtree(target, ignore_errors=True)
-        except Exception as exc:
-            print(f"  ⚠️  删除旧 profile 失败: {exc}")
-            return False
-
-        # 3. Re-seed.
-        target.mkdir(parents=True, exist_ok=True)
-        ok = self._seed_scraping_profile(target, source, CHROME_PROFILE)
-        self.papers_since_profile_reset = 0
-        print("=" * 80)
-        print()
-        return ok
-
-    def note_paper_processed(self) -> bool:
-        """Count a finished paper; reset the profile when the quota is hit.
-
-        Returns True when a reset actually happened.
-        """
-        if CHROME_PROFILE_REFRESH_EVERY <= 0:
-            return False
-        # Only papers that actually drove the headed Chrome wear the profile.
         if self.headed_process is None and not self._check_cdp_port():
             return False
-        self.papers_since_profile_reset += 1
-        if self.papers_since_profile_reset < CHROME_PROFILE_REFRESH_EVERY:
-            remaining = CHROME_PROFILE_REFRESH_EVERY - self.papers_since_profile_reset
-            print(f"  ℹ️  profile 已用于 {self.papers_since_profile_reset} 篇，"
-                  f"再 {remaining} 篇后重置")
-            return False
-        return self.reset_scraping_profile(
-            reason=f"每 {CHROME_PROFILE_REFRESH_EVERY} 篇"
-        )
+
+        print("  🔄 本篇结束，关闭抓取浏览器（下一篇将重建 profile）")
+        self.headed_context = None
+        self.headed_browser = None
+        self.cleanup_owned_chrome_sync()
+        time.sleep(2)
+        return True
 
     async def close(self):
         if self.headless_context is not None:
@@ -3586,15 +3515,14 @@ JSON 格式:
                         traceback.print_exc()
                         fail_count += 1
 
-                    # Retire the scraping profile every N papers. A profile
-                    # driven over CDP picks up automation fingerprints as it
-                    # goes, until Cloudflare stops letting it through; wiping
-                    # and re-seeding from the clean profile restores the pass
-                    # rate. No-op unless CHROME_PROFILE_REFRESH_EVERY is set.
+                    # Retire the browser after every paper. A profile driven
+                    # over CDP picks up automation fingerprints as it goes,
+                    # until Cloudflare stops letting it through; the next
+                    # paper opens a session on a profile rebuilt from scratch.
                     try:
-                        browser_session.note_paper_processed()
+                        browser_session.retire_headed_browser()
                     except Exception as exc:
-                        print(f"  ⚠️  profile 重置检查失败: {exc}")
+                        print(f"  ⚠️  关闭抓取浏览器失败: {exc}")
 
                     # 批量处理防拉黑：随机睡眠 (最后一条不需要)
                     if BATCH_SLEEP_ENABLED and i < len(dois):

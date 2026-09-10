@@ -88,32 +88,22 @@ CHROME_PROFILE = os.environ.get("CHROME_PROFILE", "Default")
 CHROME_DEBUG_PORT = int(os.environ.get("CHROME_DEBUG_PORT", 9222))
 
 # ----------------------------------------------------------------------------
-# 抓取用 profile 的定期重置
+# 抓取用 profile 的来源
 # ----------------------------------------------------------------------------
 # A profile driven over CDP accumulates automation fingerprints (and whatever
 # flags Cloudflare attaches to it) as papers go by, until the challenge stops
-# clearing. Periodically wiping the scraping profile and re-seeding it from a
-# clean human-used one restores the pass rate.
+# clearing. So a scraping profile is never reused: chrome_session rebuilds it
+# from scratch every time a browser session opens.
 #
-#   CHROME_PROFILE_REFRESH_EVERY  reset after this many papers; 0 = never
-#   CHROME_PROFILE_SOURCE_DIR     profile to copy from; defaults to the real
-#                                 per-platform Chrome profile
-#
-# Only meaningful when CHROME_USER_DATA_DIR points at a dedicated scraping
-# profile: the reset refuses to run when the scraping and source directories
-# are the same, so it can never delete the user's own Chrome data.
-try:
-    CHROME_PROFILE_REFRESH_EVERY = int(
-        os.environ.get("CHROME_PROFILE_REFRESH_EVERY", "0") or 0
-    )
-    if CHROME_PROFILE_REFRESH_EVERY < 0:
-        CHROME_PROFILE_REFRESH_EVERY = 0
-except ValueError:
-    CHROME_PROFILE_REFRESH_EVERY = 0
+#   CHROME_PROFILE_SOURCE_DIR   profile to copy from; defaults to the real
+#                               per-platform Chrome profile. With
+#                               FRESH_PROFILE=1, or when this path holds no
+#                               usable profile, the scraping profile starts
+#                               empty instead.
 
 
 def _default_chrome_source_dir() -> str:
-    """The real, human-used Chrome profile — the reset copies from here."""
+    """The real, human-used Chrome profile — seeding copies from here."""
     if IS_WINDOWS:
         local_appdata = os.environ.get('LOCALAPPDATA', '')
         if local_appdata:

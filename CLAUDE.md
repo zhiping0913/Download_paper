@@ -187,19 +187,43 @@ python batch_process.py --file dois.txt                     # 批量
   能无头访问到的出版商本来就没在拦我们，每篇都弹一个窗口就失去无头的意义了
 - 补充材料没有独立浏览器路径，一直用传进去的 page/context，所以无头时本来就是无头下载
 - `DP_PDF_FRESH_CHROME=0` 两种模式下都彻底禁用一次性 Chrome
-- `FRESH_PROFILE=1` 每个实例都用全新空 profile，且**不从真实 profile 播种**——
-  正文页的共享实例和 PDF 的一次性实例都适用。SPIE 走 Imperva Incapsula（不是
-  Cloudflare，那套 Turnstile 点击逻辑对它无效），播种进来的 cookie 反而扣分。
-  代价是零登录态，靠机构订阅的文章别开
+### profile 生命周期（`chrome_session.prepare_profile_dir`）
+
+- **抓取 profile 永不复用**。每次开浏览器都是「先删再建」，两个实例（正文页的共享实例、
+  PDF 的一次性实例）走的是同一个函数。每篇论文结束后
+  `retire_headed_browser()` 会关掉浏览器，下一篇重来一遍 ——
+  Chrome 对 user-data-dir 是独占锁，不关就替换不掉
+- 重建时填什么，只看两个条件：
+
+  | 条件 | 结果 |
+  |---|---|
+  | `FRESH_PROFILE=0` 且 `CHROME_PROFILE_SOURCE_DIR` 有效 | 从真实 profile 播种（Cookies + Local State + Preferences…） |
+  | `FRESH_PROFILE=1`，或源目录无效 | 空 profile（零登录态） |
+
+  「有效」= 目录存在**且**含 `CHROME_PROFILE` 那个子目录；路径写错当作没有，
+  不会静默产出一个没 cookie 的 profile
+- ⚠️ **安全护栏**：目标目录解析成真实 Chrome profile（日常 profile / 播种来源 /
+  平台默认路径）时 `prepare_profile_dir` 直接抛 `ValueError`，`launch_chrome` 退回临时目录。
+  没有这条，`CHROME_USER_DATA_DIR` 忘了设就会 `rm -rf` 掉用户自己的 Chrome 数据
 - ⚠️ **端口上有残留 Chrome 时不能复用** —— 上次运行崩了/被杀，Chrome 还占着调试端口，
-  新运行接管它就等于继承了那个被污染的 profile，`FRESH_PROFILE` 被悄悄作废
-  （现象：设了 `FRESH_PROFILE=1` 却还是被 SPIE 拦）。所以该模式下先 `kill_chrome()` 再起
+  新运行接管它就等于继承了那个被污染的 profile（现象：设了 `FRESH_PROFILE=1`
+  却还是被 SPIE 拦）。所以先 `kill_chrome()` 再起
 - 启动时 `sweep_stale_profiles()` 扫掉 `/tmp/chrome_fresh_*`、`/tmp/chrome_pdf_*`：
   只删**没有活进程持有**的（读 `/proc/*/cmdline` 的 `--user-data-dir=` 判断），
   并行跑的另一个批次不受影响
-- **两个 Chrome 实例、两个端口**，都能用环境变量改：
-  `CHROME_DEBUG_PORT`(主实例，默认 9222) 和
-  `CHROME_PDF_DEBUG_PORT`(一次性实例，默认 9333，被占用自动顺延)
+- SPIE 走 Imperva Incapsula（不是 Cloudflare，那套 Turnstile 点击逻辑对它无效），
+  播种进来的 cookie 反而扣分，用 `FRESH_PROFILE=1`；代价是零登录态，
+  靠机构订阅的文章别开
+- **两个 Chrome 实例、两个端口 + 两个 profile 目录**，都能用环境变量改：
+
+  | | 端口 | profile 目录 |
+  |---|---|---|
+  | 主实例（正文页） | `CHROME_DEBUG_PORT`（默认 9222） | `CHROME_USER_DATA_DIR` |
+  | 一次性实例（PDF） | `CHROME_PDF_DEBUG_PORT`（默认 9333，被占用自动顺延） | `CHROME_PDF_USER_DATA_DIR` |
+
+  两个 profile 目录都不设时各自 `mkdtemp`（一次性实例的父目录可用
+  `CHROME_PDF_PROFILE_ROOT` 指定）。⚠️ 目录是**每次启动先删再建**的，所以
+  两个并发的运行不能指向同一个路径，会抢 Chrome 的 profile 锁
 
 ### IEEE (`10.1109`, ieeexplore.ieee.org)
 
