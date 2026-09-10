@@ -221,8 +221,9 @@ python batch_process.py --file dois.txt                     # 批量
   | 主实例（正文页） | `CHROME_DEBUG_PORT`（默认 9222） | `$CHROME_PROFILE_ROOT/main_dir` |
   | 一次性实例（PDF） | `CHROME_PDF_DEBUG_PORT`（默认 9333，被占用自动顺延） | `$CHROME_PROFILE_ROOT/pdf_dir` |
 
-  只有 `CHROME_PROFILE_ROOT` 一个旋钮，默认 `/tmp/dp_profiles`，两个目录名固定、
-  都是一次性的。⚠️ 默认值固定意味着**并发跑多个批次必须各给各的 root**，
+  只有 `CHROME_PROFILE_ROOT` 一个旋钮，两个目录名固定、都是一次性的。
+  默认 `/tmp/dp_profiles_xxxxxx` —— 后缀按启动时间做种随机生成，每个进程一个，
+  所以并发跑多个批次天然隔离。⚠️ 显式指定 root 时，并发的批次要各给各的，
   否则两个 Chrome 抢同一个 profile 锁
 
 ### IEEE (`10.1109`, ieeexplore.ieee.org)
