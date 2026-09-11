@@ -120,6 +120,10 @@ export DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT=180      # 默认 180
 export DP_SUPPLEMENTAL_TIMEOUT=60                # 默认 60
 export DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT=600  # 默认 600
 
+# 图片 / 补充材料：先直接 HTTP 请求（UA + Referer），拿不到网页以外的真文件才回退浏览器。
+# export DP_HTTP_FIRST=0                 # 设 0 = 跳过直接请求，全部走浏览器。默认 1
+# export DP_HTTP_USER_AGENT="Mozilla/5.0 ..."   # 直接请求用的 UA。默认一个 Linux Chrome UA
+
 # 图片 CDN 的 goto / 重取
 export DP_FIGURE_TIMEOUT=60              # 默认 60
 

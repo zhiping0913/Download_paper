@@ -1744,6 +1744,22 @@ async def download_supplemental_materials(
                 # to disk and has no such limit.
                 DIRECT_FETCH_MAX_BYTES = 80 * 1024 * 1024  # 80 MB
 
+                # First: a plain request, no browser at all. Most publishers
+                # serve supplements from a CDN that needs nothing more than a
+                # browser-like User-Agent and the article as Referer.
+                if DP_HTTP_FIRST:
+                    if await asyncio.to_thread(
+                            _http_download_to, url, output_path, article_url,
+                            DP_SUPPLEMENTAL_TIMEOUT, False):
+                        output_path = _detect_and_rename(output_path)
+                        file_size_mb = output_path.stat().st_size / (1024 * 1024)
+                        print(f"    ✓ 已保存: {output_path.name} ({file_size_mb:.2f} MB) [直接下载]")
+                        downloaded_count += 1
+                        saved_name = _rel_saved_name(output_path)
+                        downloaded_descriptions[saved_name] = desc_value if desc_value else chapter_title
+                        success = True
+                        break
+
                 if _is_direct_download_url(url):
                     direct_ok = False
                     try:
@@ -2023,8 +2039,94 @@ async def _fetch_image_as_bytes(page, url: str) -> bytes:
     return base64.b64decode(b64)
 
 
+# ----------------------------------------------------------------------------
+# Plain-HTTP first attempt for figures and supplementary files
+# ----------------------------------------------------------------------------
+# Unlike the PDF, figures and supplementary files are almost always served
+# from a CDN with no bot check and no entitlement gate -- even ScienceDirect's
+# ars.els-cdn.com hands them to a bare GET. Going through the browser for each
+# one costs a tab, a navigation and often a Cloudflare round-trip, so a plain
+# request with a browser-like User-Agent and the article as Referer is tried
+# first; only when that yields no usable file does the browser path run.
+#
+# "Usable" is checked on the bytes, not just the status: a 200 carrying an
+# HTML challenge or login page is the common way this fails, and saving it
+# would leave a .jpg that is really a Cloudflare interstitial.
+
+DP_HTTP_USER_AGENT = os.environ.get(
+    'DP_HTTP_USER_AGENT',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
+)
+# DP_HTTP_FIRST=0 skips the plain request and goes straight to the browser.
+DP_HTTP_FIRST = os.environ.get('DP_HTTP_FIRST', '1').strip().lower() not in (
+    '0', 'false', 'no', 'off')
+
+
+def _http_asset_headers(referer: str = None) -> dict:
+    headers = {
+        'User-Agent': DP_HTTP_USER_AGENT,
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+    if referer and referer.startswith('http'):
+        headers['Referer'] = referer
+    return headers
+
+
+def _http_download_to(url: str, dest: Path, referer: str = None,
+                      timeout: float = 60, want_image: bool = False) -> bool:
+    """GET *url* straight to *dest*. True only when a real file landed there.
+
+    Streams to a ``.part`` file and renames on success, so a large video
+    never sits in memory and an aborted transfer never looks finished.
+    Rejects: non-2xx, an HTML/text response (challenge or login page), an
+    empty body, and -- with *want_image* -- anything whose bytes are not an
+    image.
+    """
+    part = dest.with_name(dest.name + '.part')
+    try:
+        with requests.get(url, headers=_http_asset_headers(referer),
+                          timeout=(15, timeout), stream=True,
+                          allow_redirects=True) as r:
+            if r.status_code >= 400:
+                print(f"    ↪ 直接请求 HTTP {r.status_code}，回退到浏览器")
+                return False
+            ctype = (r.headers.get('content-type') or '').lower()
+            if ctype.startswith('text/html') or ctype.startswith('text/xml'):
+                print(f"    ↪ 直接请求拿到的是网页（{ctype.split(';')[0]}），回退到浏览器")
+                return False
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with open(part, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=1 << 16):
+                    if chunk:
+                        f.write(chunk)
+        if not part.exists() or part.stat().st_size == 0:
+            print("    ↪ 直接请求响应为空，回退到浏览器")
+            part.unlink(missing_ok=True)
+            return False
+
+        # Servers mislabel constantly; trust the bytes.
+        sniffed = magic.from_file(str(part), mime=True) or ''
+        if sniffed in ('text/html', 'application/xhtml+xml') or \
+                (want_image and not sniffed.startswith('image/')
+                 and sniffed not in ('application/postscript', 'application/pdf')):
+            print(f"    ↪ 直接请求内容不对（{sniffed}），回退到浏览器")
+            part.unlink(missing_ok=True)
+            return False
+        part.replace(dest)
+        return True
+    except Exception as exc:
+        print(f"    ↪ 直接请求失败（{type(exc).__name__}: {str(exc)[:80]}），回退到浏览器")
+        try:
+            part.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
 async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, context=None, force_headed: bool = False) -> str:
-    """下载高分辨率图片 - 使用API响应中的URL"""
+    """下载高分辨率图片：先直接 HTTP 请求，拿不到再走浏览器。"""
     try:
         if not fig_url:
             return None
@@ -2032,6 +2134,19 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
         fig_url = normalize_image_url(fig_url)
 
         print(f"  📥 下载 Figure {fig_num}: {fig_url}")
+
+        if DP_HTTP_FIRST:
+            try:
+                referer = page.url if page is not None else None
+            except Exception:
+                referer = None
+            img_filename = original_image_filename(fig_url, fig_num)
+            ok = await asyncio.to_thread(
+                _http_download_to, fig_url, output_dir / img_filename,
+                referer, DP_FIGURE_TIMEOUT, True)
+            if ok:
+                print(f"    ✓ 保存: {img_filename} [直接下载]")
+                return img_filename
 
         download_page = await context.new_page() if force_headed and context is not None else page
 

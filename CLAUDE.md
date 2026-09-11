@@ -6,6 +6,13 @@
 
 **始终通过浏览器访问论文页面**，使用 `complete_paper_extraction.py`，不使用 `curl`/`wget`/`requests` 直接 HTTP 请求期刊网站。
 
+例外：**图片和补充材料**先用 `requests` 直接下（带浏览器 UA + 文章页作 Referer），
+拿不到才回退浏览器。这类文件几乎都放在不设防的 CDN 上（连 ScienceDirect 的
+`ars.els-cdn.com` 都直接给），逐个开标签页纯属浪费。PDF 和论文页面**不在**例外之列。
+见 `_http_download_to()`；`DP_HTTP_FIRST=0` 可整体关闭，`DP_HTTP_USER_AGENT` 覆盖 UA。
+⚠️ 判定成功看**字节**不看状态码：200 但内容是 HTML（Cloudflare 挑战页 / 登录页）是最常见
+的失败形态，照存就会得到一个其实是网页的 `.jpg`
+
 **所有元素使用同一套公式转换管道** — 正文段落、图注、表格单元格等所有包含潜在 LaTeX 公式的元素，都必须通过 `_convert_iop_paragraph_to_md()` (IOP) 或对应的公式转换函数处理，不能直接使用 `get_text()` 提取纯文本。
 
 ## 快速命令
