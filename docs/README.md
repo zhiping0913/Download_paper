@@ -40,6 +40,8 @@ export CHROME_PDF_DEBUG_PORT=9333                      # 下载 PDF 的一次性
 export DP_PDF_FRESH_CHROME=1                           # 0 = 禁用一次性实例
 export CHROME_DOWNLOAD_DIR=/root/Downloads             # Chrome 默认下载目录
 export HEADLESS=false                                  # true/false；Cloudflare 站点建议 false
+export DP_HTTP_FIRST=1                                 # 图片/补充材料先直接 HTTP 下载；0 = 全走浏览器
+export DP_HTTP_USER_AGENT="Mozilla/5.0 ..."            # 直接请求用的 UA（可选）
 
 # profile（见下节「程序怎么用你的 Chrome profile」）
 export CHROME_PROFILE_ROOT=/tmp/dp_profiles_ab12cd     # 抓取 profile 的根目录（可选）
