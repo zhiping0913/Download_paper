@@ -98,7 +98,7 @@ python batch_process.py --dois "10.1103/..." "10.1063/..."
 4. **识别 publisher** — 根据最终 URL / DOI 前缀确定 handler 类型
 5. **提取元数据** — 从 `<meta>` 标签和 DOM 中提取标题、作者、期刊、摘要等
 6. **提取正文** — 遍历文章 HTML，通过公式转换管道保留 LaTeX 数学公式
-7. **提取参考文献** — 格式化为 BibTeX 代码块
+7. **提取参考文献** — 尊重原网页的输出：APS / AIP 直接用页面给出的引文，不做逐条 Crossref 核验；其余出版商格式化为 BibTeX 代码块
 8. **提取脚注** — 在参考文献前展示（IOP 支持）
 9. **提取图片链接** — 优先高分辨率版本，传给主流程下载
 10. **提取补充材料** — 从文章页面或专用 `/data` 端点发现下载链接
@@ -136,7 +136,7 @@ captured_data/
 6. **Article Text** — 正文（含公式、图表引用、表格）
 7. **Supplemental Material** — 补充材料链接
 8. **Footnotes** — 脚注（IOP 支持）
-9. **References** — 编号引用 + BibTeX 代码块
+9. **References** — 编号引用（APS / AIP 仅原文；其余附 BibTeX 代码块）
 
 ---
 

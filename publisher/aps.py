@@ -12,12 +12,6 @@ from html import unescape
 
 from publisher.base import PublisherHandler
 from core.network_capture import setup_response_capture
-from core.utilities import (
-    fetch_crossref,
-    fetch_semanticscholar,
-    _build_bibtex_from_s2,
-    _build_bibtex_from_crossref,
-)
 from html_to_md_converter import cleanup_markdown, convert_html_to_markdown, mathml_to_latex_pandoc, remove_newlines_in_paragraph
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
@@ -1196,29 +1190,6 @@ class APSHandler(PublisherHandler):
                 if references:
                     metadata['references'] = references
                     print(f"  ✓ 参考文献: {len(references)} 条")
-                    # Generate BibTeX entries via Crossref (primary) → Semantic Scholar (fallback)
-                    bibtex_refs = []
-                    for ref_text in references:
-                        doi_match = re.search(r'(10\.\d{4,}/[^\s"\'\]]+)', ref_text)
-                        if doi_match:
-                            doi_ref = doi_match.group(1).rstrip('.')
-                            try:
-                                # Try Crossref first
-                                crossref_data = fetch_crossref(doi_ref)
-                                if crossref_data and crossref_data.get('title'):
-                                    bibtex_refs.append(_build_bibtex_from_crossref(crossref_data, doi_ref))
-                                else:
-                                    # Fallback to Semantic Scholar
-                                    s2_data = fetch_semanticscholar(doi_ref)
-                                    if s2_data and s2_data.get('title'):
-                                        bibtex_refs.append(_build_bibtex_from_s2(s2_data, doi_ref))
-                                    else:
-                                        bibtex_refs.append(None)
-                            except Exception:
-                                bibtex_refs.append(None)
-                        else:
-                            bibtex_refs.append(None)
-                    metadata['_refs_bibtex'] = bibtex_refs
                     break
 
         # 4. Get fulltext data
@@ -1468,31 +1439,14 @@ class APSHandler(PublisherHandler):
         md_content += "\n---\n\n"
 
         # ===== 参考文献 =====
-        # Prefer complete extracted references with pre-generated BibTeX over Crossref metadata-only references
-        # (Crossref API returns only DOI info, not full bibliographic data)
+        # The page's own reference list is the output -- no per-entry Crossref
+        # lookup. APS prints a complete, formatted citation for every entry, so
+        # verifying each one over the network bought nothing and cost one HTTP
+        # round-trip per reference (hundreds on a review article).
         if metadata.get('references'):
             md_content += "## References\n\n"
-            bibtex_refs = metadata.get('_refs_bibtex', [])
             for i, ref in enumerate(metadata['references']):
-                idx = i + 1
-                md_content += f"[{idx}] {ref}\n\n"
-
-                # Try to get bibtex from pre-generated list
-                if i < len(bibtex_refs) and bibtex_refs[i]:
-                    md_content += f"```bibtex\n{bibtex_refs[i]}\n```\n\n"
-                else:
-                    # If no pre-generated bibtex, try to extract DOI and fetch from Crossref on-the-fly
-                    doi_match = re.search(r'(10\.\d{4,}/[^\s"\'\]]+)', ref)
-                    if doi_match:
-                        doi_str = doi_match.group(1).rstrip('.')
-                        try:
-                            crossref_data = fetch_crossref(doi_str)
-                            if crossref_data:
-                                bibtex = _build_bibtex_from_crossref(crossref_data, doi_str)
-                                if bibtex:
-                                    md_content += f"```bibtex\n{bibtex}\n```\n\n"
-                        except Exception:
-                            pass
+                md_content += f"[{i + 1}] {ref}\n\n"
 
         # 跨发布商通用的清理 (移到 html_to_md_converter.cleanup_markdown)
         md_content = cleanup_markdown(md_content)
