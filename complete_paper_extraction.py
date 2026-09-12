@@ -741,7 +741,11 @@ class SharedBrowserSession:
     async def ensure_headless_context(self, storage_state=None):
         if self.headless_context is not None:
             return self.headless_context
-        self.headless_browser = await self.playwright.chromium.launch(headless=True)
+        launch_kwargs = {"headless": True}
+        chrome_path = os.environ.get("CHROME_PATH", "").strip()
+        if chrome_path:
+            launch_kwargs["executable_path"] = chrome_path
+        self.headless_browser = await self.playwright.chromium.launch(**launch_kwargs)
         kwargs = {"accept_downloads": True}
         state = self.latest_headed_state or storage_state
         if state:
