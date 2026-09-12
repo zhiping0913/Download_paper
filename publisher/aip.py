@@ -17,12 +17,6 @@ from html_to_md_converter import (
     mathml_to_latex_pandoc,
     remove_newlines_in_paragraph,
 )
-from core.utilities import (
-    fetch_crossref,
-    fetch_semanticscholar,
-    _build_bibtex_from_s2,
-    _build_bibtex_from_crossref,
-)
 from publisher.base import PublisherHandler
 from publisher.wildcard import set_actual_base_url, init_extract_all_page
 
@@ -644,30 +638,6 @@ class AIPHandler(PublisherHandler):
         return references
 
     @classmethod
-    def _extract_ref_dois_from_html(cls, html_content: str) -> list:
-        """Extract DOIs from AIP reference citation-links."""
-        if not html_content:
-            return []
-
-        soup = BeautifulSoup(html_content, 'html.parser')
-        dois = []
-
-        ref_divs = soup.find_all('div', attrs={'data-content-id': True})
-        for ref_div in ref_divs:
-            doi = ''
-            citation_links = ref_div.find('div', class_='citation-links')
-            if citation_links:
-                doi_link = citation_links.find('a', href=re.compile(r'(doi\.org|dx\.doi\.org)'))
-                if doi_link:
-                    href = doi_link.get('href', '')
-                    doi_match = re.search(r'10\.\d{4,}/[^\s"\'<>]+', href)
-                    if doi_match:
-                        doi = doi_match.group(0).rstrip('.')
-            dois.append(doi)
-
-        return dois
-
-    @classmethod
     def extract_figures_from_html(cls, html_content: str) -> dict:
         """Extract AIP figure URLs and captions from HTML."""
         if not html_content:
@@ -966,25 +936,9 @@ class AIPHandler(PublisherHandler):
             if fulltext_html and not metadata.get('abstract'):
                 metadata['abstract'] = self.extract_main_abstract_from_html(fulltext_html)
             if fulltext_html:
+                # The page's own reference list is the output; no per-entry
+                # Crossref/S2 lookup (one HTTP round-trip per reference).
                 metadata['references'] = self.extract_references_from_html(fulltext_html)
-                ref_dois = self._extract_ref_dois_from_html(fulltext_html)
-                ref_bibtex = []
-                for doi in ref_dois:
-                    if doi:
-                        # Try Crossref first, then fallback to Semantic Scholar
-                        crossref_data = fetch_crossref(doi)
-                        if crossref_data and crossref_data.get('title'):
-                            bib = _build_bibtex_from_crossref(crossref_data, doi)
-                        else:
-                            s2_data = fetch_semanticscholar(doi)
-                            if s2_data:
-                                bib = _build_bibtex_from_s2(s2_data, doi)
-                            else:
-                                bib = None
-                        ref_bibtex.append(bib if bib else '')
-                    else:
-                        ref_bibtex.append('')
-                metadata['_refs_bibtex'] = ref_bibtex
 
             figure_urls = {}
             supp_urls = []
@@ -1110,10 +1064,7 @@ class AIPHandler(PublisherHandler):
                 "## References",
                 "",
             ])
-            refs_bibtex = metadata.get('_refs_bibtex', [])
-            for idx, ref in enumerate(metadata['references']):
+            for ref in metadata['references']:
                 md_parts.extend([ref, ""])
-                if idx < len(refs_bibtex) and refs_bibtex[idx]:
-                    md_parts.extend([f"```bibtex\n{refs_bibtex[idx]}\n```", ""])
 
         return "\n".join(md_parts)
