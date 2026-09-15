@@ -523,6 +523,11 @@ AIP 由 `publisher/aip.py` 的 `AIPHandler` 处理。
 
 注意：部分新版 AIP 文章所有 section 的 `data-section-parent-id` 都是 `"0"`（旧文章只有摘要 section 是 0）。当前代码通过检测 wrapper 内是否包含 `<section class="abstract" aria-label="Main abstract">` 来识别摘要，不依赖 `parent-id`。
 
+⚠️ 正文遍历会跳过参考文献那一节，否则它会被当成普通章节再渲染一遍，在
+`## Article Text` 里留下第二个（且残缺的）REFERENCES 块。标题按名字跳过；对应的
+`article-section-wrapper` 按内容跳过 —— 判据是其中的 `div.mixed-citation`，也就是
+`extract_references_from_html()` 依赖的同一个标志，因此不受标题措辞与大小写影响。
+
 ### 图片提取
 
 `extract_figures_from_html()` 从 `.fig-section` 容器中提取图片 URL 和标题，通过主流程统一下载并插入 Markdown。
