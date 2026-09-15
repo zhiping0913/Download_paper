@@ -203,6 +203,14 @@ python batch_process.py --file dois.txt                     # 批量
   导航到 PDF 必然下载——所以这个缺陷在改用 `CHROME_PATH` 之前一直被掩盖着
 - 补充材料没有独立浏览器路径，一直用传进去的 page/context，所以无头时本来就是无头下载
 - `DP_PDF_FRESH_CHROME=0` 两种模式下都彻底禁用一次性 Chrome
+- ⚠️ **一次性 Chrome 的「快路径探测」必须短**。`open_url_in_fresh_chrome` 在启动浏览器后、
+  附着 CDP 点验证框**之前**，先等一小段看 PDF 会不会自己落盘（`fast_path_wait_s`，默认 3 秒）。
+  这个顺序不能反：下载可能在附着前就完成，而挑战流程的目录基线是附着后才取的，
+  反过来会把已成功的下载误判为失败。但它**曾经是 20 秒**——对 ScienceDirect 这类必然弹框的
+  出版商，文件永远不会落盘，那 20 秒纯粹是在推迟点框（其后附着还要最多 10 秒找 tab + 固定 2 秒）。
+  未被挑战的 PDF 在启动后 1~2 秒内就落盘，短探测不会有损失
+- ⚠️ `DP_PDF_WAIT` 在 Python 代码里**没有任何使用点**（只有注释和定义），`examples/launch.sh`
+  仍在导出它。PDF 阶段的等待与它无关，排查时别被它误导
 ### profile 生命周期（`chrome_session.prepare_profile_dir`）
 
 - **抓取 profile 永不复用**。每次开浏览器都是「先删再建」，两个实例（正文页的共享实例、
