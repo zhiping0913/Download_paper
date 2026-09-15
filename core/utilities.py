@@ -118,6 +118,13 @@ def fetch_crossref(doi: str) -> dict:
                     result['date_parts'] = date_parts[0]
                     result['year'] = date_parts[0][0] if date_parts[0] else None
 
+            # Keep the untouched API response alongside the parsed subset.
+            # save_crossref_json() writes it out once the paper directory
+            # exists; everything above is a lossy projection of it, and the
+            # fields this project does not read today are exactly the ones a
+            # later question tends to need.
+            result['_raw_response'] = data
+
             if result['title']:
                 print(f"  ✓ Crossref: {result['title'][:50]}... ({result['year'] or 'N/A'})")
 
@@ -241,6 +248,33 @@ def organize_paper_output(output_dir: Path, metadata: dict, s2_data: dict) -> Pa
         import traceback
         traceback.print_exc()
         return output_dir
+
+
+def save_crossref_json(paper_dir: Path, crossref_data: dict) -> Path:
+    """Write the Crossref response to ``<paper_dir>/crossref.json``.
+
+    Saves the raw API payload when fetch_crossref() carried it through
+    (``_raw_response``); falls back to the parsed dict for callers that built
+    the data some other way. Returns the path written, or None when there was
+    nothing to write.
+    """
+    if not crossref_data:
+        return None
+    try:
+        payload = crossref_data.get('_raw_response') or {
+            k: v for k, v in crossref_data.items() if k != '_raw_response'
+        }
+        if not payload:
+            return None
+        paper_dir.mkdir(parents=True, exist_ok=True)
+        json_file = paper_dir / 'crossref.json'
+        with open(json_file, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        print(f"  ✓ Crossref response saved: {json_file.name}")
+        return json_file
+    except Exception as e:
+        print(f"  ⚠️  保存 crossref.json 失败: {e}")
+        return None
 
 
 def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,

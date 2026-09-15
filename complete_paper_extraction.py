@@ -51,6 +51,7 @@ from core import (
     fetch_semanticscholar,
     organize_paper_output,
     save_metadata_json,
+    save_crossref_json,
     block_mathjax,
 )
 from publisher.orchestrator import (
@@ -2497,6 +2498,9 @@ async def complete_extraction_workflow(
         save_metadata_json(paper_output_dir, metadata, crossref_data, doi,
                          downloads['pdf'], downloads['supplemental'],
                          pdf_link=links.get('pdf_url') or '')
+
+        # The Crossref response, verbatim, next to metadata.json.
+        save_crossref_json(paper_output_dir, crossref_data)
 
         # Statistics
         print("\n" + "=" * 80)

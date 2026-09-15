@@ -458,7 +458,8 @@ def convert_to_markdown(self, metadata, article_text, **kwargs) -> str
 6. 调用 `handler.convert_to_markdown()` 生成 Markdown。
 7. 保存 `.md`。
 8. 调用 `save_metadata_json()` 保存元数据 JSON。
-9. 打印统计信息。
+9. 调用 `save_crossref_json()` 保存 Crossref 原始响应为 `crossref.json`。
+10. 打印统计信息。
 
 ## 下载策略
 

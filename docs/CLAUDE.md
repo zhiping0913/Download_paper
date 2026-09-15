@@ -116,6 +116,7 @@ captured_data/
    ├─ paper.md                    # AI 友好的 Markdown 全文
    ├─ paper.pdf                   # 原始 PDF
    ├─ metadata.json               # 完整元数据记录
+   ├─ crossref.json               # Crossref API 原始响应（未裁剪）
    ├─ figure_1.jpg                # 高清图片（可有多张）
    ├─ figure_2.jpg
    ├─ supplemental--Data.zip      # 补充材料（可选）
