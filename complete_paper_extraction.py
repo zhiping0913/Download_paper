@@ -1302,7 +1302,8 @@ def _fresh_chrome_enabled() -> bool:
 
 
 async def _try_fresh_chrome_pdf(pdf_url: str, output_dir: Path,
-                                filename: str) -> Optional[str]:
+                                filename: str,
+                                headless: bool = False) -> Optional[str]:
     """Download *pdf_url* with a throwaway Chrome seeded from the real profile.
 
     Used when the ordinary browser cannot get the file: the shared instance
@@ -1328,6 +1329,7 @@ async def _try_fresh_chrome_pdf(pdf_url: str, output_dir: Path,
             pdf_mode=True,
             download_dir=download_dir,
             timeout_s=int(DP_CLOUDFLARE_TIMEOUT),
+            headless=headless,
         )
         result = session.result or {}
         landed = result.get('downloaded_file')
@@ -1429,7 +1431,8 @@ async def download_pdf(
         # would defeat the point of running headless. The throwaway browser
         # stays available as the fallback for when that fails.
         if force_headed:
-            saved = await _try_fresh_chrome_pdf(pdf_url, output_dir, filename)
+            saved = await _try_fresh_chrome_pdf(pdf_url, output_dir, filename,
+                                                headless=False)
             if saved:
                 return saved
             print("  ↪ 回退 Playwright 导航")
@@ -1576,7 +1579,8 @@ async def download_pdf(
         # Headless could not get it (a challenge, or a viewer that never fires
         # a download event). Now the throwaway Chrome is worth the launch.
         if not force_headed:
-            saved = await _try_fresh_chrome_pdf(pdf_url, output_dir, filename)
+            saved = await _try_fresh_chrome_pdf(pdf_url, output_dir, filename,
+                                                headless=True)
             if saved:
                 return saved
         return None

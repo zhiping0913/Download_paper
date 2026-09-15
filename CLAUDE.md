@@ -192,6 +192,10 @@ python batch_process.py --file dois.txt                     # 批量
   `pdf.sciencedirectassets.com`）不算数
 - **无头**：反过来，先用手头这个无头浏览器下，失败了才起一次性 Chrome ——
   能无头访问到的出版商本来就没在拦我们，每篇都弹一个窗口就失去无头的意义了
+- ⚠️ 一次性 Chrome **跟随本次运行的模式**：无头运行时它也必须无头启动
+  （`headless` 一路传到 `spawn_chrome`，由 `chrome_argv` 加 `--headless=new`）。
+  这条链路早先不传该参数，兜底一触发就弹窗——上面那句「失去无头的意义」是意图，
+  不是当时的实现
 - 补充材料没有独立浏览器路径，一直用传进去的 page/context，所以无头时本来就是无头下载
 - `DP_PDF_FRESH_CHROME=0` 两种模式下都彻底禁用一次性 Chrome
 ### profile 生命周期（`chrome_session.prepare_profile_dir`）
