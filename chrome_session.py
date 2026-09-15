@@ -1687,7 +1687,8 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
                                    download_dir: str = '',
                                    timeout_s: int = 60,
                                    port: Optional[int] = None,
-                                   headless: bool = False
+                                   headless: bool = False,
+                                   fast_path_wait_s: float = 3.0
                                    ) -> FreshChromeSession:
     """Launch a clean Chrome, open *url* in it, and hand back the session.
 
@@ -1712,12 +1713,19 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
     # moments after startup. Returning here means no CDP command ever ran
     # against the page at all.
     #
-    # This also has to come first for correctness: the download starts before
-    # we could attach, so the challenge watcher would take its "baseline" of
-    # the directory *after* the file landed, see nothing new, and report
-    # failure for a download that had already succeeded.
+    # This has to come first for correctness: the download starts before we
+    # could attach, so the challenge watcher would take its "baseline" of the
+    # directory *after* the file landed, see nothing new, and report failure
+    # for a download that had already succeeded.
+    #
+    # It is deliberately short. A publisher that challenges the PDF (as
+    # ScienceDirect does) will never drop a file here, so every second spent
+    # waiting is a second before the Turnstile box is even looked for -- and
+    # the attach that follows costs up to ten more. An unchallenged PDF lands
+    # within a second or two of startup, so a brief probe loses nothing.
     if pdf_mode and download_dir:
-        landed = await _await_download(download_dir, timeout_s=min(20, timeout_s))
+        landed = await _await_download(
+            download_dir, timeout_s=min(fast_path_wait_s, timeout_s))
         if landed:
             print(f"  ✓ PDF 已下载（未经 CDP 交互）: {landed}")
             session.result = {'success': True, 'downloaded_file': landed,
