@@ -1486,10 +1486,15 @@ class FreshChromeSession:
 
     def __init__(self, port: Optional[int] = None,
                  download_dir: str = '',
-                 keep_profile: bool = False):
+                 keep_profile: bool = False,
+                 headless: bool = False):
         self.port = _pick_free_port(port or _default_pdf_port())
         self.download_dir = download_dir
         self.keep_profile = keep_profile
+        # A headless run must not pop a window for every paper. Headed runs
+        # keep the visible browser: that is the whole reason this throwaway
+        # instance exists for them.
+        self.headless = headless
         self.process: Optional[subprocess.Popen] = None
         self.profile_dir: Optional[Path] = None
         self._owns_profile = False
@@ -1528,8 +1533,10 @@ class FreshChromeSession:
             Path(self.download_dir).mkdir(parents=True, exist_ok=True)
 
         flavour = '全新空 profile' if self._started_empty else '真实 profile 副本'
-        print(f"  🌐 启动独立 Chrome (端口 {self.port}, {flavour})...")
+        mode = '无头' if self.headless else '有头'
+        print(f"  🌐 启动独立 Chrome (端口 {self.port}, {mode}, {flavour})...")
         self.process = spawn_chrome(self.profile_dir, self.port,
+                                    headless=self.headless,
                                     start_url=start_url)
         if self.process is None:
             return False
@@ -1647,7 +1654,8 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
                                    pdf_mode: bool = False,
                                    download_dir: str = '',
                                    timeout_s: int = 60,
-                                   port: Optional[int] = None
+                                   port: Optional[int] = None,
+                                   headless: bool = False
                                    ) -> FreshChromeSession:
     """Launch a clean Chrome, open *url* in it, and hand back the session.
 
@@ -1659,7 +1667,8 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
     On launch failure the session comes back with an empty ``result``; the
     caller should fall back to its normal path rather than assume success.
     """
-    session = FreshChromeSession(port=port, download_dir=download_dir)
+    session = FreshChromeSession(port=port, download_dir=download_dir,
+                                 headless=headless)
     # Launch straight at the URL: Chrome's own startup navigation fetches the
     # page, so nothing automated participates in the load. Attaching happens
     # afterwards, only to watch the challenge and click it through.
