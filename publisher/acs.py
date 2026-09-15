@@ -45,7 +45,6 @@ from html_to_md_converter import (
 )
 from publisher.base import PublisherHandler
 from publisher.wildcard import (
-    format_as_bibtex,
     init_extract_all_page,
     render_heading_md,
     set_actual_base_url,

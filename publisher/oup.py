@@ -27,7 +27,6 @@ from html_to_md_converter import (
 )
 from publisher.base import PublisherHandler
 from publisher.wildcard import (
-    format_as_bibtex,
     generate_reference_text_from_crossref,
     init_extract_all_page,
     render_heading_md,
@@ -1260,47 +1259,17 @@ class OupHandler(PublisherHandler):
             for fn in footnotes:
                 md_parts.extend([fn, ''])
 
-        # References — text rendering + BibTeX block per entry.
+        # References — the page's own text, one entry per line.
         text_refs = metadata.get('references', []) or []
-        raw_dois = metadata.get('_ref_dois', []) or []
         crossref_refs = metadata.get('_crossref_references', []) or []
-
-        # Build a DOI → crossref entry index for matching.
-        crossref_by_doi = {}
-        for cr in crossref_refs:
-            doi = (cr.get('DOI') or '').strip().lower()
-            if doi:
-                crossref_by_doi[doi] = cr
 
         if text_refs or crossref_refs:
             md_parts.extend(['---', '', '## References', ''])
 
             if text_refs:
-                # Render each text reference, attaching a matching BibTeX block
-                # built from Crossref data (year + DOI only, per spec).
                 for idx, text in enumerate(text_refs, 1):
                     md_parts.extend([f"[{idx}] {text}", ''])
 
-                    doi = (raw_dois[idx - 1] if idx - 1 < len(raw_dois) else '').strip()
-                    cr = crossref_by_doi.get(doi.lower()) if doi else None
-
-                    if cr or doi:
-                        parts = {}
-                        if cr:
-                            parts['year'] = str(cr.get('year', '')).strip()
-                            parts['doi'] = (cr.get('DOI') or doi).strip()
-                        else:
-                            # Try extracting a year from the text rendering.
-                            year_match = re.search(r'(\b(?:18|19|20)\d{2}\b)', text)
-                            if year_match:
-                                parts['year'] = year_match.group(1)
-                            parts['doi'] = doi
-
-                        parts = {k: v for k, v in parts.items() if v}
-                        if parts:
-                            key = f"bib{idx}"
-                            bibtex = format_as_bibtex(parts, key=key)
-                            md_parts.extend(['```bibtex', bibtex, '```', ''])
             else:
                 # No on-page reference text — fall back to Crossref-only rendering.
                 for idx, cr in enumerate(crossref_refs, 1):
@@ -1309,15 +1278,5 @@ class OupHandler(PublisherHandler):
                         md_parts.extend([f"[{idx}] {unstructured}", ''])
                     else:
                         md_parts.extend([generate_reference_text_from_crossref(cr, index=idx), ''])
-
-                    parts = {
-                        'year': str(cr.get('year', '')).strip(),
-                        'doi': (cr.get('DOI') or '').strip(),
-                    }
-                    parts = {k: v for k, v in parts.items() if v}
-                    if parts:
-                        key = cr.get('key', f"bib{idx}")
-                        bibtex = format_as_bibtex(parts, key=key)
-                        md_parts.extend(['```bibtex', bibtex, '```', ''])
 
         return '\n'.join(md_parts)

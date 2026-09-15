@@ -21,14 +21,10 @@ from publisher.wildcard import (
     convert_html_fragment_to_markdown,
     extract_abstract_with_fallbacks,
     find_generic_article_body,
-    format_as_bibtex,
     format_citation_as_text,
-    generate_bibtex_key,
     init_extract_all_page,
-    parse_citation_reference_string,
     prepare_mathjax_html_fragment,
     set_actual_base_url,
-    format_crossref_references_to_bibtex,
     generate_reference_text_from_crossref,
 )
 
@@ -548,7 +544,7 @@ class NatureHandler(PublisherHandler):
         """Parse references from citation_reference meta tags.
 
         Returns:
-            (bibtex_list, raw_strings_list)
+            (reference_text_list, raw_strings_list)
         """
         print("  🔍 Extracting references...")
 
@@ -572,12 +568,24 @@ class NatureHandler(PublisherHandler):
         return bibtex_refs, raw_refs
 
     def format_citation_reference(self, citation_reference: str) -> str:
-        """Format Nature citation_reference content as a standard BibTeX entry.
+        """Format Nature citation_reference content as readable reference text.
 
-        Delegates to wildcard.parse_citation_reference_string for the shared
-        citation_reference → BibTeX pipeline.
+        The meta content is semi-colon separated ``key=value`` pairs. It used
+        to become a BibTeX entry; the reference list now keeps the citation as
+        prose with its DOI link, which is what the Markdown is read for.
         """
-        return parse_citation_reference_string(citation_reference)
+        parts = {}
+        for segment in (citation_reference or '').split(';'):
+            if '=' not in segment:
+                continue
+            k, v = segment.split('=', 1)
+            k = k.strip()
+            v = re.sub(r'\s+', ' ', v).strip()
+            if k and v:
+                parts[k] = v
+        if not parts:
+            return (citation_reference or '').strip()
+        return format_citation_as_text(parts)
 
     def extract_paragraphs_from_html_content(self, html_content: str) -> List[str]:
         """Extract paragraph, equation, and heading HTML blocks from Nature main-content.
@@ -1599,33 +1607,6 @@ class NatureHandler(PublisherHandler):
                     ref_text = generate_reference_text_from_crossref(ref, index=idx)
                     md_content += ref_text + "\n\n"
 
-                # Generate BibTeX from Crossref data
-                ref_key = ref.get('key', f'ref{idx}')
-
-                # Check for structured fields first
-                parts = {
-                    'author': ref.get('author', ''),
-                    'title': ref.get('article-title', ''),
-                    'journal': ref.get('journal-title', ''),
-                    'volume': ref.get('volume', ''),
-                    'firstpage': ref.get('first-page', ''),
-                    'lastpage': ref.get('last-page', ''),
-                    'year': str(ref.get('year', '')),
-                    'doi': ref.get('DOI', ''),
-                }
-                # Filter empty values but preserve DOI even if empty
-                parts = {k: v for k, v in parts.items() if v or k == 'doi'}
-
-                # If title missing but unstructured text available, use it as title
-                if not parts.get('title') and unstructured:
-                    title_text = re.sub(r'\s+', ' ', unstructured).strip()
-                    if len(title_text) > 200:
-                        title_text = title_text[:200] + '...'
-                    parts['title'] = title_text
-
-                bibtex = format_as_bibtex(parts, key=ref_key)
-                if bibtex:
-                    md_content += f"```bibtex\n{bibtex}\n```\n\n"
         elif metadata.get('references'):
             md_content += "## References\n\n"
             refs_raw = metadata.get('_refs_raw', [])
@@ -1657,9 +1638,6 @@ class NatureHandler(PublisherHandler):
                         md_content += f"[{idx1}] {raw_text}\n\n"
                 else:
                     md_content += f"[{idx1}] {ref}\n\n"
-                # BibTeX block — only for properly formatted entries
-                if ref.strip().startswith('@'):
-                    md_content += f"```bibtex\n{ref}\n```\n\n"
 
         return md_content
 

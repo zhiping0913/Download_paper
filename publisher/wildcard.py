@@ -323,36 +323,6 @@ _STOP_WORDS = {'a', 'an', 'the', 'on', 'in', 'of', 'for', 'to', 'and',
                'with', 'from', 'by', 'at', 'or', 'as', 'is', 'its', 'not'}
 
 
-def generate_bibtex_key(authors: list, year: str, title: str) -> str:
-    """Generate a BibTeX citation key: LastNameYearFirstMeaningfulWord.
-
-    Example: ``Tolenis2025Complex``
-    """
-    last_name = 'Unknown'
-    if authors:
-        first_author = authors[0].strip()
-        if ',' in first_author:
-            last_name = first_author.split(',')[0].strip()
-        else:
-            parts = first_author.split()
-            if parts:
-                last_name = parts[-1]
-        last_name = re.sub(r'[^a-zA-Z]', '', last_name)
-
-    year_str = year or '0000'
-    year_match = re.search(r'(\d{4})', str(year_str))
-    year_str = year_match.group(1) if year_match else '0000'
-
-    title_word = 'Ref'
-    if title:
-        words = [w for w in re.findall(r'[a-zA-Z]+', title)
-                 if w.lower() not in _STOP_WORDS]
-        if words:
-            title_word = words[0].capitalize()
-
-    return f"{last_name}{year_str}{title_word}"
-
-
 def _pick(parts: dict, *keys: str) -> str:
     """Return the first non-empty value from *keys* in *parts*."""
     for k in keys:
@@ -360,51 +330,6 @@ def _pick(parts: dict, *keys: str) -> str:
         if v:
             return v
     return ''
-
-
-def format_as_bibtex(parts: dict, *, key: str = None) -> str:
-    """Convert parsed citation parts into a standard BibTeX entry.
-
-    Args:
-        parts: Dict with keys like ``citation_author``, ``citation_title``,
-            ``citation_journal_title``, ``citation_volume``, ``citation_firstpage``,
-            ``citation_lastpage``, ``citation_publication_date``, ``citation_doi``,
-            ``citation_conference_title``.  Short keys (without ``citation_``
-            prefix) are also accepted as fallbacks.
-        key: Optional pre-computed BibTeX key. If omitted, one is generated
-            from the authors / year / title.
-
-    Returns:
-        Formatted BibTeX string with 2-space indentation.
-    """
-    authors_raw = _pick(parts, 'citation_author', 'author')
-    title = _pick(parts, 'citation_title', 'title')
-    year = _pick(parts, 'citation_publication_date', 'publication_date', 'date', 'year')
-    doi = _pick(parts, 'citation_doi', 'doi')
-
-    # Extract year
-    year_match = re.search(r'(\d{4})', str(year))
-    year_str = year_match.group(1) if year_match else year
-
-    # Generate key if not provided
-    if key is None:
-        author_list = [a.strip() for a in authors_raw.split(';') if a.strip()]
-        key = generate_bibtex_key(author_list, year_str, title)
-
-    # Build BibTeX entry — only title, year, doi
-    lines = [f"@misc{{{key},"]
-    if title:
-        lines.append(f"  title = {{{title}}},")
-    if year_str:
-        if doi:
-            lines.append(f"  year = {{{year_str}}},")
-        else:
-            lines.append(f"  year = {{{year_str}}}")
-    if doi:
-        lines.append(f"  doi = {{{doi}}}")
-    lines.append("}")
-
-    return "\n".join(lines)
 
 
 def format_citation_as_text(parts: dict, *, index: int = None) -> str:
@@ -457,74 +382,6 @@ def format_citation_as_text(parts: dict, *, index: int = None) -> str:
 
     prefix = f"[{index}] " if index is not None else ""
     return f"{prefix}{ref_text}"
-
-def parse_citation_reference_string(ref_str: str, *, bibtex_key: str = None) -> str:
-    """Parse a ``citation_reference`` meta tag value into a BibTeX entry.
-
-    Semi-colon separated ``key=value`` pairs → ``format_as_bibtex``.
-    Falls back to plain text if parsing fails.
-    """
-    parts = {}
-    for segment in ref_str.split(';'):
-        if '=' not in segment:
-            continue
-        k, v = segment.split('=', 1)
-        k = k.strip()
-        v = re.sub(r'\s+', ' ', unescape(v or '')).strip()
-        if k and v:
-            parts[k] = v
-
-    if not parts:
-        return re.sub(r'\s+', ' ', unescape(ref_str or '')).strip()
-
-    return format_as_bibtex(parts, key=bibtex_key)
-
-
-def format_crossref_references_to_bibtex(crossref_data: dict) -> dict:
-    """Convert Crossref API reference data to BibTeX entries.
-
-    Args:
-        crossref_data: Dict from fetch_crossref() containing 'reference' key with list of references
-
-    Returns:
-        Dict mapping Crossref reference key (e.g., '1311_CR1') to BibTeX string
-    """
-    bibtex_dict = {}
-    references = crossref_data.get('reference', [])
-
-    if not references:
-        return bibtex_dict
-
-    for ref in references:
-        if not isinstance(ref, dict):
-            continue
-
-        ref_key = ref.get('key', '')
-        if not ref_key:
-            continue
-
-        # Extract BibTeX fields from Crossref reference
-        parts = {
-            'author': ref.get('author', ''),
-            'title': ref.get('article-title', ''),
-            'journal': ref.get('journal-title', ''),
-            'volume': ref.get('volume', ''),
-            'firstpage': ref.get('first-page', ''),
-            'lastpage': ref.get('last-page', ''),
-            'year': str(ref.get('year', '')),
-            'doi': ref.get('DOI', ''),
-        }
-
-        # Filter out empty values
-        parts = {k: v for k, v in parts.items() if v}
-
-        if parts:
-            # Generate BibTeX key from Crossref key
-            bibtex = format_as_bibtex(parts, key=ref_key)
-            bibtex_dict[ref_key] = bibtex
-
-    return bibtex_dict
-
 
 def generate_reference_text_from_crossref(ref: dict, *, index: int = None) -> str:
     """Generate readable reference text from Crossref reference dict.

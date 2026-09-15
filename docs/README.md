@@ -14,7 +14,7 @@
 - ✅ **补充材料完整** — 自动发现并下载数据集、视频等附件
 - ✅ **高清原图** — 优先获取期刊提供的高分辨率版本
 - ✅ **Markdown 化** — 最终输出 AI 原生友好的 `.md` 文件
-- ✅ **引用可解析** — 视出版商而定：页面本身给出完整引文的（APS、AIP）按原样输出，其余格式化为 BibTeX 代码块
+- ✅ **引用保真** — 参考文献按原网页的写法原样输出，并保留其中的链接（不再生成 BibTeX 代码块）
 
 ### 网络要求
 
@@ -729,9 +729,8 @@ OUP (Oxford University Press) 由 `publisher/oup.py` 的 `OupHandler` 处理。
 |------|------|
 | `find_generic_article_body(soup)` | CSS 选择器级联查找文章正文容器 |
 | `extract_abstract_with_fallbacks(soup)` | 多策略摘要提取 |
-| `generate_bibtex_key(authors, year, title)` | 生成 BibTeX 引用 key |
-| `format_as_bibtex(parts)` | 解析后的引用 dict → `@article{key, ...}` 字符串 |
-| `parse_citation_reference_string(ref_str)` | 解析分号分隔的 `citation_reference` meta 标签 |
+| `format_citation_as_text(parts)` | 解析后的引用 dict → 可读引文文本 |
+| `generate_reference_text_from_crossref(ref)` | Crossref reference 对象 → 可读引文文本 |
 | `prepare_mathjax_html_fragment(html)` | MathJax CHTML → placeholder 折叠 |
 | `convert_html_fragment_to_markdown(html)` | HTML → Markdown + 公式还原 |
 | `convert_mathml(mathml_str)` | MathML → LaTeX（通过 pandoc） |
@@ -773,12 +772,12 @@ python batch_process.py --dois "10.1103/..." "10.1063/..."
 参考文献去查 Crossref / Semantic Scholar —— 那样一篇综述就是几百次请求，且网络抖动
 会决定某条有没有 BibTeX。
 
-各 publisher 由此分两种输出：
+**不再输出 BibTeX 代码块**。这些 Markdown 是给 AI agent 读的，尊重原文的引文写法、
+保留其中的链接即可；重排成 `@article{...}` 既丢信息又增噪声。
 
-- **页面已给出完整引文**（APS、AIP、Springer book 等）：按原样输出 `[n] 引文`。
-- **页面只给裸字符串**（IOP、OUP、Optica、Nature、MDPI、Cambridge、ScienceDirect）：
-  用 `wildcard.generate_reference_text_from_crossref()` 和 `format_as_bibtex()`
-  把 Step 0 那一次响应里的 `references` **离线**格式化成 BibTeX，不产生网络请求。
+各 publisher 统一输出 `[n] 引文原文`。页面本身没有给出引文文本时（部分出版商只在
+meta 里放裸 DOI），用 `wildcard.generate_reference_text_from_crossref()` 从 Step 0
+那一次响应里**离线**生成可读文本，同样不产生网络请求。
 
 `SAVE_WITHOUT_REFERENCES` 配置项（`config.py`）控制参考文献为空时是否仍然保存 Markdown。
 

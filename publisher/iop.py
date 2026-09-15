@@ -22,11 +22,8 @@ from publisher.wildcard import (
     convert_mathml,
     extract_abstract_with_fallbacks,
     find_generic_article_body,
-    format_as_bibtex,
     format_citation_as_text,
-    generate_bibtex_key,
     init_extract_all_page,
-    parse_citation_reference_string,
     prepare_mathjax_html_fragment,
     render_heading_md,
     set_actual_base_url,
@@ -618,7 +615,13 @@ class IOPHandler(PublisherHandler):
 
     @classmethod
     def extract_references_from_html(cls, html_content: str) -> list:
-        """Extract references from citation_reference meta tags and format as BibTeX."""
+        """Reference strings from citation_reference meta tags, as readable text.
+
+        The meta content is semi-colon separated ``key=value`` pairs. It used
+        to be turned into a BibTeX entry; the output now keeps the citation as
+        prose, with the DOI link intact, because that is what a reader — human
+        or agent — actually wants out of a reference list.
+        """
         if not html_content:
             return []
 
@@ -627,10 +630,20 @@ class IOPHandler(PublisherHandler):
 
         for tag in soup.find_all('meta', {'name': 'citation_reference'}):
             ref_str = tag.get('content', '')
-            if ref_str:
-                bibtex = parse_citation_reference_string(ref_str)
-                if bibtex:
-                    references.append(bibtex)
+            if not ref_str:
+                continue
+            parts = {}
+            for segment in ref_str.split(';'):
+                if '=' not in segment:
+                    continue
+                k, v = segment.split('=', 1)
+                k = k.strip()
+                v = re.sub(r'\s+', ' ', v).strip()
+                if k and v:
+                    parts[k] = v
+            text = format_citation_as_text(parts) if parts else ref_str.strip()
+            if text:
+                references.append(text)
 
         return references
 
@@ -1106,23 +1119,6 @@ class IOPHandler(PublisherHandler):
                     md_parts.append(ref_text)
                 md_parts.append("")
 
-                # Generate BibTeX from Crossref data
-                ref_key = ref.get('key', f'ref{idx}')
-                parts = {
-                    'author': ref.get('author', ''),
-                    'title': ref.get('article-title', ''),
-                    'journal': ref.get('journal-title', ''),
-                    'volume': ref.get('volume', ''),
-                    'firstpage': ref.get('first-page', ''),
-                    'lastpage': ref.get('last-page', ''),
-                    'year': str(ref.get('year', '')),
-                    'doi': ref.get('DOI', ''),
-                }
-                # Filter empty values but preserve DOI even if empty
-                parts = {k: v for k, v in parts.items() if v or k == 'doi'}
-                if any(parts.get(k) for k in ['author', 'title', 'journal']):
-                    bibtex = format_as_bibtex(parts, key=ref_key)
-                    md_parts.extend(["```bibtex", bibtex, "```", ""])
             md_parts.append("")
         elif references:
             md_parts.extend([
@@ -1152,8 +1148,6 @@ class IOPHandler(PublisherHandler):
                 else:
                     md_parts.append(f"[{idx1}] {ref}")
                 md_parts.append("")
-                # BibTeX block for this reference
-                md_parts.extend(["```bibtex", ref, "```", ""])
             md_parts.append("")
 
         return "\n".join(md_parts)

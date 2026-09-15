@@ -21,9 +21,7 @@ from core.utilities import fetch_view_source_html
 from publisher.base import PublisherHandler
 from publisher.wildcard import (
     convert_html_fragment_to_markdown,
-    format_as_bibtex,
     format_citation_as_text,
-    generate_bibtex_key,
     generate_reference_text_from_crossref,
     init_extract_all_page,
     render_heading_md,
@@ -182,9 +180,9 @@ class OpticaHandler(PublisherHandler):
                 abstract_md = '\n\n'.join(abs_parts).strip()
                 continue
 
-            # References: render HTML text + BibTeX; do not walk siblings generically
+            # References: render the page's own HTML text; do not walk siblings generically
             if re.search(r'^references?$', h2_id):
-                body_parts.extend(cls._render_references_section(h2, crossref_refs))
+                body_parts.extend(cls._render_references_section(h2))
                 body_parts.append('')
                 continue
 
@@ -315,25 +313,13 @@ class OpticaHandler(PublisherHandler):
         return abstract_md, body_md
 
     @classmethod
-    def _render_references_section(cls, h2_el, crossref_refs=None):
-        """Render the References section with HTML text and optional BibTeX blocks.
+    def _render_references_section(cls, h2_el):
+        """Render the References section: the page's own text, links intact.
 
         Format per reference:
             [N] <full HTML text with author names and Crossref link>
-            ```bibtex
-            @article{key, ...}
-            ```
         """
         parts = ['## References', '']
-
-        # Build index map: 1-based ref number → crossref data
-        bibtex_map = {}
-        if crossref_refs:
-            for ref in crossref_refs:
-                key = ref.get('key', '')
-                m = re.search(r'-R(\d+)$', key)
-                if m:
-                    bibtex_map[int(m.group(1))] = ref
 
         idx = 0
         cur = h2_el.next_sibling
@@ -353,23 +339,6 @@ class OpticaHandler(PublisherHandler):
                     ref_md = cls._convert_paragraph_to_md(ref_html).strip()
                     parts.append(f"[{idx}] {ref_md}")
                     parts.append('')
-                    if idx in bibtex_map:
-                        ref_data = bibtex_map[idx]
-                        bib_parts = {
-                            'author': ref_data.get('author', ''),
-                            'title': ref_data.get('article-title', ''),
-                            'journal': ref_data.get('journal-title', ''),
-                            'volume': ref_data.get('volume', ''),
-                            'firstpage': ref_data.get('first-page', ''),
-                            'year': str(ref_data.get('year', '')),
-                            'doi': ref_data.get('DOI', ''),
-                        }
-                        bib_parts = {k: v for k, v in bib_parts.items() if v}
-                        if any(bib_parts.get(k) for k in ['author', 'title', 'journal']):
-                            bibtex = format_as_bibtex(
-                                bib_parts, key=ref_data.get('key', f'ref{idx}')
-                            )
-                            parts.extend(['```bibtex', bibtex, '```', ''])
             cur = cur.next_sibling
         return parts
 

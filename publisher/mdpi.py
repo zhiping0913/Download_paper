@@ -27,7 +27,6 @@ from html_to_md_converter import (
 )
 from publisher.base import PublisherHandler
 from publisher.wildcard import (
-    format_as_bibtex,
     generate_reference_text_from_crossref,
     init_extract_all_page,
     render_heading_md,
@@ -952,36 +951,14 @@ class MDPIHandler(PublisherHandler):
         else:
             md_parts.extend(['## Article Text', '', '[Article text not found.]', ''])
 
-        # References with BibTeX block per entry that has a DOI.
+        # References: the page's own text, one entry per line.
         text_refs = metadata.get('references', []) or []
-        ref_dois = metadata.get('_ref_dois', []) or []
         crossref_refs = metadata.get('_crossref_references', []) or []
-        crossref_by_doi = {}
-        for cr in crossref_refs:
-            d = (cr.get('DOI') or '').strip().lower()
-            if d:
-                crossref_by_doi[d] = cr
 
         if text_refs:
             md_parts.extend(['---', '', '## References', ''])
             for idx, text in enumerate(text_refs, 1):
                 md_parts.extend([f"[{idx}] {text}", ''])
-                doi = (ref_dois[idx - 1] if idx - 1 < len(ref_dois) else '').strip()
-                cr = crossref_by_doi.get(doi.lower()) if doi else None
-                parts = {}
-                if cr:
-                    parts['year'] = str(cr.get('year', '')).strip()
-                    parts['doi'] = (cr.get('DOI') or doi).strip()
-                elif doi:
-                    year_match = re.search(r'(\b(?:18|19|20)\d{2}\b)', text)
-                    if year_match:
-                        parts['year'] = year_match.group(1)
-                    parts['doi'] = doi
-                parts = {k: v for k, v in parts.items() if v}
-                if parts:
-                    key = f"ref{idx}"
-                    bibtex = format_as_bibtex(parts, key=key)
-                    md_parts.extend(['```bibtex', bibtex, '```', ''])
         elif crossref_refs:
             md_parts.extend(['---', '', '## References', ''])
             for idx, cr in enumerate(crossref_refs, 1):
@@ -989,12 +966,6 @@ class MDPIHandler(PublisherHandler):
                 if not text.startswith('['):
                     text = f"[{idx}] {text}"
                 md_parts.extend([text, ''])
-                doi = (cr.get('DOI') or '').strip()
-                parts = {'year': str(cr.get('year', '')).strip(), 'doi': doi}
-                parts = {k: v for k, v in parts.items() if v}
-                if parts:
-                    bibtex = format_as_bibtex(parts, key=cr.get('key', f"ref{idx}"))
-                    md_parts.extend(['```bibtex', bibtex, '```', ''])
 
         return '\n'.join(md_parts)
 
