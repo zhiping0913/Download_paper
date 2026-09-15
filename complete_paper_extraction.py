@@ -31,6 +31,9 @@ from datetime import datetime
 from urllib.parse import unquote, urljoin, urlparse
 from playwright.async_api import async_playwright
 from chrome_session import (
+    HEADLESS_PROFILE_NAME,
+    prepare_profile_dir,
+    scraping_profile_dir,
     PROFILE_SEED_FILES,
     PROFILE_SEED_ROOT_FILES,
     cleanup_profile_root,
@@ -742,18 +745,36 @@ class SharedBrowserSession:
     async def ensure_headless_context(self, storage_state=None):
         if self.headless_context is not None:
             return self.headless_context
-        launch_kwargs = {"headless": True}
+
+        # A persistent context rather than launch(): the profile directory is
+        # what carries always_open_pdf_externally. Without it real Chrome shows
+        # a PDF in its built-in viewer instead of downloading it, so the
+        # download event never fires and every paper burned a 30s timeout
+        # before falling back to the throwaway browser. Playwright's bundled
+        # Chromium has no PDF viewer, which is why this only appeared once
+        # CHROME_PATH started being honoured here.
+        user_data_dir = scraping_profile_dir(HEADLESS_PROFILE_NAME)
+        prepare_profile_dir(user_data_dir, quiet=True)
+
+        launch_kwargs = {"headless": True, "accept_downloads": True}
         chrome_path = os.environ.get("CHROME_PATH", "").strip()
         if chrome_path:
             launch_kwargs["executable_path"] = chrome_path
-        self.headless_browser = await self.playwright.chromium.launch(**launch_kwargs)
-        kwargs = {"accept_downloads": True}
+        # A persistent context owns the browser; there is no separate object.
+        self.headless_browser = None
+        self.headless_context = await self.playwright.chromium.launch_persistent_context(
+            str(user_data_dir), **launch_kwargs)
+
+        # storage_state is a launch()-only option; a persistent context takes
+        # its cookies afterwards.
         state = self.latest_headed_state or storage_state
-        if state:
-            kwargs["storage_state"] = state
-        self.headless_context = await self.headless_browser.new_context(**kwargs)
-        cookie_count = len((state or {}).get("cookies", []))
-        print(f"  ↔ 共享无头context已创建，载入 {cookie_count} 个cookies")
+        cookies = (state or {}).get("cookies") or []
+        if cookies:
+            try:
+                await self.headless_context.add_cookies(cookies)
+            except Exception as exc:
+                print(f"  ⚠️  无头context载入cookies失败: {str(exc)[:80]}")
+        print(f"  ↔ 共享无头context已创建，载入 {len(cookies)} 个cookies")
         return self.headless_context
 
     async def ensure_headed_context(self):
@@ -2821,15 +2842,28 @@ async def complete_extraction_workflow(
         try:
             async with playwright_scope() as p:
                 storage_state = await load_headless_storage_state(p)
+                headless_owned_context = None
                 if browser_session is not None:
                     headless_browser = None
                     headless_context = await browser_session.ensure_headless_context(storage_state)
                 else:
-                    context_kwargs = {'accept_downloads': True}
-                    if storage_state:
-                        context_kwargs['storage_state'] = storage_state
-                    headless_browser = await p.chromium.launch(headless=True)
-                    headless_context = await headless_browser.new_context(**context_kwargs)
+                    # Same reason as ensure_headless_context: the profile is
+                    # what makes Chrome download a PDF instead of displaying it.
+                    _hl_dir = scraping_profile_dir(HEADLESS_PROFILE_NAME)
+                    prepare_profile_dir(_hl_dir, quiet=True)
+                    _hl_kwargs = {'headless': True, 'accept_downloads': True}
+                    _chrome_path = os.environ.get('CHROME_PATH', '').strip()
+                    if _chrome_path:
+                        _hl_kwargs['executable_path'] = _chrome_path
+                    headless_browser = None
+                    headless_context = await p.chromium.launch_persistent_context(
+                        str(_hl_dir), **_hl_kwargs)
+                    headless_owned_context = headless_context
+                    if storage_state and storage_state.get('cookies'):
+                        try:
+                            await headless_context.add_cookies(storage_state['cookies'])
+                        except Exception:
+                            pass
                 headless_page = await headless_context.new_page()
 
                 # Stop MathJax from running so we keep original \(...\) / <math>
@@ -2959,6 +2993,8 @@ async def complete_extraction_workflow(
                         await headless_page.close()
                         if headless_browser is not None:
                             await headless_browser.close()
+                        if headless_owned_context is not None:
+                            await headless_owned_context.close()
                         return result
 
                 except Exception as e:
@@ -2974,6 +3010,11 @@ async def complete_extraction_workflow(
                     if headless_browser is not None:
                         try:
                             await headless_browser.close()
+                        except:
+                            pass
+                    if headless_owned_context is not None:
+                        try:
+                            await headless_owned_context.close()
                         except:
                             pass
         except Exception as e:
