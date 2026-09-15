@@ -196,6 +196,11 @@ python batch_process.py --file dois.txt                     # 批量
   （`headless` 一路传到 `spawn_chrome`，由 `chrome_argv` 加 `--headless=new`）。
   这条链路早先不传该参数，兜底一触发就弹窗——上面那句「失去无头的意义」是意图，
   不是当时的实现
+- ⚠️ **无头浏览器也要自己的 profile**（`$CHROME_PROFILE_ROOT/headless_dir`，用
+  `launch_persistent_context` 而非 `launch`）。`always_open_pdf_externally` 存在
+  Preferences 里，缺了它**真实 Chrome 会把 PDF 渲染在内置阅读器里**，download 事件
+  永不触发，每篇白等 30 秒再落到兜底。Playwright 自带的 Chromium 没有 PDF 阅读器，
+  导航到 PDF 必然下载——所以这个缺陷在改用 `CHROME_PATH` 之前一直被掩盖着
 - 补充材料没有独立浏览器路径，一直用传进去的 page/context，所以无头时本来就是无头下载
 - `DP_PDF_FRESH_CHROME=0` 两种模式下都彻底禁用一次性 Chrome
 ### profile 生命周期（`chrome_session.prepare_profile_dir`）

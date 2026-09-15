@@ -348,6 +348,10 @@ def sweep_stale_profiles(quiet: bool = False) -> int:
 # opens them.
 MAIN_PROFILE_NAME = 'main_dir'
 PDF_PROFILE_NAME = 'pdf_dir'
+# The headless Playwright browser needs a profile of its own for the same
+# reason the others do: always_open_pdf_externally lives in Preferences, and
+# without it Chrome renders PDFs instead of downloading them.
+HEADLESS_PROFILE_NAME = 'headless_dir'
 
 def _default_profile_root() -> Path:
     """``<tmp>/dp_profiles_xxxxxx``, one per run.
@@ -370,7 +374,7 @@ DEFAULT_PROFILE_ROOT = _default_profile_root()
 
 
 def profile_root() -> Path:
-    """The directory holding ``main_dir`` and ``pdf_dir``."""
+    """The directory holding ``main_dir``, ``pdf_dir`` and ``headless_dir``."""
     raw = (os.environ.get('CHROME_PROFILE_ROOT') or '').strip()
     root = Path(raw).expanduser() if raw else DEFAULT_PROFILE_ROOT
     root.mkdir(parents=True, exist_ok=True)
@@ -465,7 +469,7 @@ def cleanup_profile_root(quiet: bool = False) -> bool:
         target = str(path)
         return any(u == target or u.startswith(target + os.sep) for u in in_use)
 
-    for name in (MAIN_PROFILE_NAME, PDF_PROFILE_NAME):
+    for name in (MAIN_PROFILE_NAME, PDF_PROFILE_NAME, HEADLESS_PROFILE_NAME):
         d = root / name
         if d.exists() and not _held(d):
             shutil.rmtree(d, ignore_errors=True)
