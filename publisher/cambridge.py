@@ -17,7 +17,7 @@ from html_to_md_converter import (
     remove_newlines_in_paragraph,
 )
 from publisher.base import PublisherHandler
-from publisher.wildcard import set_actual_base_url, init_extract_all_page, format_as_bibtex, generate_reference_text_from_crossref, render_heading_md
+from publisher.wildcard import set_actual_base_url, init_extract_all_page, generate_reference_text_from_crossref, render_heading_md
 
 
 class CambridgeHandler(PublisherHandler):
@@ -1317,24 +1317,6 @@ class CambridgeHandler(PublisherHandler):
                     # Generate readable text from Crossref data
                     ref_text = generate_reference_text_from_crossref(ref, index=idx)
                     md_parts.extend([ref_text, ""])
-
-                # Generate BibTeX from Crossref data
-                ref_key = ref.get('key', f'ref{idx}')
-                parts = {
-                    'author': ref.get('author', ''),
-                    'title': ref.get('article-title', ''),
-                    'journal': ref.get('journal-title', ''),
-                    'volume': ref.get('volume', ''),
-                    'firstpage': ref.get('first-page', ''),
-                    'lastpage': ref.get('last-page', ''),
-                    'year': str(ref.get('year', '')),
-                    'doi': ref.get('DOI', ''),
-                }
-                # Filter empty values
-                parts = {k: v for k, v in parts.items() if v}
-                if parts:
-                    bibtex = format_as_bibtex(parts, key=ref_key)
-                    md_parts.extend(["```bibtex", bibtex, "```", ""])
         elif references:
             md_parts.extend([
                 "---",

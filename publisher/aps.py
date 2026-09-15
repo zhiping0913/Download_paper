@@ -15,7 +15,7 @@ from core.network_capture import setup_response_capture
 from html_to_md_converter import cleanup_markdown, convert_html_to_markdown, mathml_to_latex_pandoc, remove_newlines_in_paragraph
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
-from publisher.wildcard import set_actual_base_url, init_extract_all_page, format_as_bibtex, generate_reference_text_from_crossref
+from publisher.wildcard import set_actual_base_url, init_extract_all_page, generate_reference_text_from_crossref
 
 
 # ============================================================================

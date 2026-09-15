@@ -37,8 +37,6 @@ from html_to_md_converter import mathml_to_latex_pandoc
 from publisher.base import PublisherHandler
 from publisher.wildcard import (
     convert_html_fragment_to_markdown,
-    format_as_bibtex,
-    generate_bibtex_key,
     generate_reference_text_from_crossref,
     init_extract_all_page,
     render_heading_md,
@@ -2425,26 +2423,6 @@ class ScienceDirectHandler(PublisherHandler):
                 else:
                     md_parts.append(generate_reference_text_from_crossref(ref, index=idx))
                 md_parts.append("")
-
-                ref_key = ref.get('key') or generate_bibtex_key(
-                    [ref.get('author', '')] if ref.get('author') else [],
-                    str(ref.get('year', '')),
-                    ref.get('article-title', ''),
-                )
-                parts_dict = {
-                    'author': ref.get('author', ''),
-                    'title': ref.get('article-title', ''),
-                    'journal': ref.get('journal-title', ''),
-                    'volume': ref.get('volume', ''),
-                    'firstpage': ref.get('first-page', ''),
-                    'lastpage': ref.get('last-page', ''),
-                    'year': str(ref.get('year', '')),
-                    'doi': ref.get('DOI', ''),
-                }
-                parts_dict = {k: v for k, v in parts_dict.items() if v or k == 'doi'}
-                if any(parts_dict.get(k) for k in ('author', 'title', 'journal')):
-                    bibtex = format_as_bibtex(parts_dict, key=ref_key)
-                    md_parts.extend(["```bibtex", bibtex, "```", ""])
             md_parts.append("")
         elif references:
             md_parts.extend(["---", "", "## References", ""])
