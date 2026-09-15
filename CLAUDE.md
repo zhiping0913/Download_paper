@@ -218,6 +218,14 @@ python batch_process.py --file dois.txt                     # 批量
 
   「有效」= 目录存在**且**含 `CHROME_PROFILE` 那个子目录；路径写错当作没有，
   不会静默产出一个没 cookie 的 profile
+- ⚠️ **光复制 Cookies 文件没用，还要能解密**。Linux 上 cookie 的密钥在系统钥匙环里
+  （`Local State` 里**没有** `os_crypt.encrypted_key`），Chrome 接不到钥匙环就退回
+  basic 密钥，解不开的条目直接丢弃。实测：播种过去的 1712 条只剩 22 条可见，
+  247 条出版商 cookie **一条不剩**——有头无头都一样。加上
+  `--password-store=gnome-libsecret` 后恢复到 1304 条、其中 184 条是出版商的。
+  由 `chrome_password_store_args()` 统一提供：仅 Linux 且有 DBUS 会话时启用
+  （否则 Chrome 可能卡在等钥匙环解锁），取值因机器而异（本机 `kwallet5` 无效），
+  用 `CHROME_PASSWORD_STORE` 覆盖，置空则不加
 - ⚠️ **安全护栏**：目标目录解析成真实 Chrome profile（日常 profile / 播种来源 /
   平台默认路径）时 `prepare_profile_dir` 直接抛 `ValueError`，`launch_chrome` 退回临时目录。
   没有这条，`CHROME_USER_DATA_DIR` 忘了设就会 `rm -rf` 掉用户自己的 Chrome 数据

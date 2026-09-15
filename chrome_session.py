@@ -207,6 +207,33 @@ def write_chrome_preferences(user_data_dir, profile_name: str = '',
         print("  - 下载提示: 关闭")
 
 
+def chrome_password_store_args() -> list:
+    """Chrome's flag for reaching the OS keyring, when that is possible.
+
+    Cookies copied from the real profile are encrypted with a key kept in the
+    keyring -- on Linux ``Local State`` carries no ``os_crypt.encrypted_key``
+    -- so a Chrome that cannot reach it falls back to the "basic" store,
+    fails to decrypt, and drops them silently. Measured on this machine: 1712
+    seeded cookies become 22 visible, and every one of the 247 publisher
+    cookies is lost. Naming the store brings back 1304, 184 of them
+    publishers'.
+
+    Linux only, and only with a session bus to talk to: without one Chrome can
+    block waiting on a keyring that will never unlock. The right value is
+    machine-dependent (kwallet5 yielded nothing here), so
+    ``CHROME_PASSWORD_STORE`` overrides it; set it empty to drop the flag.
+    """
+    override = os.environ.get('CHROME_PASSWORD_STORE')
+    if override is not None:
+        override = override.strip()
+        return [f'--password-store={override}'] if override else []
+    if IS_WINDOWS or sys.platform == 'darwin':
+        return []
+    if not (os.environ.get('DBUS_SESSION_BUS_ADDRESS') or '').strip():
+        return []
+    return ['--password-store=gnome-libsecret']
+
+
 def chrome_argv(user_data_dir, port: int, headless: bool = False,
                 start_url: str = 'about:blank') -> list:
     """Chrome's command line for a scraping instance.
@@ -225,6 +252,7 @@ def chrome_argv(user_data_dir, port: int, headless: bool = False,
         '--no-sandbox',
         '--disable-dev-shm-usage',
     ]
+    args.extend(chrome_password_store_args())
     if headless:
         args.append('--headless=new')
     # The starting URL goes on the command line. For the throwaway browser

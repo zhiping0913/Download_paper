@@ -31,6 +31,7 @@ from datetime import datetime
 from urllib.parse import unquote, urljoin, urlparse
 from playwright.async_api import async_playwright
 from chrome_session import (
+    chrome_password_store_args,
     HEADLESS_PROFILE_NAME,
     prepare_profile_dir,
     scraping_profile_dir,
@@ -756,7 +757,8 @@ class SharedBrowserSession:
         user_data_dir = scraping_profile_dir(HEADLESS_PROFILE_NAME)
         prepare_profile_dir(user_data_dir, quiet=True)
 
-        launch_kwargs = {"headless": True, "accept_downloads": True}
+        launch_kwargs = {"headless": True, "accept_downloads": True,
+                         "args": chrome_password_store_args()}
         chrome_path = os.environ.get("CHROME_PATH", "").strip()
         if chrome_path:
             launch_kwargs["executable_path"] = chrome_path
@@ -2851,7 +2853,8 @@ async def complete_extraction_workflow(
                     # what makes Chrome download a PDF instead of displaying it.
                     _hl_dir = scraping_profile_dir(HEADLESS_PROFILE_NAME)
                     prepare_profile_dir(_hl_dir, quiet=True)
-                    _hl_kwargs = {'headless': True, 'accept_downloads': True}
+                    _hl_kwargs = {'headless': True, 'accept_downloads': True,
+                                  'args': chrome_password_store_args()}
                     _chrome_path = os.environ.get('CHROME_PATH', '').strip()
                     if _chrome_path:
                         _hl_kwargs['executable_path'] = _chrome_path
