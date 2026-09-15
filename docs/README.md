@@ -769,13 +769,16 @@ python batch_process.py --dois "10.1103/..." "10.1063/..."
 
 ## 参考文献格式化
 
-`core/utilities.py` 中的 `format_references_as_bibtex(references)` 将参考文献列表转为 BibTeX 代码块：
+**每篇文章只访问一次 Crossref**（Step 0），响应原样存为 `crossref.json`。不再逐条
+参考文献去查 Crossref / Semantic Scholar —— 那样一篇综述就是几百次请求，且网络抖动
+会决定某条有没有 BibTeX。
 
-1. 对每条参考文献尝试提取 DOI
-2. 通过 `fetch_semanticscholar()` 查询 Semantic Scholar 获取结构化元数据
-3. 构建 `@article{key, author={...}, title={...}, ...}` 条目
-4. Fallback 到 `wildcard.parse_citation_reference_string()` 解析
-5. 所有条目包裹在 ` ```bibtex ` 代码块中
+各 publisher 由此分两种输出：
+
+- **页面已给出完整引文**（APS、AIP、Springer book 等）：按原样输出 `[n] 引文`。
+- **页面只给裸字符串**（IOP、OUP、Optica、Nature、MDPI、Cambridge、ScienceDirect）：
+  用 `wildcard.generate_reference_text_from_crossref()` 和 `format_as_bibtex()`
+  把 Step 0 那一次响应里的 `references` **离线**格式化成 BibTeX，不产生网络请求。
 
 `SAVE_WITHOUT_REFERENCES` 配置项（`config.py`）控制参考文献为空时是否仍然保存 Markdown。
 
