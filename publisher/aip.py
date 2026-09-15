@@ -541,6 +541,12 @@ class AIPHandler(PublisherHandler):
             'h5': '######', 'h6': '######',
         }
 
+        # Sections emitted elsewhere in the markdown, so the body walk must
+        # not render them a second time. References are the whole list here:
+        # they come out of metadata['references'] as their own "## References"
+        # section.
+        _SKIP_HEADINGS = {'references'}
+
         seen_content_ids = set()
         article_nodes = soup.find_all(
             lambda tag: (
@@ -578,6 +584,10 @@ class AIPHandler(PublisherHandler):
                 heading = re.sub(r'\s+', ' ', heading or '').strip()
                 if not heading:
                     continue
+                label = (node.get('data-section-title')
+                         or node.get_text(' ', strip=True) or '')
+                if label.strip().lower().rstrip('.') in _SKIP_HEADINGS:
+                    continue
                 body_parts.extend([f"{_HEADING_LEVELS[node.name]} {heading}", ""])
                 continue
 
@@ -593,6 +603,16 @@ class AIPHandler(PublisherHandler):
                     paragraph_md = cls._convert_aip_html_fragment_to_markdown(str(paragraph))
                     if paragraph_md:
                         abstract_parts.append(paragraph_md)
+                continue
+
+            # The reference list already has its own "## References" section,
+            # built from metadata['references']. Rendering the same wrapper
+            # here produced a second, malformed REFERENCES block inside
+            # Article Text. Match on mixed-citation — the marker
+            # extract_references_from_html() keys on — rather than on the
+            # heading text, so the wording and case of the heading cannot
+            # break it.
+            if node.find('div', class_='mixed-citation'):
                 continue
 
             # Walk direct children in document order so a section that mixes
