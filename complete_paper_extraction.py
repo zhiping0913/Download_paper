@@ -1358,10 +1358,14 @@ def _fresh_chrome_enabled() -> bool:
             not in ('0', 'false', 'no', 'off')) and _CF_BYPASS_AVAILABLE
 
 
-async def _try_fresh_chrome_pdf(pdf_url: str, output_dir: Path,
-                                filename: str,
-                                headless: bool = False) -> Optional[str]:
+async def _try_fresh_chrome_download(pdf_url: str, output_dir: Path,
+                                     filename: str,
+                                     headless: bool = False) -> Optional[str]:
     """Download *pdf_url* with a throwaway Chrome seeded from the real profile.
+
+    The bottom rung of the fetch ladder, and not PDF-specific despite the
+    parameter's name: it watches a download directory, so a figure or a
+    supplemental file arrives the same way.
 
     Used when the ordinary browser cannot get the file: the shared instance
     has been driven by Playwright since the article loaded and carries that
@@ -1510,8 +1514,8 @@ async def download_pdf(
                 return filename
 
         if ladder and ladder[0] == 'fresh':
-            saved = await _try_fresh_chrome_pdf(pdf_url, output_dir, filename,
-                                                headless=not force_headed)
+            saved = await _try_fresh_chrome_download(
+                pdf_url, output_dir, filename, headless=not force_headed)
             if saved:
                 return saved
             print("  ↪ 回退 Playwright 导航")
@@ -1680,8 +1684,8 @@ async def download_pdf(
         # download event). When 'fresh' sits below 'tab' in the ladder, the
         # throwaway Chrome is now worth the launch.
         if 'fresh' in ladder and ladder.index('fresh') > ladder.index('tab'):
-            saved = await _try_fresh_chrome_pdf(pdf_url, output_dir, filename,
-                                                headless=not force_headed)
+            saved = await _try_fresh_chrome_download(
+                pdf_url, output_dir, filename, headless=not force_headed)
             if saved:
                 return saved
         return None
@@ -1754,6 +1758,10 @@ async def download_supplemental_materials(
 
         for retry_attempt in range(max_retries_supp):
             success = False
+            # The tab rung below marks this attempt successful even when it
+            # captured nothing, so "did this link actually produce a file?"
+            # has to be answered by the counter, not by a failure branch.
+            count_before = downloaded_count
             try:
                 url = link if isinstance(link, str) else link.get('url', link.get('href', ''))
                 if not url:
@@ -2100,6 +2108,27 @@ async def download_supplemental_materials(
                 if download_page is not page:
                     await download_page.close()
 
+                # Last rung: a Chrome that has never been automated. Science
+                # gates its supplemental host behind the same Cloudflare check
+                # as the article, and by the time we get here the shared
+                # browser has been driven by Playwright long enough to be
+                # refused. Keyed off the counter because the tab path above
+                # reports success either way.
+                if downloaded_count == count_before and 'fresh' in supp_ladder:
+                    fresh_saved = await _try_fresh_chrome_download(
+                        url, output_path.parent, output_path.name,
+                        headless=not force_headed)
+                    if fresh_saved:
+                        output_path = _detect_and_rename(
+                            output_path.parent / fresh_saved)
+                        file_size_mb = output_path.stat().st_size / (1024 * 1024)
+                        print(f"    ✓ 已保存: {output_path.name} "
+                              f"({file_size_mb:.2f} MB) [一次性 Chrome]")
+                        downloaded_count += 1
+                        saved_name = _rel_saved_name(output_path)
+                        downloaded_descriptions[saved_name] = (
+                            desc_value if desc_value else chapter_title)
+
                 success = True  # 标记成功
                 break  # 跳出重试循环
 
@@ -2334,7 +2363,10 @@ def _http_download_to(url: str, dest: Path, referer: str = None,
 
 
 async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, context=None, force_headed: bool = False) -> str:
-    """下载高分辨率图片：先直接 HTTP 请求，拿不到再走浏览器。"""
+    """下载高分辨率图片：按取数阶梯 request → tab → fresh 依次尝试。"""
+    # Resolved before the try: the last rung runs after the except/finally, so
+    # an exception raised before this point must not leave it undefined.
+    fig_ladder = _fetch_ladder('figure')
     try:
         if not fig_url:
             return None
@@ -2343,7 +2375,6 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
 
         print(f"  📥 下载 Figure {fig_num}: {fig_url}")
 
-        fig_ladder = _fetch_ladder('figure')
         try:
             referer = page.url if page is not None else None
         except Exception:
@@ -2434,6 +2465,17 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
                 await download_page.close()
         except:
             pass
+
+    # Last rung: a Chrome that has never been automated. Some publishers put
+    # the figure host behind the same challenge as the article, and by now the
+    # shared browser has been driven by Playwright long enough to be refused.
+    if 'fresh' in fig_ladder and fig_url:
+        fresh_name = original_image_filename(fig_url, fig_num)
+        saved = await _try_fresh_chrome_download(
+            fig_url, output_dir, fresh_name, headless=not force_headed)
+        if saved:
+            print(f"    ✓ 保存: {saved} [一次性 Chrome]")
+            return saved
 
     return None
 
