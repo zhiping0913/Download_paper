@@ -41,6 +41,13 @@ python batch_process.py --file dois.txt                     # 批量
   元数据**全部取自 Step 0 那一次 Crossref 响应**（目录名要的 title/year 就在里面），
   只为取文件起**一次**浏览器。有头时就是那个一次性 Chrome（profile 照常播种），
   无头时是 `_download_all_resources` 自建的那个
+- 有头/无头**两层都按同一个 Crossref 出版商闸门**判：`_crossref_headless_publisher()`
+  把 `crossref_data['publisher']` 按词边界匹配 `HEADLESS_ACCESSIBLE_PUBLISHERS` ——
+  主流程用它决定要不要 Phase 0，第二层用它决定直接上有头还是无头。不在表里的
+  （ScienceDirect、SPIE、IOP、APS…）PDF 域名多半要点验证框，直接给有头；
+  `--force-headed` 无条件优先。判定只读 Step 0 已拿到的响应，不额外发请求
+- ⚠️ **词边界不能省**：`oup` 会在 "Optica Publishing **Group**" 里误命中，
+  把 Optica 的文章错判成可无头直连
 - ⚠️ 两层都**以 PDF 为准**：PDF 没下来就返回 None（批次记为失败）。但 `metadata.json`
   照常落盘且记着 `pdf_link`，可以据此重试
 - `--force-headed`、`FRESH_PROFILE`、`BATCH_SLEEP`、各种 `DP_*` 超时全部照旧 ——
