@@ -176,7 +176,14 @@ python batch_process.py --file dois.txt                     # 批量
   一跑连 annotation 带 MathML 一起换掉 —— 所以必须用源码。没有 annotation 时
   退回 MathML→LaTeX
 - PDF **不是** `citation_pdf_url`（那是阅读器），要用
-  `/doi/pdfdirect/{doi}?download=true`
+  `/doi/pdfdirect/...?download=true`
+- ⚠️ 这个链接必须**基于最终落地 URL 构造，不能拿原始 DOI 拼**：Wiley 会把部分 DOI
+  重定向到**另一个 DOI**（`10.1002/andp.200910370` 落到
+  `/doi/10.1002/andp.200952110-1106`），用原始 DOI 拼 pdfdirect 直接 404。
+  `_pdfdirect_from_landing()` 取落地 URL 的路径，把 `/doi/` 后面的视图段
+  （`full`/`abs`/`epdf`/`pdf`）换成 `pdfdirect` 再加 `?download=true`；
+  落地 URL 不可用时才退回 DOI 拼接。落地 URL 在 `extract_all` 开头就钉住
+  （`self._landing_url`），因为 handler 后面可能自己导航
 - 表格有 `rowspan`（Table 2 的数据集列 rowspan=4）。按位置读单元格会让后续每行
   整体左移，表格看着正常但数值全串到错误的列 —— 必须按网格放置
 - `div.article-section__table-footnotes` 是表下的 `Note:`，要跟着表格走

@@ -23,15 +23,18 @@ annotation is missing, the MathML itself is converted, so a formula is never
 dropped.
 
 The PDF is not the ``citation_pdf_url`` meta value (``/doi/pdf/{doi}``, a
-viewer page) but ``/doi/pdfdirect/{doi}?download=true``, which serves the
-file itself.
+viewer page) but ``/doi/pdfdirect/...?download=true``, which serves the file
+itself -- built from the URL the article actually landed on, not from the DOI
+we started with. Wiley redirects some DOIs to a *different* one
+(10.1002/andp.200910370 lands on ``/doi/10.1002/andp.200952110-1106``), and
+pdfdirect under the original DOI is a 404.
 """
 
 from __future__ import annotations
 
 import re
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlsplit
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 
@@ -889,12 +892,60 @@ class WileyHandler(PublisherHandler):
     # Contract
     # ==================================================================
 
+    # Wiley serves one article under several view paths (/doi/, /doi/full/,
+    # /doi/abs/, /doi/epdf/, /doi/pdf/). pdfdirect replaces whichever of them
+    # the redirect happened to land on. A DOI starts with "10.", so it can
+    # never be mistaken for one of the view segments.
+    _DOI_PATH_RE = re.compile(
+        r'^(?P<prefix>.*?)/doi/(?:(?P<view>full|abs|epdf|pdf|pdfdirect)/)?(?P<rest>.+?)/?$'
+    )
+
+    @classmethod
+    def _pdfdirect_from_landing(cls, landed_url: str) -> Optional[str]:
+        """Build the pdfdirect download URL from the URL the article landed on.
+
+        Returns None when *landed_url* is not a Wiley-shaped article URL, so
+        the caller can fall back to constructing one from the DOI.
+        """
+        if not landed_url:
+            return None
+        try:
+            # urlsplit, not urlparse: urlparse pulls everything after a ";" in
+            # the last path segment into .params, which silently truncates the
+            # old SICI-style DOIs Annalen der Physik uses --
+            # 10.1002/(SICI)...3.0.CO;2-9 loses its ";2-9" and 404s.
+            parsed = urlsplit(landed_url)
+        except Exception:
+            return None
+        if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+            return None
+        matched = cls._DOI_PATH_RE.match(parsed.path or '')
+        if not matched:
+            return None
+        rest = matched.group('rest')
+        if not rest:
+            return None
+        return (f"{parsed.scheme}://{parsed.netloc}{matched.group('prefix')}"
+                f"/doi/pdfdirect/{rest}?download=true")
+
     async def get_pdf_url(self, doi: str = None) -> Optional[str]:
         """The direct-download PDF URL.
 
         ``citation_pdf_url`` advertises ``/doi/pdf/{doi}``, which is the
-        viewer; ``/doi/pdfdirect/{doi}?download=true`` serves the file.
+        viewer; ``/doi/pdfdirect/...?download=true`` serves the file.
+
+        Built from the *landed* URL rather than from the DOI we started with:
+        Wiley redirects some DOIs to a different one -- 10.1002/andp.200910370
+        lands on ``/doi/10.1002/andp.200952110-1106`` -- and pdfdirect under
+        the original DOI 404s. Falls back to the DOI form when no usable
+        landing URL is available (extract_all handed no page, say).
         """
+        from_landing = self._pdfdirect_from_landing(
+            (getattr(self, '_landing_url', '') or '').strip()
+        )
+        if from_landing:
+            return from_landing
+
         doi = (doi or self.doi or '').strip()
         if not doi:
             return None
@@ -953,6 +1004,20 @@ class WileyHandler(PublisherHandler):
         )
         doi = self.doi
         set_actual_base_url(self, page)
+
+        # Pin the URL the article actually landed on, before anything below can
+        # navigate: Wiley redirects some DOIs to a different one, and the PDF
+        # exists only under the DOI in that final URL (see get_pdf_url).
+        # process_with_handler already pins this when it owns the page, so keep
+        # its value and only fill in the gap when extract_all ran standalone
+        # (init_extract_all_page did the doi.org navigation itself).
+        if not (getattr(self, '_landing_url', '') or '').strip():
+            try:
+                landed = page.url or ''
+                if landed and not landed.startswith('about:'):
+                    self._landing_url = landed
+            except Exception:
+                pass
 
         try:
             try:
