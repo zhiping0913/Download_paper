@@ -203,6 +203,13 @@ python batch_process.py --file dois.txt                     # 批量
   导航到 PDF 必然下载——所以这个缺陷在改用 `CHROME_PATH` 之前一直被掩盖着
 - 补充材料没有独立浏览器路径，一直用传进去的 page/context，所以无头时本来就是无头下载
 - `DP_PDF_FRESH_CHROME=0` 两种模式下都彻底禁用一次性 Chrome
+- ⚠️ **下载目录的基线必须是空的**。一次性 Chrome 的下载目录由 `mkdtemp` 每次新建，
+  里面出现的任何文件都属于本次下载。`bypass_cloudflare_cdp` 曾用 `os.listdir` 给
+  `_dl_baseline` 播种，于是「在附着期间就落盘」的文件被当成已存在、永远不算新文件，
+  循环空等到 `DP_CLOUDFLARE_TIMEOUT` 耗尽（launch.sh 下是 600 秒）才由收尾的 5 秒
+  兜底捡回来。Optica 这类**现场渲染几秒**的出版商每次都踩：实测 PDF 阶段
+  **128 秒 → 6 秒**，且改为循环首轮正常检出；ScienceDirect 不受影响（点框仍 +11 秒、
+  完成 +16 秒）
 - ⚠️ **一次性 Chrome 的「快路径探测」必须短**。`open_url_in_fresh_chrome` 在启动浏览器后、
   附着 CDP 点验证框**之前**，先等一小段看 PDF 会不会自己落盘（`fast_path_wait_s`，默认 3 秒）。
   这个顺序不能反：下载可能在附着前就完成，而挑战流程的目录基线是附着后才取的，

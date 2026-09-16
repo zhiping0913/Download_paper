@@ -1102,7 +1102,17 @@ async def bypass_cloudflare_cdp(
             if pdf_mode and download_dir:
                 try:
                     if os.path.isdir(download_dir):
-                        _dl_baseline = set(os.listdir(download_dir))
+                        # Deliberately NOT seeded with what is already
+                        # there. The directory is created empty for each
+                        # attempt, so a file present now is this very
+                        # download -- it landed while we were attaching.
+                        # Counting it as "pre-existing" made the loop wait
+                        # for a new file that could never appear, burning
+                        # the entire timeout (600s under launch.sh) on a
+                        # PDF that was already on disk. Optica, which
+                        # renders the file in a few seconds, hit this
+                        # every time.
+                        _dl_baseline = set()
                         print(f"  📁 监控下载目录: {download_dir} (基线 {len(_dl_baseline)} 文件)")
                 except Exception as _e:
                     print(f"  ⚠️  下载目录初始化异常: {_e}")
