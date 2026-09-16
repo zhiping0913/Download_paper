@@ -166,7 +166,10 @@ complete_extraction_workflow(doi, output_file=None, force_headed=False,
 网页常常没有正文，此时只要 PDF。`pdf_only=True` 时主流程照常访问论文页面拿到 PDF
 链接并下载，但跳过图片/补充材料下载和 Markdown 生成；`pdf_link` 更进一步，连论文
 页面都不访问 —— 跳过 Phase 0 预检和 `doi.org/{doi}`，元数据全部取自 Step 0 的
-Crossref 响应，只为取文件起一次浏览器。两种情况都照常写 `metadata.json` 和
+Crossref 响应，只为取文件起一次浏览器。两层的有头/无头都由同一个 Crossref 出版商
+闸门决定（`_crossref_headless_publisher()`，主流程判 Phase 0 用的也是它）：不在
+`HEADLESS_ACCESSIBLE_PUBLISHERS` 里的出版商直接用有头一次性 Chrome，`--force-headed`
+无条件优先。两种情况都照常写 `metadata.json` 和
 `crossref.json`；PDF 未下成则返回 `None`（批次记为失败），但 `metadata.json` 里
 记着 `pdf_link`，可据此重试。
 

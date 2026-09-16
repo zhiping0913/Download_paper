@@ -193,6 +193,27 @@ HEADLESS_ACCESSIBLE_PUBLISHERS = [
     'acs'
     ]
 
+
+def _crossref_headless_publisher(crossref_data: dict):
+    """Return the HEADLESS_ACCESSIBLE_PUBLISHERS entry Crossref's publisher matches.
+
+    Word-boundary matching, so a short key like 'oup' does not match inside an
+    unrelated word like 'group' (e.g. "Optica Publishing Group").
+
+    None means unknown or not in the list -- i.e. this publisher needs a headed
+    browser. Both the Phase 0 decision and the pdf_link direct download consult
+    this, so the two cannot drift apart.
+    """
+    crossref_publisher = (crossref_data.get('publisher') or '').lower()
+    if not crossref_publisher:
+        return None
+    for publisher_name in HEADLESS_ACCESSIBLE_PUBLISHERS:
+        pattern = r'\b' + re.escape(publisher_name.lower()) + r'\b'
+        if re.search(pattern, crossref_publisher):
+            return publisher_name
+    return None
+
+
 # Crossref `type` values that indicate the DOI belongs to a book or one of
 # its chapters. When we see one of these on an OUP DOI, route to the book
 # handler so the whole book gets aggregated rather than just one chapter.
@@ -2308,6 +2329,12 @@ async def _pdf_link_direct_download(
     output needs -- the title and year that name the directory, the authors,
     the journal -- comes from the Crossref response fetched in Step 0, and a
     single browser is started, to fetch the file.
+
+    Headed or headless is decided by the same Crossref publisher gate the main
+    flow uses for Phase 0 (``_crossref_headless_publisher``): a publisher that
+    is not on the headless list serves its PDF from a host that usually wants a
+    challenge clicked, so it gets the throwaway headed Chrome -- still a single
+    browser. An explicit ``force_headed`` from the command line wins outright.
     """
     print("\n⚡ pdf_link 直连模式：跳过预检与 doi.org，直接下载 PDF")
     print("=" * 80)
@@ -2333,6 +2360,22 @@ async def _pdf_link_direct_download(
 
     output_path.mkdir(parents=True, exist_ok=True)
     paper_output_dir = organize_paper_output(output_path, metadata, crossref_data)
+
+    # 同一个 Crossref 出版商闸门：主流程用它决定要不要 Phase 0，这里用它决定有头
+    # 还是无头 —— 两处共用 _crossref_headless_publisher()，不会各自走偏。不在无头
+    # 直连表里的（ScienceDirect、SPIE、IOP、APS…）PDF 域名多半要点验证框，跟正常
+    # 流程一样直接上有头。判定用的 Crossref 响应 Step 0 已经拿到，不额外发请求；
+    # 有头这条走一次性 Chrome，依然只起一个浏览器。
+    if not force_headed:
+        matched_publisher = _crossref_headless_publisher(crossref_data)
+        publisher_label = crossref_data.get('publisher') or 'N/A'
+        if matched_publisher:
+            print(f"  ✓ Crossref publisher '{publisher_label}' 属于 "
+                  f"{matched_publisher.upper()} → 无头下载")
+        else:
+            force_headed = True
+            print(f"  ⊘ Crossref publisher '{publisher_label}' 不在无头直连列表中 "
+                  f"→ 改用有头一次性 Chrome")
 
     downloads = await _download_all_resources(
         None,                     # 没有论文页面，这条路径也不需要
@@ -2955,19 +2998,12 @@ async def complete_extraction_workflow(
     should_use_headless_phase0 = False
     if not force_headed:
         crossref_publisher = crossref_data.get('publisher', '').lower()
-        if crossref_publisher:
-            # Check if Crossref publisher contains any HEADLESS_ACCESSIBLE_PUBLISHERS.
-            # Use word-boundary matching so short keys like 'oup' don't match
-            # inside unrelated words like 'group' (e.g. "Optica Publishing Group").
-            for publisher_name in HEADLESS_ACCESSIBLE_PUBLISHERS:
-                pattern = r'\b' + re.escape(publisher_name.lower()) + r'\b'
-                if re.search(pattern, crossref_publisher):
-                    should_use_headless_phase0 = True
-                    print(f"✓ 根据Crossref publisher '{crossref_publisher}' 判断出版商为 {publisher_name.upper()}")
-                    print(f"  → 将使用Phase 0进行无头浏览器预检\n")
-                    break
-
-        if not should_use_headless_phase0:
+        matched_publisher = _crossref_headless_publisher(crossref_data)
+        if matched_publisher:
+            should_use_headless_phase0 = True
+            print(f"✓ 根据Crossref publisher '{crossref_publisher}' 判断出版商为 {matched_publisher.upper()}")
+            print(f"  → 将使用Phase 0进行无头浏览器预检\n")
+        else:
             print(f"⊘ Crossref publisher '{crossref_publisher}' 不在无头直连列表中")
             print(f"  → 跳过Phase 0，直接使用有头浏览器\n")
 
