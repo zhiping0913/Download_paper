@@ -1488,12 +1488,37 @@ async def download_pdf(
         # fetch the PDF -- and launching a windowed Chrome for every paper
         # would defeat the point of running headless. The throwaway browser
         # stays available as the fallback for when that fails.
-        if force_headed:
+        # 取数阶梯。pdf 这一类的**默认**顺序仍随有头/无头而定，理由见上面那段
+        # 注释：有头时先起一次性 Chrome 是有实测支撑的。显式设了 DP_FETCH_PDF
+        # 或 DP_FETCH_ORDER 就完全以它为准。
+        ladder = _fetch_ladder(
+            'pdf', default=('fresh', 'tab') if force_headed else ('tab', 'fresh'))
+
+        try:
+            pdf_referer = page.url if page is not None else None
+        except Exception:
+            pdf_referer = None
+
+        if ladder and ladder[0] == 'request':
+            cookies = await _cookies_for_requests(pdf_url, context=context,
+                                                  page=page)
+            if await asyncio.to_thread(
+                    _http_download_to, pdf_url, output_dir / filename,
+                    pdf_referer, DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT, False,
+                    cookies):
+                print(f"    ✓ 保存: {filename} [直接下载]")
+                return filename
+
+        if ladder and ladder[0] == 'fresh':
             saved = await _try_fresh_chrome_pdf(pdf_url, output_dir, filename,
-                                                headless=False)
+                                                headless=not force_headed)
             if saved:
                 return saved
             print("  ↪ 回退 Playwright 导航")
+
+        if 'tab' not in ladder:
+            print("    ⚠️  阶梯里没有浏览器标签页这一层，不再尝试")
+            return None
 
         # pdf_link 直连模式下没有浏览器可以回退 —— 整条流程只起那一个一次性
         # Chrome。如实说明失败原因，而不是拿 None 去取 .context 崩一个
@@ -1651,11 +1676,12 @@ async def download_pdf(
             return filename
 
         print(f"    ⚠️  未成功下载PDF")
-        # Headless could not get it (a challenge, or a viewer that never fires
-        # a download event). Now the throwaway Chrome is worth the launch.
-        if not force_headed:
+        # The tab could not get it (a challenge, or a viewer that never fires a
+        # download event). When 'fresh' sits below 'tab' in the ladder, the
+        # throwaway Chrome is now worth the launch.
+        if 'fresh' in ladder and ladder.index('fresh') > ladder.index('tab'):
             saved = await _try_fresh_chrome_pdf(pdf_url, output_dir, filename,
-                                                headless=True)
+                                                headless=not force_headed)
             if saved:
                 return saved
         return None
@@ -1828,13 +1854,17 @@ async def download_supplemental_materials(
                 # to disk and has no such limit.
                 DIRECT_FETCH_MAX_BYTES = 80 * 1024 * 1024  # 80 MB
 
-                # First: a plain request, no browser at all. Most publishers
-                # serve supplements from a CDN that needs nothing more than a
-                # browser-like User-Agent and the article as Referer.
-                if DP_HTTP_FIRST:
+                # First rung: a plain request, no browser at all, carrying the
+                # article session's cookies. Most publishers serve supplements
+                # from a CDN that needs nothing more than a browser-like
+                # User-Agent and the article as Referer.
+                supp_ladder = _fetch_ladder('supplement')
+                if 'request' in supp_ladder:
+                    supp_cookies = await _cookies_for_requests(
+                        url, context=context, page=page)
                     if await asyncio.to_thread(
                             _http_download_to, url, output_path, article_url,
-                            DP_SUPPLEMENTAL_TIMEOUT, False):
+                            DP_SUPPLEMENTAL_TIMEOUT, False, supp_cookies):
                         output_path = _detect_and_rename(output_path)
                         file_size_mb = output_path.stat().st_size / (1024 * 1024)
                         print(f"    ✓ 已保存: {output_path.name} ({file_size_mb:.2f} MB) [直接下载]")
@@ -2147,6 +2177,98 @@ DP_HTTP_FIRST = os.environ.get('DP_HTTP_FIRST', '1').strip().lower() not in (
     '0', 'false', 'no', 'off')
 
 
+# ----------------------------------------------------------------------------
+# The fallback ladder
+# ----------------------------------------------------------------------------
+# One order for every kind of fetch -- API pages, the PDF, figures,
+# supplemental files:
+#
+#   request  plain HTTP carrying the article session's cookies
+#   tab      a new tab in the browser already holding the article
+#   fresh    a throwaway Chrome seeded from the real profile
+#
+# Each kind names the tier it *starts* at; a failure falls through to the ones
+# below it. The default is 'tab' because the tier above it is not yet proven:
+# cookies alone do not get past a host that is actively challenging (see
+# _cookies_for_requests). Publishers that hand a human a button to click --
+# IOP's /data page, Science's supplements -- are why 'fresh' exists at the
+# bottom: by the time they are reached the shared browser has been driven by
+# automation for a while, and a profile that has never been automated gets
+# through where it does not.
+_FETCH_TIERS = ('request', 'tab', 'fresh')
+_FETCH_KINDS = ('api', 'pdf', 'figure', 'supplement')
+
+
+def _fetch_ladder(kind: str, default: tuple = ('tab', 'fresh')) -> tuple:
+    """Tiers to try for *kind*, in order.
+
+    ``DP_FETCH_<KIND>`` overrides ``DP_FETCH_ORDER`` overrides *default*. An
+    unrecognised value is ignored rather than fatal -- a typo in a launch
+    script should not stop a download.
+
+    A configured value truncates: ``DP_FETCH_PDF=fresh`` means *only* the
+    throwaway Chrome, which is what someone naming a tier explicitly wants.
+    *default* is a full order instead, so a caller can express a preference
+    that is not a prefix of request/tab/fresh -- a headed PDF wants
+    ('fresh', 'tab'), and truncation could not say that.
+    """
+    start = (os.environ.get(f'DP_FETCH_{kind.upper()}')
+             or os.environ.get('DP_FETCH_ORDER')
+             or '').strip().lower()
+    if start in _FETCH_TIERS:
+        # DP_HTTP_FIRST=0 predates this and says exactly "skip the plain
+        # request".
+        if start == 'request' and not DP_HTTP_FIRST:
+            start = 'tab'
+        tiers = _FETCH_TIERS[_FETCH_TIERS.index(start):]
+    else:
+        tiers = tuple(default)
+    # DP_PDF_FRESH_CHROME=0 disables the throwaway Chrome outright.
+    if not _fresh_chrome_enabled():
+        tiers = tuple(t for t in tiers if t != 'fresh')
+    return tiers or ('tab',)
+
+
+async def _cookies_for_requests(url: str, context=None, page=None) -> dict:
+    """Cookies from the live browser session, scoped to *url*'s host.
+
+    This is what makes the 'request' tier worth attempting at all: without
+    them a publisher that gated the article behind a login serves an asset
+    request a login page instead, which the byte check then rejects -- a
+    wasted round trip every time.
+
+    ⚠️ Cookies are not sufficient against a host that is actively challenging.
+    A Cloudflare clearance cookie is bound to the user agent, IP and TLS
+    fingerprint of the browser that earned it, and ``requests`` matches none of
+    those, so such hosts still fall through to the browser tiers. That is the
+    ladder working as intended, not a bug to chase.
+    """
+    ctx = context
+    if ctx is None and page is not None:
+        ctx = getattr(page, 'context', None)
+    if ctx is None:
+        return {}
+    try:
+        raw = await ctx.cookies()
+    except Exception:
+        return {}
+
+    host = (urlparse(url).hostname or '').lower()
+    jar = {}
+    for cookie in raw or []:
+        name = cookie.get('name')
+        value = cookie.get('value')
+        if not name or value is None:
+            continue
+        # Send only what this host is entitled to; a flat dump of the jar
+        # would leak one publisher's session to another's CDN.
+        domain = (cookie.get('domain') or '').lstrip('.').lower()
+        if domain and not (host == domain or host.endswith('.' + domain)):
+            continue
+        jar[name] = value
+    return jar
+
+
 def _http_asset_headers(referer: str = None) -> dict:
     headers = {
         'User-Agent': DP_HTTP_USER_AGENT,
@@ -2159,7 +2281,8 @@ def _http_asset_headers(referer: str = None) -> dict:
 
 
 def _http_download_to(url: str, dest: Path, referer: str = None,
-                      timeout: float = 60, want_image: bool = False) -> bool:
+                      timeout: float = 60, want_image: bool = False,
+                      cookies: dict = None) -> bool:
     """GET *url* straight to *dest*. True only when a real file landed there.
 
     Streams to a ``.part`` file and renames on success, so a large video
@@ -2171,6 +2294,7 @@ def _http_download_to(url: str, dest: Path, referer: str = None,
     part = dest.with_name(dest.name + '.part')
     try:
         with requests.get(url, headers=_http_asset_headers(referer),
+                          cookies=cookies or None,
                           timeout=(15, timeout), stream=True,
                           allow_redirects=True) as r:
             if r.status_code >= 400:
@@ -2219,15 +2343,19 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
 
         print(f"  📥 下载 Figure {fig_num}: {fig_url}")
 
-        if DP_HTTP_FIRST:
-            try:
-                referer = page.url if page is not None else None
-            except Exception:
-                referer = None
+        fig_ladder = _fetch_ladder('figure')
+        try:
+            referer = page.url if page is not None else None
+        except Exception:
+            referer = None
+
+        if 'request' in fig_ladder:
             img_filename = original_image_filename(fig_url, fig_num)
+            cookies = await _cookies_for_requests(fig_url, context=context,
+                                                  page=page)
             ok = await asyncio.to_thread(
                 _http_download_to, fig_url, output_dir / img_filename,
-                referer, DP_FIGURE_TIMEOUT, True)
+                referer, DP_FIGURE_TIMEOUT, True, cookies)
             if ok:
                 print(f"    ✓ 保存: {img_filename} [直接下载]")
                 return img_filename
