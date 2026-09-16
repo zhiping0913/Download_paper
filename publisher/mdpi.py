@@ -823,9 +823,8 @@ class MDPIHandler(PublisherHandler):
                 fulltext_html = ''
 
             if fulltext_html:
-                text_refs, ref_dois = self.extract_references_from_html(fulltext_html)
+                text_refs, _ = self.extract_references_from_html(fulltext_html)
                 metadata['references'] = text_refs
-                metadata['_ref_dois'] = ref_dois
 
             figure_urls = {}
             if fulltext_html:
