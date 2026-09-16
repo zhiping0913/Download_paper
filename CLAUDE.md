@@ -22,8 +22,29 @@ source /home/zhiping/research-env/bin/activate
 cd /home/zhiping/Projects/Download_paper
 python complete_paper_extraction.py "<DOI>"
 python complete_paper_extraction.py "<DOI>" --force-headed  # 有头模式
+python complete_paper_extraction.py "<DOI>" --pdf-only      # 只下 PDF，不生成 md
 python batch_process.py --file dois.txt                     # 批量
 ```
+
+## pdf-only 模式
+
+很多老文章和会议短文的网页**根本没有正文**，生成 md 是白费功夫。两层，越往下访问越少：
+
+| | 怎么触发 | 还访问论文页面吗 | 产出 |
+|---|---|---|---|
+| 第一层 | `--pdf-only` | 是，照常走全流程拿 PDF 链接 | `paper.pdf` + `metadata.json` + `crossref.json` |
+| 第二层 | `--json` 里给 `pdf_link` | **否** | 同上 |
+
+- 第一层只是在 `_download_all_resources` 拿到 PDF 后直接 return（图片、key image、
+  补充材料都是给 md 引用的，不生成 md 就没有下载的理由），并跳过 `convert_to_markdown`
+- 第二层走 `_pdf_link_direct_download()`：跳过 Phase 0 预检和 `doi.org/{doi}`，
+  元数据**全部取自 Step 0 那一次 Crossref 响应**（目录名要的 title/year 就在里面），
+  只为取文件起**一次**浏览器。有头时就是那个一次性 Chrome（profile 照常播种），
+  无头时是 `_download_all_resources` 自建的那个
+- ⚠️ 两层都**以 PDF 为准**：PDF 没下来就返回 None（批次记为失败）。但 `metadata.json`
+  照常落盘且记着 `pdf_link`，可以据此重试
+- `--force-headed`、`FRESH_PROFILE`、`BATCH_SLEEP`、各种 `DP_*` 超时全部照旧 ——
+  两层都走同一个批次循环，没有另一套旋钮
 
 ## 常见提取陷阱
 

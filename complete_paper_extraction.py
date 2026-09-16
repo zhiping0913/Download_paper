@@ -1137,6 +1137,7 @@ async def _download_all_resources(
     force_headed: bool = False,
     reuse_context: bool = False,
     handler=None,
+    pdf_only: bool = False,
 ) -> dict:
     """Unified download manager for all resources (PDF, figures, supplemental)
 
@@ -1151,6 +1152,9 @@ async def _download_all_resources(
             that is tried before the navigation-based download (some
             publishers never fire a browser download event -- see
             IEEEHandler.download_pdf_via_page)
+        pdf_only: stop once the PDF is in. Figures, the key image and the
+            supplemental files exist to be referenced from the markdown, and
+            a pdf-only run writes no markdown
 
     Returns:
         dict with 'pdf', 'figures', 'supplemental' keys
@@ -1208,6 +1212,11 @@ async def _download_all_resources(
                 downloads['pdf'] = pdf_result
             except Exception as e:
                 print(f"⚠️  PDF下载失败: {e}")
+
+        # pdf-only 到此为止：图片、key image、补充材料都是给 markdown 引用的，
+        # 而这个模式不产出 markdown。下面的 finally 照样会关掉自建的无头浏览器。
+        if pdf_only:
+            return downloads
 
         # Download figures
         figure_urls = links.get('figure_urls', {})
@@ -1464,6 +1473,13 @@ async def download_pdf(
             if saved:
                 return saved
             print("  ↪ 回退 Playwright 导航")
+
+        # pdf_link 直连模式下没有浏览器可以回退 —— 整条流程只起那一个一次性
+        # Chrome。如实说明失败原因，而不是拿 None 去取 .context 崩一个
+        # AttributeError。
+        if page is None and context is None:
+            print("    ⚠️  无可用浏览器上下文，无法回退导航下载")
+            return None
 
         pdf_downloaded = False
         # ── 单次导航 + context级 download 事件 作为「真实拿到 PDF」的实体判据 ──
@@ -2267,6 +2283,83 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
 # 第5部分：主工作流
 # ============================================================================
 
+async def _pdf_link_direct_download(
+    doi: str,
+    pdf_link: str,
+    crossref_data: dict,
+    output_path: Path,
+    captured_data_dir: Path,
+    force_headed: bool = False,
+) -> Optional[str]:
+    """Fetch a PDF whose URL was handed to us, without opening the article page.
+
+    The aggressive half of pdf-only mode: ``--json`` supplied "pdf_link", so
+    there is nothing to extract and nothing to preflight. Everything the
+    output needs -- the title and year that name the directory, the authors,
+    the journal -- comes from the Crossref response fetched in Step 0, and a
+    single browser is started, to fetch the file.
+    """
+    print("\n⚡ pdf_link 直连模式：跳过预检与 doi.org，直接下载 PDF")
+    print("=" * 80)
+    print(f"  📎 {pdf_link}")
+
+    if not crossref_data.get('title'):
+        print("  ⚠️  Crossref 未返回标题，目录名将退化为 0000--paper")
+
+    # Crossref 的 authors 是 dict（name/given/family），metadata.json 要的是名字
+    metadata = {
+        'doi': doi,
+        'title': crossref_data.get('title', ''),
+        'year': crossref_data.get('year'),
+        'type': crossref_data.get('type', ''),
+        'journal': crossref_data.get('journal', ''),
+        'authors': [a.get('name', '') for a in crossref_data.get('authors', [])
+                    if isinstance(a, dict) and a.get('name')],
+        'volume': crossref_data.get('volume'),
+        'issue': crossref_data.get('issue'),
+        'pages': crossref_data.get('pages'),
+        'pdf_url': pdf_link,
+    }
+
+    output_path.mkdir(parents=True, exist_ok=True)
+    paper_output_dir = organize_paper_output(output_path, metadata, crossref_data)
+
+    downloads = await _download_all_resources(
+        None,                     # 没有论文页面，这条路径也不需要
+        {'pdf_url': pdf_link},
+        paper_output_dir,
+        None,
+        metadata,
+        doi,
+        force_headed,
+        reuse_context=False,      # 让它按需自起浏览器（无头时唯一的那次启动）
+        pdf_only=True,
+    )
+
+    # Step 0 之前建的 DOI 缓存目录在这条路径上始终是空的，收掉
+    try:
+        if captured_data_dir.exists() and not any(captured_data_dir.iterdir()):
+            captured_data_dir.rmdir()
+    except OSError:
+        pass
+
+    save_metadata_json(paper_output_dir, metadata, crossref_data, doi,
+                       downloads['pdf'], [], pdf_link=pdf_link)
+    save_crossref_json(paper_output_dir, crossref_data)
+
+    print("\n" + "=" * 80)
+    print("📊 完成统计 (pdf_link 直连)")
+    print("=" * 80)
+    if downloads['pdf']:
+        print(f"  📕 PDF: {downloads['pdf']}")
+    else:
+        print("  ⚠️  PDF 未下载成功")
+    print(f"  💾 输出目录: {paper_output_dir}")
+    print()
+
+    return str(paper_output_dir) if downloads['pdf'] else None
+
+
 async def complete_extraction_workflow(
     doi: str,
     output_file: str = None,
@@ -2275,6 +2368,8 @@ async def complete_extraction_workflow(
     browser_session: SharedBrowserSession = None,
     link: str = None,
     extra_headers: dict = None,
+    pdf_only: bool = False,
+    pdf_link: str = None,
 ):
     """完整提取工作流 - Phase 4/5 重构版本
 
@@ -2292,6 +2387,13 @@ async def complete_extraction_workflow(
               (例如 {"referer": "https://pubs.aip.org/aip/pop/issue/24/12"})。
               会 merge 进 headless / headed 两条路径的 context extra headers；
               cookies 由 SharedBrowserSession 自己维护，不受影响。
+        pdf_only: 只要 PDF。照常访问论文页面、解析出 PDF 链接并下载，但跳过
+              图片/补充材料下载和 Markdown 生成；metadata.json 和 crossref.json
+              照常写。老文章和会议短文的网页往往根本没有正文，这就够用了。
+        pdf_link: 可选。直接给定 PDF 地址。给了就完全不碰出版商的论文页面：
+              跳过 Phase 0 预检和 doi.org 跳转，元数据（含目录名要的标题/年份）
+              全部取自 Step 0 那一次 Crossref 响应，只为取文件起一次浏览器。
+              隐含 pdf_only=True。
 
     New architecture:
     1. Phase 0 (可选): 使用无头浏览器快速预检 (除非force_headed=True)
@@ -2479,6 +2581,7 @@ async def complete_extraction_workflow(
             force_headed_downloads,
             reuse_context=browser_session is not None,
             handler=handler,
+            pdf_only=pdf_only,
         )
 
         # Step 3.5: Check if paper has meaningful content before saving
@@ -2500,6 +2603,26 @@ async def complete_extraction_workflow(
                 print(f"  提示：将继续保存，因为 SAVE_WITHOUT_REFERENCES=True")
             else:
                 print(f"  提示：可在 config.py 中设置 SAVE_WITHOUT_REFERENCES=True 强制保存")
+
+        # pdf-only：PDF 就是全部交付物，不生成 Markdown。元数据照常落盘 ——
+        # metadata.json 里记着 pdf_link，PDF 没下来时可以据此重试。
+        if pdf_only:
+            save_metadata_json(paper_output_dir, metadata, crossref_data, doi,
+                               downloads['pdf'], downloads['supplemental'],
+                               pdf_link=links.get('pdf_url') or '')
+            save_crossref_json(paper_output_dir, crossref_data)
+
+            print("\n" + "=" * 80)
+            print("📊 完成统计 (pdf-only)")
+            print("=" * 80)
+            if downloads['pdf']:
+                print(f"  📕 PDF: {downloads['pdf']}")
+            else:
+                print("  ⚠️  PDF 未下载成功")
+            print(f"  💾 输出目录: {paper_output_dir}")
+            print()
+
+            return str(paper_output_dir) if downloads['pdf'] else None
 
         # Step 3.5: Generate markdown with figures
         print("\nStep 3.5️⃣  生成Markdown...")
@@ -2804,6 +2927,19 @@ async def complete_extraction_workflow(
     else:
         print("  ⚠️  Crossref未返回数据")
     print()
+
+    # ========== pdf_link 直连：跳过预检与 doi.org，只取 PDF ==========
+    # JSON 里已经给了 PDF 地址，就没有任何理由再去访问出版商的论文页面。
+    # 目录名要的 title/year 就在刚拿到的 Crossref 响应里。
+    if pdf_link:
+        return await _pdf_link_direct_download(
+            doi=doi,
+            pdf_link=pdf_link,
+            crossref_data=crossref_data,
+            output_path=output_path,
+            captured_data_dir=captured_data_dir,
+            force_headed=force_headed,
+        )
 
     # ========== 第1步判断：根据Crossref publisher决定是否需要Phase 0 ==========
     should_use_headless_phase0 = False
@@ -3531,12 +3667,21 @@ async def main():
   强制使用有头浏览器（跳过无头预检）:
     python %(prog)s --doi 10.1103/PhysRevLett.109.245005 --force-headed
 
+  只要 PDF，不生成 Markdown（老文章 / 会议短文的网页往往没有正文）:
+    python %(prog)s --file doi_list.txt --pdf-only
+
+  已知 PDF 地址，连论文页面都不访问（JSON 里给 pdf_link，自动进入 pdf-only）:
+    python %(prog)s --json examples/examples.json
+
 JSON 格式:
   {
     "article": [
       {
         "doi": "10.1063/1.4994562",                                    # 必填
         "link": "https://pubs.aip.org/aip/pop/article/24/12/...",       # 可选：绕过 doi.org 重定向
+        "pdf_link": "https://.../paper.pdf",                            # 可选：直接给 PDF 地址；
+                                                                        #   跳过预检和 doi.org，
+                                                                        #   元数据取自 Crossref
         "header": {"referer": "https://pubs.aip.org/aip/pop/issue/24/12"} # 可选：附加 HTTP header
       }
     ]
@@ -3561,8 +3706,9 @@ JSON 格式:
             '--json',
             type=str,
             metavar='FILE',
-            help='含 article 列表的 JSON 文件 (每篇必须有 "doi"，可选 "link" 和 '
-                 '"header" 字典)。见 examples/examples.json 的格式。'
+            help='含 article 列表的 JSON 文件 (每篇必须有 "doi"，可选 "link"、'
+                 '"pdf_link" 和 "header" 字典)。给了 "pdf_link" 就跳过预检和 '
+                 'doi.org 直接下载该 PDF。见 examples/examples.json 的格式。'
         )
 
         parser.add_argument(
@@ -3577,6 +3723,14 @@ JSON 格式:
             action='store_true',
             default=False,
             help='强制使用有头浏览器，跳过无头预检阶段 (默认: False，使用智能检测)'
+        )
+
+        parser.add_argument(
+            '--pdf-only',
+            action='store_true',
+            default=False,
+            help='只要 PDF：照常访问论文页面取 PDF 链接并下载，但跳过图片/补充材料'
+                 '下载和 Markdown 生成 (metadata.json / crossref.json 照常写)'
         )
 
         parser.add_argument(
@@ -3626,6 +3780,8 @@ JSON 格式:
                     entry = {'doi': doi_val}
                     if item.get('link'):
                         entry['link'] = str(item['link']).strip()
+                    if item.get('pdf_link'):
+                        entry['pdf_link'] = str(item['pdf_link']).strip()
                     header = item.get('header')
                     if isinstance(header, dict) and header:
                         entry['header'] = header
@@ -3674,6 +3830,9 @@ JSON 格式:
                     print(f"处理论文 {i}/{len(articles)}: {doi}")
                     if article.get('link'):
                         print(f"  ↪ 使用 link: {article['link']}")
+                    if article.get('pdf_link'):
+                        print(f"  ↪ 使用 pdf_link（跳过预检与 doi.org）: "
+                              f"{article['pdf_link']}")
                     if article.get('header'):
                         print(f"  ↪ 附加 header keys: {list(article['header'].keys())}")
                     print(f"{'='*80}\n")
@@ -3687,6 +3846,9 @@ JSON 格式:
                             browser_session=browser_session,
                             link=article.get('link'),
                             extra_headers=article.get('header'),
+                            # 给了 pdf_link 就没有 markdown 可生成，隐含 pdf-only
+                            pdf_only=args.pdf_only or bool(article.get('pdf_link')),
+                            pdf_link=article.get('pdf_link'),
                         )
                         if md_path:
                             success_count += 1

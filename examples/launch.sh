@@ -205,11 +205,14 @@ echo "────────────────────────�
 #   --doi   单篇 DOI
 #   --file  纯 DOI 列表（每行一个）
 #   --json  批量输入，每篇必须有 "doi"，可选 "link"（跳过 doi.org 直接开这个
-#           地址）和 "header"（合并进请求头，例如 Referer）
+#           地址）、"pdf_link"（直接给 PDF 地址，连论文页面都不访问）和
+#           "header"（合并进请求头，例如 Referer）
 #
 # 其它开关：
 #   --output PATH             覆盖输出目录
 #   --force-headed            跳过无头预检，直接开有头 Chrome
+#   --pdf-only                只下 PDF：跳过图片/补充材料下载和 Markdown 生成，
+#                             metadata.json / crossref.json 照常写
 #   --refresh-headless-auth   通过本机 Chrome CDP 把登录态刷进
 #                             .auth/headless_storage_state.json
 #
@@ -230,3 +233,7 @@ fi
 # python complete_paper_extraction.py --json examples/spie.json            # 用 link 指定 SPIE 版
 # python complete_paper_extraction.py --file doi_list.txt --force-headed
 # python complete_paper_extraction.py --json examples/examples.json --output ~/Downloads
+# python complete_paper_extraction.py --file doi_list.txt --pdf-only        # 只要 PDF
+# python complete_paper_extraction.py --json pdf_links.json                 # 给了 pdf_link
+#   → pdf_links.json: {"article":[{"doi":"10.1364/...","pdf_link":"https://.../x.pdf"}]}
+#     给了 pdf_link 就自动进入 pdf-only，跳过预检和 doi.org，元数据走 Crossref

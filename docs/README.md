@@ -157,8 +157,18 @@ python3 -u complete_paper_extraction.py --doi 10.1063/5.0256231
 入口函数是：
 
 ```python
-complete_extraction_workflow(doi, output_file=None, force_headed=False)
+complete_extraction_workflow(doi, output_file=None, force_headed=False,
+                             link=None, extra_headers=None,
+                             pdf_only=False, pdf_link=None)
 ```
+
+**pdf-only 模式**（`--pdf-only`，或 `--json` 里给 `pdf_link`）：老文章和会议短文的
+网页常常没有正文，此时只要 PDF。`pdf_only=True` 时主流程照常访问论文页面拿到 PDF
+链接并下载，但跳过图片/补充材料下载和 Markdown 生成；`pdf_link` 更进一步，连论文
+页面都不访问 —— 跳过 Phase 0 预检和 `doi.org/{doi}`，元数据全部取自 Step 0 的
+Crossref 响应，只为取文件起一次浏览器。两种情况都照常写 `metadata.json` 和
+`crossref.json`；PDF 未下成则返回 `None`（批次记为失败），但 `metadata.json` 里
+记着 `pdf_link`，可据此重试。
 
 主流程只负责统一调度，不直接处理具体出版商的网页结构。它的职责是：
 
