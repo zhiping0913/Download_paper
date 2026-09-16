@@ -1499,9 +1499,18 @@ async def download_pdf(
         _dl_done = asyncio.Event()      # 文件已完整落盘到 output_dir
         _dl_failed = asyncio.Event()    # 下载中途失败（网络波动、cancel等）
         _ctx = context if context is not None else (page.context if page is not None else None)
+        # 同一个 Download 会同时派发给下面注册的 page 级和 context 级监听 —— 实测
+        # 两次回调拿到的是同一个对象，且都在任一方 await 完 path() 之前就进了函数。
+        # 所以去重必须在第一个 await 之前同步完成，不能看 _dl_done（那个要等
+        # path() 回来才置位，两次都会漏过去）。用 `is` 逐个比：既不假设 Download
+        # 可哈希，也不怕 id() 在对象回收后被复用。
+        _seen_downloads = []
 
         async def _ctx_handle_download(download):
             """context 层下载事件回调 —— 事件一触发即视为下载已开始"""
+            if any(d is download for d in _seen_downloads):
+                return  # 同一个下载的第二次派发，已经处理过了
+            _seen_downloads.append(download)
             _dl_started.set()  # 第一时间标记已开始，不等 path()（path 可能因慢网速阻塞）
             try:
                 pdf_path_temp = await download.path()
@@ -1524,8 +1533,9 @@ async def download_pdf(
 
         # 复用当前页或新建页，单次导航到 PDF
         download_page = await context.new_page() if force_headed and context is not None else page
-        # 实证：download 事件派发到「触发下载的那个 page」层（而非 context/browser 层），
-        # 故在本次将导航的 page 上也注册监听（双保险），确保能捕获下载开始信号。
+        # 双保险：page 级和 context 级都注册。实测两者都会收到同一个 Download
+        # （回调自己按对象去重，见上面的 _seen_downloads）；两个注册都留着，是因为
+        # CDP 导航触发的下载不一定落在我们手里这个 page 上。
         try:
             download_page.on("download", _ctx_handle_download)
         except Exception as _e:
