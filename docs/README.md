@@ -36,12 +36,21 @@
 export CHROME_PATH=/opt/google/chrome/chrome          # Chrome 可执行文件路径
 export CHROME_PROFILE=Default                          # profile 名称
 export CHROME_DEBUG_PORT=9222                          # 主实例 CDP 端口
-export CHROME_PDF_DEBUG_PORT=9333                      # 下载 PDF 的一次性实例 CDP 端口
+export CHROME_AUX_DEBUG_PORT=9333                      # 辅助（一次性）实例 CDP 端口
+                                                       # 旧名 CHROME_PDF_DEBUG_PORT 仍可用
 export DP_PDF_FRESH_CHROME=1                           # 0 = 禁用一次性实例
 export CHROME_DOWNLOAD_DIR=/root/Downloads             # Chrome 默认下载目录
 export HEADLESS=false                                  # true/false；Cloudflare 站点建议 false
-export DP_HTTP_FIRST=1                                 # 图片/补充材料先直接 HTTP 下载；0 = 全走浏览器
 export DP_HTTP_USER_AGENT="Mozilla/5.0 ..."            # 直接请求用的 UA（可选）
+
+# 取数阶梯：request（带 cookies 的裸 HTTP）→ tab（现有浏览器新标签页）→ fresh（一次性 Chrome）
+# 取值是「从哪一层开始」，失败自动向下回退
+export DP_FETCH_ORDER=tab                              # 全局默认（默认 tab）
+export DP_FETCH_PDF=tab                                # 单类覆盖：pdf
+export DP_FETCH_FIGURE=tab                             #           图片
+export DP_FETCH_SUPPLEMENT=tab                         #           补充材料
+export DP_FETCH_API=tab                                #           API / 页面（如 IOP 的 /data）
+export DP_HTTP_FIRST=1                                 # 旧开关：0 = 跳过 request 这一层
 
 # profile（见下节「程序怎么用你的 Chrome profile」）
 export CHROME_PROFILE_ROOT=/tmp/dp_profiles_ab12cd     # 抓取 profile 的根目录（可选）
@@ -57,7 +66,7 @@ export FRESH_PROFILE=0                                 # 1 = 不播种，用空 
 ```
 $CHROME_PROFILE_ROOT/
 ├── main_dir   ← 主实例（打开论文页、提取正文）
-└── pdf_dir    ← 一次性实例（只下载 PDF）
+└── aux_dir    ← 辅助（一次性）实例：PDF、图片、补充材料、API 页面
 ```
 
 **每次拉起 Chrome 都会重建这两个目录**（先 `rm -rf` 再新建），批量任务里每篇论文
@@ -88,7 +97,7 @@ $CHROME_PROFILE_ROOT/
 锁会打架。
 
 **运行结束时会自动清理**（正常退出、异常、Ctrl-C 都会走到）：自动生成的 root 整个
-删除；你显式指定的 root 只清掉里面的 `main_dir`/`pdf_dir`，root 本身保留。被活着的
+删除；你显式指定的 root 只清掉里面的 `main_dir`/`aux_dir`（连同旧名 `pdf_dir`），root 本身保留。被活着的
 Chrome 占用的目录会跳过。
 
 **安全护栏**：目标目录一旦解析成真实 Chrome profile（日常 profile、播种来源、或平台
@@ -100,11 +109,12 @@ Chrome 数据上。
 > | 实例 | 端口变量 | 默认 | 用途 |
 > |---|---|---|---|
 > | 主实例 | `CHROME_DEBUG_PORT` | 9222 | 打开论文页面、提取正文；用 `main_dir`，每篇论文结束后关闭重开 |
-> | 一次性实例 | `CHROME_PDF_DEBUG_PORT` | 9333 | 只下载 PDF，用 `pdf_dir`，每次重建、用完即删 |
+> | 辅助（一次性）实例 | `CHROME_AUX_DEBUG_PORT` | 9333 | 取数阶梯最底层：PDF、图片、补充材料、API 页面；用 `aux_dir`，每次重建、用完即删 |
 >
-> 两个端口必须不同。一次性实例的端口若被占用会自动顺延（9333 → 9334 → …），
-> 所以同时跑多个任务不会互相抢浏览器。有头运行时优先用一次性实例下载 PDF，
-> 无头运行时反过来 —— 先用主实例，失败了才起一次性实例（见「PDF 下载顺序」）。
+> 旧名 `CHROME_PDF_DEBUG_PORT` 仍会被读取（改名是因为它已不只用于 PDF）。
+> 两个端口必须不同。辅助实例的端口若被占用会自动顺延（9333 → 9334 → …），
+> 所以同时跑多个任务不会互相抢浏览器。有头运行时 PDF 优先走辅助实例，
+> 无头运行时反过来 —— 先用主实例，失败了才起辅助实例（见「PDF 下载顺序」）。
 
 **输出目录：**
 
@@ -148,7 +158,7 @@ python3 -u complete_paper_extraction.py --doi 10.1063/5.0256231
 > **提示**：
 > - 涉及 Cloudflare / AIP / Radware 等反爬验证的站点，建议先用你**日常的 Chrome**
 >   手动访问一次并过掉验证，让 cookies 落入真实 profile —— 抓取时会从那里播种。
->   注意别去改抓取用的 `main_dir`/`pdf_dir`，它们每次启动都会被重建。
+>   注意别去改抓取用的 `main_dir`/`aux_dir`，它们每次启动都会被重建。
 > - 路径类变量建议使用绝对路径，避免 relative path 在不同工作目录下解析错误。
 > - 未设置的变量会自动使用上表中的默认值。
 
@@ -222,7 +232,11 @@ PDF 在**另一个域名**上（ScienceDirect 的 `pdf.sciencedirectassets.com`�
 Cloudflare 也不算数 —— clearance cookie 绑定在签发它的主机上。
 
 所以 PDF 由 `chrome_session.py` 单独起一个 Chrome 下载：独立端口、独立 profile
-（`pdf_dir`，每次重建）、全程不接 Playwright，用完即删。
+（`aux_dir`，每次重建）、全程不接 Playwright，用完即删。
+
+同一个实例现在也是图片、补充材料和 API 页面的最后一层 —— 它们的失败原因是同一个
+（IOP 的 /data 页要人手点、Science 的补充材料要过 Cloudflare），所以用同一条出路。
+`open_url_in_fresh_chrome(..., want_html=True)` 让它除了下载文件之外还能交出页面 HTML。
 
 `chrome_session.py` 合并了原来的 `chrome_launcher.py`(启动/关闭)、`cf_bypass_cdp.py`
 (纯 CDP 过挑战) 与 `fresh_chrome.py`(一次性实例) —— 三者做的是同一件事，且各自
@@ -238,7 +252,8 @@ Cloudflare 也不算数 —— clearance cookie 绑定在签发它的主机上�
   上次崩溃留下的目录（只删没有活进程持有的）
 - `seed_profile()` / `write_chrome_preferences()` — profile 播种与偏好写入
 
-环境变量：`CHROME_PDF_DEBUG_PORT`(默认 9333，被占用会自动顺延)、
+环境变量：`CHROME_AUX_DEBUG_PORT`(默认 9333，被占用会自动顺延；旧名
+`CHROME_PDF_DEBUG_PORT` 仍兼容)、
 `CHROME_PROFILE_ROOT`、`CHROME_PROFILE_SOURCE_DIR`、`CHROME_PROFILE`、
 `FRESH_PROFILE`、`DP_PDF_FRESH_CHROME=0`(关闭该路径，直接走 Playwright)
 

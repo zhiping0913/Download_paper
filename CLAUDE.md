@@ -251,6 +251,35 @@ python batch_process.py --file dois.txt                     # 批量
   反过来会把已成功的下载误判为失败。但它**曾经是 20 秒**——对 ScienceDirect 这类必然弹框的
   出版商，文件永远不会落盘，那 20 秒纯粹是在推迟点框（其后附着还要最多 10 秒找 tab + 固定 2 秒）。
   未被挑战的 PDF 在启动后 1~2 秒内就落盘，短探测不会有损失
+
+### 取数阶梯（所有资源共用一套回退顺序）
+
+PDF、图片、补充材料、API/页面（如 IOP 的 `/data`）走的是**同一条三层阶梯**：
+
+| 层 | 做什么 |
+|---|---|
+| `request` | 裸 HTTP，带上**正文页会话的 cookies**（按目标 host 作用域过滤） |
+| `tab` | 在已打开论文的浏览器里开新标签页 |
+| `fresh` | 全新播种 profile 的一次性 Chrome（辅助实例，`aux_dir`） |
+
+- 环境变量给的是「**从哪一层开始**」，失败自动向下回退：全局 `DP_FETCH_ORDER`，
+  单类覆盖 `DP_FETCH_{PDF,FIGURE,SUPPLEMENT,API}`，取值 `request|tab|fresh`
+- **默认 `tab`**。`request` 那层对普通 CDN 很有效，但对正在挑战你的站点基本无效——
+  Cloudflare 的 clearance cookie 绑定 UA、IP 和 **TLS 指纹**，`requests` 三样都对不上
+- ⚠️ **显式配置是截断语义**（`DP_FETCH_PDF=fresh` 就是只用 fresh），而调用方给的
+  `default` 是完整顺序。有头 PDF 的默认是 `('fresh','tab')`——那是有实测支撑的
+  （见上面「PDF 下载顺序」），而截断表达不了这个顺序，所以 `fetch_ladder()` 才要
+  分开这两种语义
+- ⚠️ **浏览器层必须校验拿回来的是不是目标页面**。挑战页、登录页、404 都是合法 HTML，
+  「非空」什么也证明不了。`fetch_html_via_ladder(expect=...)` 收一个子串或谓词；
+  不校验的话挑战页会被当成正常页解析出「0 个结果」，而不是继续回退
+- ⚠️ 但 `expect` **不能写成「必须含目标内容」**：IOP 大量文章本来就没有补充材料，
+  若要求页面含 `#supplementarydata`，这些文章每篇都会把整条阶梯走完、白起一次性
+  Chrome，最后还报错误结论。判据应是「是真页面且不是挑战页」，有没有内容交给解析器答
+- 阶梯放在 **`core/utilities.py`** 而不是主文件：publisher handler 也要用，而依赖方向
+  是单向的（主文件 → publisher），handler 反向 import 主文件会造出本仓第一个循环依赖
+- 兼容：`DP_HTTP_FIRST=0` = 跳过 `request` 层；`DP_PDF_FRESH_CHROME=0` = 摘掉 `fresh` 层
+
 ### profile 生命周期（`chrome_session.prepare_profile_dir`）
 
 - **抓取 profile 永不复用**。每次开浏览器都是「先删再建」，两个实例（正文页的共享实例、
@@ -280,7 +309,8 @@ python batch_process.py --file dois.txt                     # 批量
 - ⚠️ **端口上有残留 Chrome 时不能复用** —— 上次运行崩了/被杀，Chrome 还占着调试端口，
   新运行接管它就等于继承了那个被污染的 profile（现象：设了 `FRESH_PROFILE=1`
   却还是被 SPIE 拦）。所以先 `kill_chrome()` 再起
-- 启动时 `sweep_stale_profiles()` 扫掉 `/tmp/chrome_fresh_*`、`/tmp/chrome_pdf_*`：
+- 启动时 `sweep_stale_profiles()` 扫掉 `/tmp/chrome_fresh_*`、`/tmp/chrome_aux_*`、
+  `/tmp/chrome_pdf_*`（旧名，改名前留下的目录仍归我们清）：
   只删**没有活进程持有**的（读 `/proc/*/cmdline` 的 `--user-data-dir=` 判断），
   并行跑的另一个批次不受影响
 - SPIE 走 Imperva Incapsula（不是 Cloudflare，那套 Turnstile 点击逻辑对它无效），
@@ -291,7 +321,7 @@ python batch_process.py --file dois.txt                     # 批量
   | | 端口 | profile 目录 |
   |---|---|---|
   | 主实例（正文页） | `CHROME_DEBUG_PORT`（默认 9222） | `$CHROME_PROFILE_ROOT/main_dir` |
-  | 一次性实例（PDF） | `CHROME_PDF_DEBUG_PORT`（默认 9333，被占用自动顺延） | `$CHROME_PROFILE_ROOT/pdf_dir` |
+  | 辅助（一次性）实例 | `CHROME_AUX_DEBUG_PORT`（默认 9333，被占用自动顺延；旧名 `CHROME_PDF_DEBUG_PORT` 仍读） | `$CHROME_PROFILE_ROOT/aux_dir` |
 
   只有 `CHROME_PROFILE_ROOT` 一个旋钮，两个目录名固定、都是一次性的。
   默认 `/tmp/dp_profiles_xxxxxx` —— 后缀按启动时间+pid 做种随机生成，每个进程一个，
@@ -299,7 +329,7 @@ python batch_process.py --file dois.txt                     # 批量
   否则两个 Chrome 抢同一个 profile 锁
 - 运行结束时 `cleanup_profile_root()` 收尾（挂在 `_cleanup_chrome_launcher()` 上，
   正常退出/异常/SIGINT 都会走到）：**自动生成的 root 整个删掉**；用户显式指定的
-  root 只清 `main_dir`/`pdf_dir`，root 本身保留（那是用户选的路径）；
+  root 只清 `main_dir`/`aux_dir`（连同旧名 `pdf_dir`），root 本身保留（那是用户选的路径）；
   被活着的 Chrome 占用的目录跳过不动
 
 ### IEEE (`10.1109`, ieeexplore.ieee.org)
