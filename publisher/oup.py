@@ -1042,9 +1042,8 @@ class OupHandler(PublisherHandler):
                 if abstract_md:
                     metadata['abstract'] = abstract_md
 
-                text_refs, raw_dois = self.extract_references_from_html(fulltext_html)
+                text_refs, _ = self.extract_references_from_html(fulltext_html)
                 metadata['references'] = text_refs
-                metadata['_ref_dois'] = raw_dois
 
                 metadata['footnotes'] = self.extract_footnotes_from_html(fulltext_html)
 

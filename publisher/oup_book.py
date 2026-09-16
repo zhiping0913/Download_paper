@@ -161,7 +161,7 @@ class OupBookHandler(PublisherHandler):
 
         meta = OupHandler._extract_metadata_from_html_meta(chapter_html)
         abstract_md, _ = OupHandler.extract_article_text_from_html(chapter_html)
-        text_refs, raw_dois = OupHandler.extract_references_from_html(chapter_html)
+        text_refs, _ = OupHandler.extract_references_from_html(chapter_html)
         footnotes = OupHandler.extract_footnotes_from_html(chapter_html)
         figure_urls = OupHandler.extract_figures_from_html(chapter_html)
         pdf_url = self._extract_chapter_pdf_url(chapter_html, self.actual_base_url)
@@ -180,7 +180,6 @@ class OupBookHandler(PublisherHandler):
             'pages': meta.get('pages'),
             'publication_date': meta.get('publication_date'),
             'references': text_refs,
-            '_ref_dois': raw_dois,
             'footnotes': footnotes,
         }
 
