@@ -10,12 +10,14 @@ so a dedicated preprocessing pass extracts them before the HTML→Markdown pipel
 
 import re
 import urllib.request
+from urllib.parse import urljoin
 import json
 from pathlib import Path
 
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 
+from core.utilities import fetch_html_via_ladder
 from publisher.base import PublisherHandler
 from publisher.wildcard import (
     convert_html_fragment_to_markdown,
@@ -720,15 +722,80 @@ class IOPHandler(PublisherHandler):
         return links
 
     @staticmethod
+    def _looks_like_data_page(html: str) -> bool:
+        """Accept a real /data page; reject a challenge or error page.
+
+        Deliberately *not* "contains #supplementarydata": plenty of IOP
+        articles have no supplementary files at all, and treating those as a
+        failed fetch would walk the whole ladder -- launching a throwaway
+        Chrome -- only to rediscover that there is nothing there. Whether the
+        article has supplements is the parser's answer to give, not the
+        fetcher's.
+        """
+        lowered = (html or '').lower()
+        if any(marker in lowered for marker in (
+                'just a moment', 'checking your browser',
+                'cf-browser-verification', 'enable javascript and cookies')):
+            return False
+        return 'supplementarydata' in lowered or 'iopscience' in lowered
+
+    @staticmethod
+    def _parse_supplementary_links(html: str, base_url: str) -> tuple:
+        """Pull the supplementary links out of a /data page's markup.
+
+        Parsed from HTML rather than queried from a live DOM: the ladder's
+        other rungs (a plain request, a throwaway Chrome) never have one --
+        only the browser-tab rung does.
+
+        IOP supplementary links are structured as::
+
+            <div id="supplementarydata">
+              <div class="reveal-content" style="display: block;">
+                <p class="mb-0">
+                  <a class="link--decoration-none" href="S3_URL">Supplementary data N</a>
+                </p>
+                <div>(size FORMAT) description</div>
+        """
+        urls = []
+        descriptions = {}
+        if not html:
+            return urls, descriptions
+
+        soup = BeautifulSoup(html, 'html.parser')
+        supp_div = soup.find(id='supplementarydata')
+        if not supp_div:
+            return urls, descriptions
+
+        for anchor in supp_div.find_all('a', class_='link--decoration-none'):
+            href = (anchor.get('href') or '').strip()
+            if not href:
+                continue
+            url = urljoin(base_url, href)
+            # Self-links and links back into the article are not attachments.
+            if url == base_url or '/article/' in url:
+                continue
+            urls.append(url)
+            text = anchor.get_text(strip=True)[:200]
+            if text:
+                descriptions[url] = text
+        return urls, descriptions
+
+    @staticmethod
     async def _extract_supplementary_from_data_page(page, doi: str, captured_data_dir=None) -> tuple:
-        """Navigate to the IOP supplementary /data page and extract download links.
+        """Fetch the IOP supplementary /data page and extract download links.
 
         Every IOP article has a standard supplementary endpoint:
             https://iopscience.iop.org/article/{doi}/data
 
-        If ``captured_data_dir`` is provided, the rendered supplementary page
-        HTML is saved as ``supp.html`` under that directory before navigating
-        away — useful for offline re-parsing / debugging.
+        The page goes through the shared fetch ladder (plain request with the
+        article session's cookies, then a browser tab, then a throwaway
+        Chrome). IOP is the reason the last rung exists: the /data page can
+        come back as a challenge that expects a human to click, by which point
+        the shared browser has been driven by automation long enough to be
+        refused.
+
+        If ``captured_data_dir`` is provided, the page is saved as
+        ``supp.html`` there — useful for offline re-parsing / debugging.
 
         Returns (urls, descriptions) tuple.
         """
@@ -741,73 +808,31 @@ class IOPHandler(PublisherHandler):
         data_url = f"https://iopscience.iop.org/article/{doi}/data"
         print(f"  🔗 访问补充材料页面: {data_url}")
 
-        current_url = page.url
-        try:
-            await page.goto(data_url, wait_until='networkidle', timeout=30000)
-        except Exception:
-            try:
-                await page.goto(data_url, wait_until='domcontentloaded', timeout=30000)
-            except Exception as e:
-                print(f"  ⚠ 补充材料页面访问失败: {e}")
-                return [], {}
+        current_url = (getattr(page, 'url', '') or '') if page is not None else ''
 
-        # Save supplemental page HTML before navigating away
+        html = await fetch_html_via_ladder(
+            data_url,
+            kind='api',
+            page=page,
+            referer=current_url or None,
+            expect=IOPHandler._looks_like_data_page,
+            restore_url=current_url or None,
+        )
+
+        if not html:
+            print("  ⚠ 补充材料页面未取到（阶梯各层均失败）")
+            return [], {}
+
         if captured_data_dir is not None:
             try:
-                supp_html = await page.content()
                 supp_html_file = Path(captured_data_dir) / "supp.html"
                 with open(supp_html_file, 'w', encoding='utf-8') as f:
-                    f.write(supp_html)
+                    f.write(html)
                 print(f"  ✓ 补充材料页面HTML已保存: {supp_html_file.name}")
             except Exception as e:
                 print(f"  ⚠ 补充材料HTML保存失败: {e}")
 
-        try:
-            # IOP supplementary links are structured as:
-            #   <div id="supplementarydata">
-            #     <div class="reveal-content" style="display: block;">
-            #       <p class="mb-0">
-            #         <a class="link--decoration-none" href="S3_URL">Supplementary data N</a>
-            #       </p>
-            #       <div>(size FORMAT) description</div>
-            #       ...
-            links_js = """() => {
-                const results = [];
-                const suppDiv = document.querySelector('#supplementarydata');
-                if (!suppDiv) return results;
-                const links = suppDiv.querySelectorAll('a.link--decoration-none');
-                links.forEach(a => {
-                    const href = a.getAttribute('href');
-                    const text = (a.innerText || a.textContent || '').trim();
-                    if (href) {
-                        const url = new URL(href, window.location.href).href;
-                        results.push({text: text.substring(0, 200), url: url});
-                    }
-                });
-                return results;
-            }"""
-            supp_data = await page.evaluate(links_js)
-        except Exception as e:
-            print(f"  ⚠ 提取补充材料链接失败: {e}")
-            supp_data = []
-
-        urls = []
-        descriptions = {}
-        for item in supp_data:
-            url = item.get('url', '')
-            text = item.get('text', '')
-            if not url or url == data_url or '/article/' in url:
-                continue
-            urls.append(url)
-            if text:
-                descriptions[url] = text
-
-        # Navigate back to the article page
-        try:
-            await page.goto(current_url, wait_until='domcontentloaded', timeout=15000)
-        except Exception:
-            pass
-
+        urls, descriptions = IOPHandler._parse_supplementary_links(html, data_url)
         print(f"  ✓ 补充材料: {len(urls)} 个文件")
         return urls, descriptions
 

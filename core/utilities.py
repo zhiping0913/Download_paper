@@ -3,11 +3,14 @@ Generic utility functions for paper extraction
 These functions are publisher-agnostic and can be reused across different publishers
 """
 
+import asyncio
 import json
+import os
 import re
 import requests
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import urlparse
 
 # ============================================================================
 # Semantic Scholar API Configuration
@@ -23,6 +26,236 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'Accept': 'application/json'
 }
+
+
+# ============================================================================
+# The fetch ladder
+# ============================================================================
+# Three rungs, one order for every kind of fetch -- API pages, the PDF,
+# figures, supplemental files:
+#
+#   request  plain HTTP carrying the article session's cookies
+#   tab      a new tab in the browser already holding the article
+#   fresh    a throwaway Chrome seeded from the real profile
+#
+# Each kind names the rung it *starts* at; a failure falls through to the ones
+# below. This lives here rather than in complete_paper_extraction because
+# publisher handlers need it too: the dependency runs one way (main module ->
+# publisher), and a handler importing the main module would be the first cycle
+# in the tree.
+
+FETCH_TIERS = ('request', 'tab', 'fresh')
+FETCH_KINDS = ('api', 'pdf', 'figure', 'supplement')
+
+DP_HTTP_USER_AGENT = os.environ.get(
+    'DP_HTTP_USER_AGENT',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
+)
+# DP_HTTP_FIRST=0 skips the plain request and goes straight to the browser.
+DP_HTTP_FIRST = os.environ.get('DP_HTTP_FIRST', '1').strip().lower() not in (
+    '0', 'false', 'no', 'off')
+
+
+def http_asset_headers(referer: str = None) -> dict:
+    headers = {
+        'User-Agent': DP_HTTP_USER_AGENT,
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+    if referer and referer.startswith('http'):
+        headers['Referer'] = referer
+    return headers
+
+
+def fresh_chrome_enabled() -> bool:
+    """Whether the throwaway-Chrome rung may be used at all."""
+    if os.environ.get('DP_PDF_FRESH_CHROME', '1').strip().lower() in (
+            '0', 'false', 'no', 'off'):
+        return False
+    try:
+        from chrome_session import open_url_in_fresh_chrome  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def fetch_ladder(kind: str, default: tuple = ('tab', 'fresh')) -> tuple:
+    """Rungs to try for *kind*, in order.
+
+    ``DP_FETCH_<KIND>`` overrides ``DP_FETCH_ORDER`` overrides *default*. An
+    unrecognised value is ignored rather than fatal -- a typo in a launch
+    script should not stop a download.
+
+    A configured value truncates: ``DP_FETCH_PDF=fresh`` means *only* the
+    throwaway Chrome, which is what someone naming a rung explicitly wants.
+    *default* is a full order instead, so a caller can express a preference
+    that is not a prefix of request/tab/fresh -- a headed PDF wants
+    ('fresh', 'tab'), and truncation could not say that.
+    """
+    start = (os.environ.get(f'DP_FETCH_{kind.upper()}')
+             or os.environ.get('DP_FETCH_ORDER')
+             or '').strip().lower()
+    if start in FETCH_TIERS:
+        # DP_HTTP_FIRST=0 predates this and says exactly "skip the plain
+        # request".
+        if start == 'request' and not DP_HTTP_FIRST:
+            start = 'tab'
+        tiers = FETCH_TIERS[FETCH_TIERS.index(start):]
+    else:
+        tiers = tuple(default)
+    if not fresh_chrome_enabled():
+        tiers = tuple(t for t in tiers if t != 'fresh')
+    return tiers or ('tab',)
+
+
+async def cookies_for_requests(url: str, context=None, page=None) -> dict:
+    """Cookies from the live browser session, scoped to *url*'s host.
+
+    This is what makes the 'request' rung worth attempting: without them a
+    publisher that gated the article behind a login serves an asset request a
+    login page instead, which the content check then rejects -- a wasted round
+    trip every time.
+
+    ⚠️ Cookies are not sufficient against a host that is actively challenging.
+    A Cloudflare clearance cookie is bound to the user agent, IP and TLS
+    fingerprint of the browser that earned it, and ``requests`` matches none of
+    those, so such hosts still fall through to the browser rungs. That is the
+    ladder working as intended, not a bug to chase.
+    """
+    ctx = context
+    if ctx is None and page is not None:
+        ctx = getattr(page, 'context', None)
+    if ctx is None:
+        return {}
+    try:
+        raw = await ctx.cookies()
+    except Exception:
+        return {}
+
+    host = (urlparse(url).hostname or '').lower()
+    jar = {}
+    for cookie in raw or []:
+        name = cookie.get('name')
+        value = cookie.get('value')
+        if not name or value is None:
+            continue
+        # Send only what this host is entitled to; a flat dump of the jar
+        # would leak one publisher's session to another's CDN.
+        domain = (cookie.get('domain') or '').lstrip('.').lower()
+        if domain and not (host == domain or host.endswith('.' + domain)):
+            continue
+        jar[name] = value
+    return jar
+
+
+def _html_is_acceptable(html: str, expect) -> bool:
+    """Whether *html* is the page we asked for rather than something else.
+
+    The check is the whole reason the ladder can use the browser rungs safely.
+    A challenge page, a login wall and a 404 are all perfectly valid HTML, so
+    "non-empty" proves nothing -- without *expect*, a Cloudflare interstitial
+    would be parsed for links, yield none, and be reported as "0 files found"
+    instead of falling through to the next rung.
+    """
+    if not html or len(html) < 200:
+        return False
+    if expect is None:
+        return True
+    if callable(expect):
+        try:
+            return bool(expect(html))
+        except Exception:
+            return False
+    return str(expect) in html
+
+
+async def fetch_html_via_ladder(url: str, *, kind: str = 'api', page=None,
+                                context=None, referer: str = None,
+                                expect=None, timeout_s: float = 30.0,
+                                restore_url: str = None,
+                                headless: bool = True) -> str:
+    """Fetch *url* as HTML, walking the ladder until something usable comes back.
+
+    *expect* is a substring or a predicate identifying the page we wanted; see
+    :func:`_html_is_acceptable` for why it matters. Returns '' when every rung
+    failed, so the caller can report honestly rather than parse a challenge
+    page.
+
+    *restore_url* is navigated back to after the 'tab' rung, because that rung
+    drives the caller's own page: leaving the shared article tab parked on a
+    supplemental listing is how metadata ends up recording the wrong URL.
+    """
+    tiers = fetch_ladder(kind)
+
+    for tier in tiers:
+        if tier == 'request':
+            jar = await cookies_for_requests(url, context=context, page=page)
+            try:
+                resp = await asyncio.to_thread(
+                    requests.get, url,
+                    headers=http_asset_headers(referer),
+                    cookies=jar or None,
+                    timeout=(15, timeout_s),
+                    allow_redirects=True,
+                )
+                if resp.status_code < 400 and _html_is_acceptable(resp.text,
+                                                                 expect):
+                    print(f"    ✓ 取得页面 [直接请求] {len(resp.text):,} 字符")
+                    return resp.text
+                print(f"    ↪ 直接请求不可用 (HTTP {resp.status_code})，下一层")
+            except Exception as exc:
+                print(f"    ↪ 直接请求失败（{type(exc).__name__}），下一层")
+
+        elif tier == 'tab':
+            if page is None:
+                continue
+            back_to = restore_url or getattr(page, 'url', '') or ''
+            try:
+                try:
+                    await page.goto(url, wait_until='networkidle',
+                                    timeout=int(timeout_s * 1000))
+                except Exception:
+                    await page.goto(url, wait_until='domcontentloaded',
+                                    timeout=int(timeout_s * 1000))
+                html = await page.content()
+                if _html_is_acceptable(html, expect):
+                    print(f"    ✓ 取得页面 [浏览器标签页] {len(html):,} 字符")
+                    return html
+                print("    ↪ 标签页拿到的不是目标页面，下一层")
+            except Exception as exc:
+                print(f"    ↪ 标签页访问失败（{type(exc).__name__}），下一层")
+            finally:
+                if back_to:
+                    try:
+                        await page.goto(back_to,
+                                        wait_until='domcontentloaded',
+                                        timeout=15000)
+                    except Exception:
+                        pass
+
+        elif tier == 'fresh':
+            session = None
+            try:
+                from chrome_session import open_url_in_fresh_chrome
+                session = await open_url_in_fresh_chrome(
+                    url, timeout_s=int(timeout_s), headless=headless,
+                    want_html=True)
+                html = (session.result or {}).get('html') or ''
+                if _html_is_acceptable(html, expect):
+                    print(f"    ✓ 取得页面 [一次性 Chrome] {len(html):,} 字符")
+                    return html
+                print("    ↪ 一次性 Chrome 未取得目标页面")
+            except Exception as exc:
+                print(f"    ↪ 一次性 Chrome 失败（{type(exc).__name__}）")
+            finally:
+                if session is not None:
+                    try:
+                        await session.close()
+                    except Exception:
+                        pass
+
+    return ''
 
 
 # ============================================================================
