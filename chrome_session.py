@@ -46,9 +46,13 @@ Environment
 ``CHROME_DEBUG_PORT``           shared instance's port (default 9222)
 ``CHROME_PROFILE``              profile name inside it (default ``Default``)
 ``CHROME_PROFILE_ROOT``         holds both scraping profiles: ``main_dir``
-                                and ``pdf_dir`` (default: a per-run
+                                and ``aux_dir`` (default: a per-run
                                 <tmp>/dp_profiles_xxxxxx)
-``CHROME_PDF_DEBUG_PORT``       throwaway instance's port (default 9333)
+``CHROME_AUX_DEBUG_PORT``       throwaway instance's port (default 9333).
+                                ``CHROME_PDF_DEBUG_PORT`` is still read as a
+                                fallback: the instance outgrew being PDF-only
+                                (it also fetches supplemental pages, figures
+                                and API responses), which is the rename
 ``CHROME_PROFILE_SOURCE_DIR``   real profile that gets copied
 ``CHROME_DOWNLOAD_DIR``         default download directory
 ``FRESH_PROFILE``               1 = every instance gets a brand-new empty
@@ -325,8 +329,11 @@ def kill_chrome() -> None:
 
 # Temporary-profile name prefixes owned by this module. Anything matching
 # these in the temp directory was created by a previous run.
-TEMP_PROFILE_PREFIXES = ('dp_profiles_', 'chrome_fresh_', 'chrome_pdf_',
-                         'chrome_fallback_', 'chrome_9', 'chrome_')
+# 'chrome_pdf_' stays alongside 'chrome_aux_': a directory left behind by a
+# run from before the rename is still ours to sweep.
+TEMP_PROFILE_PREFIXES = ('dp_profiles_', 'chrome_fresh_', 'chrome_aux_',
+                         'chrome_pdf_', 'chrome_fallback_', 'chrome_9',
+                         'chrome_')
 
 
 def _profile_dirs_in_use() -> set:
@@ -375,7 +382,12 @@ def sweep_stale_profiles(quiet: bool = False) -> int:
 # Both scraping profiles live under one root, named for the instance that
 # opens them.
 MAIN_PROFILE_NAME = 'main_dir'
-PDF_PROFILE_NAME = 'pdf_dir'
+# The second instance is no longer PDF-only -- it also fetches supplemental
+# pages, figures and API responses whenever the shared session cannot -- so
+# the directory is named for the role rather than the file type. The old name
+# is still swept on cleanup so an upgrade leaves nothing behind.
+AUX_PROFILE_NAME = 'aux_dir'
+LEGACY_AUX_PROFILE_NAME = 'pdf_dir'
 # The headless Playwright browser needs a profile of its own for the same
 # reason the others do: always_open_pdf_externally lives in Preferences, and
 # without it Chrome renders PDFs instead of downloading them.
@@ -402,7 +414,7 @@ DEFAULT_PROFILE_ROOT = _default_profile_root()
 
 
 def profile_root() -> Path:
-    """The directory holding ``main_dir``, ``pdf_dir`` and ``headless_dir``."""
+    """The directory holding ``main_dir``, ``aux_dir`` and ``headless_dir``."""
     raw = (os.environ.get('CHROME_PROFILE_ROOT') or '').strip()
     root = Path(raw).expanduser() if raw else DEFAULT_PROFILE_ROOT
     root.mkdir(parents=True, exist_ok=True)
@@ -497,7 +509,8 @@ def cleanup_profile_root(quiet: bool = False) -> bool:
         target = str(path)
         return any(u == target or u.startswith(target + os.sep) for u in in_use)
 
-    for name in (MAIN_PROFILE_NAME, PDF_PROFILE_NAME, HEADLESS_PROFILE_NAME):
+    for name in (MAIN_PROFILE_NAME, AUX_PROFILE_NAME, LEGACY_AUX_PROFILE_NAME,
+                 HEADLESS_PROFILE_NAME):
         d = root / name
         if d.exists() and not _held(d):
             shutil.rmtree(d, ignore_errors=True)
@@ -614,14 +627,22 @@ def launch_chrome(headless: bool = False, return_details: bool = False):
     return (proc, user_data_dir, True) if return_details else proc
 
 
-def _default_pdf_port() -> int:
-    raw = (os.environ.get('CHROME_PDF_DEBUG_PORT') or '').strip()
-    try:
-        port = int(raw)
+def _default_aux_port() -> int:
+    """Port for the second Chrome instance.
+
+    ``CHROME_AUX_DEBUG_PORT`` first, then the older ``CHROME_PDF_DEBUG_PORT``
+    so a launch script written before the rename keeps working.
+    """
+    for var in ('CHROME_AUX_DEBUG_PORT', 'CHROME_PDF_DEBUG_PORT'):
+        raw = (os.environ.get(var) or '').strip()
+        if not raw:
+            continue
+        try:
+            port = int(raw)
+        except ValueError:
+            continue
         if 1 <= port <= 65535:
             return port
-    except ValueError:
-        pass
     return 9333
 
 
@@ -1518,6 +1539,52 @@ async def open_url_via_cdp(url: str, port: int, *, expected_doi: str = '',
     )
 
 
+async def fetch_page_html_via_cdp(ws_url: str = '', *, port: int = None,
+                                  timeout_s: float = 15.0) -> str:
+    """Read a tab's rendered HTML over raw CDP.
+
+    Keeping this out of ``bypass_cloudflare_cdp`` means none of its five
+    success paths grows an extra step, and a caller that only wants a
+    downloaded file pays nothing for it.
+
+    ``ws_url`` is optional on purpose. That function only fills it in on the
+    paths it considers successful; when it times out it hands back the dict it
+    started with, ``ws_url=None`` -- and a timeout is exactly when the page may
+    still be perfectly loaded and worth reading (its pass test wants a matching
+    DOI or 5000+ characters of body, which a short supplemental listing never
+    has). So fall back to asking the debug port for the tab directly.
+
+    Returns '' on any failure, so the caller can fall back a tier.
+
+    ⚠️ The HTML of a challenge page is still HTML: the caller must check that
+    what came back is what it asked for, not merely that it is non-empty.
+    """
+    if not ws_url and port:
+        try:
+            ws_url = await _get_page_ws_url(port) or ''
+        except Exception:
+            ws_url = ''
+    if not ws_url:
+        return ''
+    try:
+        # max_size=None: article pages run well past the default 1 MB frame
+        # cap (a SPIE full text came back at 926 KB of JSON alone).
+        async with websockets.connect(ws_url, max_size=None,
+                                      open_timeout=10) as ws:
+            result = await asyncio.wait_for(
+                _send(ws, "Runtime.evaluate", {
+                    "expression": "document.documentElement.outerHTML",
+                    "returnByValue": True,
+                }),
+                timeout=timeout_s,
+            )
+        html = (result.get("result") or {}).get("value") or ''
+        return html if isinstance(html, str) else ''
+    except Exception as exc:
+        print(f"  ⚠️  CDP 取页面 HTML 失败: {type(exc).__name__}: {str(exc)[:80]}")
+        return ''
+
+
 class FreshChromeSession:
     """A disposable Chrome instance with a copy of the real profile.
 
@@ -1530,7 +1597,7 @@ class FreshChromeSession:
                  download_dir: str = '',
                  keep_profile: bool = False,
                  headless: bool = False):
-        self.port = _pick_free_port(port or _default_pdf_port())
+        self.port = _pick_free_port(port or _default_aux_port())
         self.download_dir = download_dir
         self.keep_profile = keep_profile
         # A headless run must not pop a window for every paper. Headed runs
@@ -1550,15 +1617,15 @@ class FreshChromeSession:
     # ------------------------------------------------------------------
 
     def _make_profile(self) -> Path:
-        """``<CHROME_PROFILE_ROOT>/pdf_dir`` -- rebuilt on every launch."""
-        target = scraping_profile_dir(PDF_PROFILE_NAME)
+        """``<CHROME_PROFILE_ROOT>/aux_dir`` -- rebuilt on every launch."""
+        target = scraping_profile_dir(AUX_PROFILE_NAME)
         self._owns_profile = True
         try:
             self._started_empty = not prepare_profile_dir(
                 target, download_dir=self.download_dir, quiet=True)
         except ValueError as exc:
             print(f"  ⚠️  {exc}")
-            target = Path(tempfile.mkdtemp(prefix='chrome_pdf_'))
+            target = Path(tempfile.mkdtemp(prefix='chrome_aux_'))
             self._started_empty = not prepare_profile_dir(
                 target, download_dir=self.download_dir, quiet=True)
         return target
@@ -1698,6 +1765,7 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
                                    timeout_s: int = 60,
                                    port: Optional[int] = None,
                                    headless: bool = False,
+                                   want_html: bool = False,
                                    fast_path_wait_s: float = 3.0
                                    ) -> FreshChromeSession:
     """Launch a clean Chrome, open *url* in it, and hand back the session.
@@ -1748,6 +1816,15 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
                                already_open=True)
     except Exception as exc:
         print(f"  ⚠️  独立 Chrome 打开页面失败: {type(exc).__name__}: {exc}")
+
+    # Pages (a publisher's supplemental listing, an API response) are wanted as
+    # markup, not as a file on disk. The tab is still open and already past any
+    # challenge, so one CDP round-trip is all it takes.
+    if want_html and not (session.result or {}).get('html'):
+        html = await fetch_page_html_via_cdp(
+            (session.result or {}).get('ws_url') or '', port=session.port)
+        if html:
+            session.result = dict(session.result or {}, html=html)
 
     # The challenge flow reports the file it saw appear; when it did not (it
     # only watches for *new* files), fall back to whatever is in the
