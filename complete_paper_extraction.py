@@ -90,8 +90,10 @@ OUTPUT_DIR = OUTPUT_DIR_DEFAULT
 #                              (both headed and headless preflight)
 #   DP_CLOUDFLARE_TIMEOUT      Cloudflare Turnstile auto-solve budget
 #                              (initial-poll fraction fixed at ~13% below)
-#   DP_PDF_WAIT                sleep after PDF navigation (browser tab
-#                              needs time to trigger the download event)
+#   DP_PDF_FASTPATH_WAIT       how long the throwaway PDF browser waits for
+#                              the file to land before attaching CDP to click
+#                              the challenge (short: a challenged PDF never
+#                              lands, so this only delays the click)
 #   DP_SUPPLEMENTAL_TIMEOUT    supplemental download navigation +
 #                              download-event wait
 #   DP_FIGURE_TIMEOUT          figure navigation (both primary and
@@ -128,9 +130,11 @@ DP_PAGE_LOAD_TIMEOUT = _env_seconds('DP_PAGE_LOAD_TIMEOUT', 120)
 DP_CLOUDFLARE_TIMEOUT = _env_seconds('DP_CLOUDFLARE_TIMEOUT', 600)
 DP_CLOUDFLARE_INITIAL_POLL = max(2.0, DP_CLOUDFLARE_TIMEOUT / 7.5)  # ~4 s at default
 
-# PDF post-navigation wait — the browser tab needs some time after
-# goto(pdf_url) to fire the download event. Default: 10 s.
-DP_PDF_WAIT = _env_seconds('DP_PDF_WAIT', 10)
+# Throwaway-PDF-browser fast path — how long to wait for the file to appear
+# before attaching CDP and looking for the challenge box. Kept short: a
+# publisher that challenges the PDF never drops a file in this window, so
+# every second here just postpones the click. Default: 3 s.
+DP_PDF_FASTPATH_WAIT = _env_seconds('DP_PDF_FASTPATH_WAIT', 3)
 
 # PDF download hard cap — 判据为「下载事件」的等待上限。
 # 分享 Chrome 被 Playwright(accept_downloads=True) 接管后，文件落入 playwright-artifacts
@@ -1353,6 +1357,7 @@ async def _try_fresh_chrome_pdf(pdf_url: str, output_dir: Path,
             download_dir=download_dir,
             timeout_s=int(DP_CLOUDFLARE_TIMEOUT),
             headless=headless,
+            fast_path_wait_s=DP_PDF_FASTPATH_WAIT,
         )
         result = session.result or {}
         landed = result.get('downloaded_file')

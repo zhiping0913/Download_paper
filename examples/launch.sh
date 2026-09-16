@@ -79,6 +79,12 @@ export CHROME_PROFILE_ROOT="${CHROME_PROFILE_ROOT:-/tmp/dp_profiles}"
 #                                              指纹最干净，但没有机构订阅）
 # export FRESH_PROFILE=1
 
+# ★ cookie 解密用的密钥存放方式。Linux 上 Chrome 的 cookie 密钥在系统钥匙环里，
+# 接不到就只能解开极少数条目（实测 1712 条只剩 22 条、出版商 cookie 一条不剩）。
+# 程序在 Linux + 有 DBUS 会话时自动加 --password-store=gnome-libsecret；
+# 取值因机器而异（kwallet5 在某些机器上无效），置空则完全不加。
+# export CHROME_PASSWORD_STORE=gnome-libsecret
+
 # 播种来源（干净的、人类在用的 profile）。不设则按平台自动探测：
 #   Linux ~/.config/google-chrome
 #   macOS ~/Library/Application Support/Google/Chrome
@@ -107,8 +113,10 @@ export DP_PAGE_LOAD_TIMEOUT=120          # 默认 120
 # 保证没挑战的页面能快速返回
 export DP_CLOUDFLARE_TIMEOUT=600         # 默认 600
 
-# PDF 导航后 sleep 的时长，等浏览器触发 download 事件
-export DP_PDF_WAIT=10                    # 默认 10
+# PDF 快路径探测：一次性 Chrome 启动后、附着 CDP 点验证框之前，先等这么久
+# 看 PDF 会不会自己落盘。必须短 —— 会弹验证框的出版商永远不会在这个窗口里
+# 落盘，等待只是在推迟点框（ScienceDirect 实测：3 秒下首次点框在 +11 秒）。
+export DP_PDF_FASTPATH_WAIT=3            # 默认 3
 
 # PDF「下载已开始」判据：download 事件多久没来就算没开始
 export DP_PDF_DOWNLOAD_TIMEOUT=30        # 默认 30
@@ -175,9 +183,10 @@ echo "────────────────────────�
 for v in CHROME_PATH CHROME_DEBUG_PORT CHROME_PDF_DEBUG_PORT \
          CHROME_PROFILE_ROOT CHROME_PROFILE \
          DP_PDF_FRESH_CHROME CHROME_DOWNLOAD_DIR \
-         FRESH_PROFILE CHROME_PROFILE_SOURCE_DIR \
+         FRESH_PROFILE CHROME_PROFILE_SOURCE_DIR CHROME_PASSWORD_STORE \
+         DP_HTTP_FIRST DP_HTTP_USER_AGENT \
          USE_CHROME_MODE HEADLESS \
-         DP_PAGE_LOAD_TIMEOUT DP_CLOUDFLARE_TIMEOUT DP_PDF_WAIT \
+         DP_PAGE_LOAD_TIMEOUT DP_CLOUDFLARE_TIMEOUT DP_PDF_FASTPATH_WAIT \
          DP_PDF_DOWNLOAD_TIMEOUT DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT \
          DP_SUPPLEMENTAL_TIMEOUT DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT \
          DP_FIGURE_TIMEOUT \

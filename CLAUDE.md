@@ -216,8 +216,6 @@ python batch_process.py --file dois.txt                     # 批量
   反过来会把已成功的下载误判为失败。但它**曾经是 20 秒**——对 ScienceDirect 这类必然弹框的
   出版商，文件永远不会落盘，那 20 秒纯粹是在推迟点框（其后附着还要最多 10 秒找 tab + 固定 2 秒）。
   未被挑战的 PDF 在启动后 1~2 秒内就落盘，短探测不会有损失
-- ⚠️ `DP_PDF_WAIT` 在 Python 代码里**没有任何使用点**（只有注释和定义），`examples/launch.sh`
-  仍在导出它。PDF 阶段的等待与它无关，排查时别被它误导
 ### profile 生命周期（`chrome_session.prepare_profile_dir`）
 
 - **抓取 profile 永不复用**。每次开浏览器都是「先删再建」，两个实例（正文页的共享实例、
