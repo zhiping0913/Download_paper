@@ -58,6 +58,23 @@ from core import (
     save_crossref_json,
     block_mathjax,
 )
+# The fetch ladder lives in core.utilities because publisher handlers need it
+# too, and the dependency runs one way: a handler importing this module would
+# be the first cycle in the tree. Imported straight from the submodule, the
+# way wiley/optica/iop do, rather than widening core/__init__'s public surface
+# with what is internal plumbing.
+from core.utilities import (
+    cookies_for_requests,
+    fetch_ladder,
+    fresh_chrome_enabled,
+    http_asset_headers,
+)
+
+# Private aliases so the call sites here read as they always did.
+_fetch_ladder = fetch_ladder
+_cookies_for_requests = cookies_for_requests
+_fresh_chrome_enabled = fresh_chrome_enabled
+_http_asset_headers = http_asset_headers
 from publisher.orchestrator import (
     detect_publisher_from_url,
     get_publisher_handler,
@@ -1352,12 +1369,6 @@ async def _download_all_resources(
 # ============================================================================
 
 
-def _fresh_chrome_enabled() -> bool:
-    """Whether the throwaway-Chrome PDF path may be used at all."""
-    return (os.environ.get('DP_PDF_FRESH_CHROME', '1').strip().lower()
-            not in ('0', 'false', 'no', 'off')) and _CF_BYPASS_AVAILABLE
-
-
 async def _try_fresh_chrome_download(pdf_url: str, output_dir: Path,
                                      filename: str,
                                      headless: bool = False) -> Optional[str]:
@@ -2195,118 +2206,9 @@ async def _fetch_image_as_bytes(page, url: str) -> bytes:
 # "Usable" is checked on the bytes, not just the status: a 200 carrying an
 # HTML challenge or login page is the common way this fails, and saving it
 # would leave a .jpg that is really a Cloudflare interstitial.
-
-DP_HTTP_USER_AGENT = os.environ.get(
-    'DP_HTTP_USER_AGENT',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
-    '(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
-)
-# DP_HTTP_FIRST=0 skips the plain request and goes straight to the browser.
-DP_HTTP_FIRST = os.environ.get('DP_HTTP_FIRST', '1').strip().lower() not in (
-    '0', 'false', 'no', 'off')
-
-
-# ----------------------------------------------------------------------------
-# The fallback ladder
-# ----------------------------------------------------------------------------
-# One order for every kind of fetch -- API pages, the PDF, figures,
-# supplemental files:
 #
-#   request  plain HTTP carrying the article session's cookies
-#   tab      a new tab in the browser already holding the article
-#   fresh    a throwaway Chrome seeded from the real profile
-#
-# Each kind names the tier it *starts* at; a failure falls through to the ones
-# below it. The default is 'tab' because the tier above it is not yet proven:
-# cookies alone do not get past a host that is actively challenging (see
-# _cookies_for_requests). Publishers that hand a human a button to click --
-# IOP's /data page, Science's supplements -- are why 'fresh' exists at the
-# bottom: by the time they are reached the shared browser has been driven by
-# automation for a while, and a profile that has never been automated gets
-# through where it does not.
-_FETCH_TIERS = ('request', 'tab', 'fresh')
-_FETCH_KINDS = ('api', 'pdf', 'figure', 'supplement')
-
-
-def _fetch_ladder(kind: str, default: tuple = ('tab', 'fresh')) -> tuple:
-    """Tiers to try for *kind*, in order.
-
-    ``DP_FETCH_<KIND>`` overrides ``DP_FETCH_ORDER`` overrides *default*. An
-    unrecognised value is ignored rather than fatal -- a typo in a launch
-    script should not stop a download.
-
-    A configured value truncates: ``DP_FETCH_PDF=fresh`` means *only* the
-    throwaway Chrome, which is what someone naming a tier explicitly wants.
-    *default* is a full order instead, so a caller can express a preference
-    that is not a prefix of request/tab/fresh -- a headed PDF wants
-    ('fresh', 'tab'), and truncation could not say that.
-    """
-    start = (os.environ.get(f'DP_FETCH_{kind.upper()}')
-             or os.environ.get('DP_FETCH_ORDER')
-             or '').strip().lower()
-    if start in _FETCH_TIERS:
-        # DP_HTTP_FIRST=0 predates this and says exactly "skip the plain
-        # request".
-        if start == 'request' and not DP_HTTP_FIRST:
-            start = 'tab'
-        tiers = _FETCH_TIERS[_FETCH_TIERS.index(start):]
-    else:
-        tiers = tuple(default)
-    # DP_PDF_FRESH_CHROME=0 disables the throwaway Chrome outright.
-    if not _fresh_chrome_enabled():
-        tiers = tuple(t for t in tiers if t != 'fresh')
-    return tiers or ('tab',)
-
-
-async def _cookies_for_requests(url: str, context=None, page=None) -> dict:
-    """Cookies from the live browser session, scoped to *url*'s host.
-
-    This is what makes the 'request' tier worth attempting at all: without
-    them a publisher that gated the article behind a login serves an asset
-    request a login page instead, which the byte check then rejects -- a
-    wasted round trip every time.
-
-    ⚠️ Cookies are not sufficient against a host that is actively challenging.
-    A Cloudflare clearance cookie is bound to the user agent, IP and TLS
-    fingerprint of the browser that earned it, and ``requests`` matches none of
-    those, so such hosts still fall through to the browser tiers. That is the
-    ladder working as intended, not a bug to chase.
-    """
-    ctx = context
-    if ctx is None and page is not None:
-        ctx = getattr(page, 'context', None)
-    if ctx is None:
-        return {}
-    try:
-        raw = await ctx.cookies()
-    except Exception:
-        return {}
-
-    host = (urlparse(url).hostname or '').lower()
-    jar = {}
-    for cookie in raw or []:
-        name = cookie.get('name')
-        value = cookie.get('value')
-        if not name or value is None:
-            continue
-        # Send only what this host is entitled to; a flat dump of the jar
-        # would leak one publisher's session to another's CDN.
-        domain = (cookie.get('domain') or '').lstrip('.').lower()
-        if domain and not (host == domain or host.endswith('.' + domain)):
-            continue
-        jar[name] = value
-    return jar
-
-
-def _http_asset_headers(referer: str = None) -> dict:
-    headers = {
-        'User-Agent': DP_HTTP_USER_AGENT,
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-    }
-    if referer and referer.startswith('http'):
-        headers['Referer'] = referer
-    return headers
+# The rungs themselves (and the cookie jar they carry) live in core.utilities;
+# see the aliases near the top of this module.
 
 
 def _http_download_to(url: str, dest: Path, referer: str = None,

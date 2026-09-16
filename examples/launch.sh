@@ -28,8 +28,10 @@ cd "$(dirname "$0")/.."
 # ---------------------------------------------------------------------------
 #
 #   主实例      CHROME_DEBUG_PORT      打开论文页面、提取正文；每篇结束后关闭重开
-#   一次性实例  CHROME_PDF_DEBUG_PORT  只用来下载 PDF；用 pdf_dir，每次重建，
-#                                      用完即删，从不被 Playwright 接管
+#   辅助实例    CHROME_AUX_DEBUG_PORT  取数阶梯的最底层：PDF、图片、补充材料、
+#                                      API 页面；用 aux_dir，每次重建，用完即删，
+#                                      从不被 Playwright 接管
+#                                      （旧名 CHROME_PDF_DEBUG_PORT 仍可用）
 #
 # 为什么要两个：主实例自打开正文页起就被 Playwright 接管，带上了自动化指纹；
 # 而且正文域名过掉的 Cloudflare 对 PDF 域名（如 pdf.sciencedirectassets.com）
@@ -45,7 +47,7 @@ cd "$(dirname "$0")/.."
 # export CHROME_PATH=/opt/google/chrome/chrome
 
 export CHROME_DEBUG_PORT=9222            # 主实例 CDP 端口。默认 9222
-export CHROME_PDF_DEBUG_PORT=9333        # 一次性实例 CDP 端口。默认 9333
+export CHROME_AUX_DEBUG_PORT=9333        # 辅助实例 CDP 端口。默认 9333
                                          # 两个端口必须不同；被占用会自动顺延
                                          # (9333 → 9334 → …)，并发跑不会互抢
 
@@ -53,7 +55,7 @@ export CHROME_PDF_DEBUG_PORT=9333        # 一次性实例 CDP 端口。默认 9
 
 # ★ 抓取 profile 的根目录。程序在它下面建两个一次性目录：
 #     main_dir  正文页的共享实例
-#     pdf_dir   下载 PDF 的一次性实例
+#     aux_dir   辅助（一次性）实例：PDF、图片、补充材料、API 页面
 # 两个都是每次开浏览器「先删再建」，绝不复用被自动化污染过的 profile，
 # 所以不需要指向你日常上网那个 profile（那个只作为播种来源，程序只读不写）。
 # 不设 → 默认 /tmp/dp_profiles_xxxxxx，后缀按启动时间做种随机生成，
@@ -180,10 +182,12 @@ fi
 echo "──────────────────────────────────────────────────────"
 echo " Download_paper env vars in effect"
 echo "──────────────────────────────────────────────────────"
-for v in CHROME_PATH CHROME_DEBUG_PORT CHROME_PDF_DEBUG_PORT \
+for v in CHROME_PATH CHROME_DEBUG_PORT CHROME_AUX_DEBUG_PORT \
          CHROME_PROFILE_ROOT CHROME_PROFILE \
          DP_PDF_FRESH_CHROME CHROME_DOWNLOAD_DIR \
          FRESH_PROFILE CHROME_PROFILE_SOURCE_DIR CHROME_PASSWORD_STORE \
+         DP_FETCH_ORDER DP_FETCH_PDF DP_FETCH_FIGURE \
+         DP_FETCH_SUPPLEMENT DP_FETCH_API \
          DP_HTTP_FIRST DP_HTTP_USER_AGENT \
          USE_CHROME_MODE HEADLESS \
          DP_PAGE_LOAD_TIMEOUT DP_CLOUDFLARE_TIMEOUT DP_PDF_FASTPATH_WAIT \
