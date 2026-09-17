@@ -1956,8 +1956,13 @@ async def _download_via_referer_click(session, referer_url: str, target_url: str
     try:
         async with websockets.connect(ws_url, max_size=10 * 1024 * 1024,
                                       open_timeout=10) as ws:
-            await _send(ws, "Page.enable")
-            await _send(ws, "Network.enable")
+            # No Page.enable / Network.enable here. Those exist only to start
+            # event pushes, and _send discards every message without an id --
+            # this module consumes no CDP events at all. On the rung whose
+            # point is to touch the page as little as possible, two commands
+            # that buy nothing are two commands worth not sending.
+            # Runtime.evaluate and Input.dispatchMouseEvent are commands and
+            # need no domain enabled.
             armed = await _send(ws, "Runtime.evaluate", {
                 "expression": _REFERER_CLICK_JS % json.dumps(target_url),
                 "returnByValue": True,
