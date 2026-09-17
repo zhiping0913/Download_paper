@@ -138,14 +138,18 @@ def _env_seconds(name: str, default: float) -> float:
 
 # Page-load family — covers the initial article navigation (headed + headless),
 # every intermediate wait_for_load_state('networkidle'), and the direct
-# APIRequestContext GET used for asset fetches. Default: 60 s.
+# APIRequestContext GET used for asset fetches. Default: 120 s.
 DP_PAGE_LOAD_TIMEOUT = _env_seconds('DP_PAGE_LOAD_TIMEOUT', 120)
 
 # Cloudflare Turnstile family — total budget once a widget is seen.
-# The initial-poll window (how long to wait for a widget to APPEAR) is
-# a fixed fraction of this so no-challenge pages exit fast.
-DP_CLOUDFLARE_TIMEOUT = _env_seconds('DP_CLOUDFLARE_TIMEOUT', 600)
-DP_CLOUDFLARE_INITIAL_POLL = max(2.0, DP_CLOUDFLARE_TIMEOUT / 7.5)  # ~4 s at default
+#
+# The initial-poll window (how long to wait for a widget to APPEAR) is a fixed
+# fraction of this, which makes the default matter far more than it looks: it
+# is what a page with NO challenge pays before it can conclude there is none,
+# and most pages have no challenge. At 600 that was 80 s of dead waiting on
+# every one of them. 60 puts the derived window at 8 s.
+DP_CLOUDFLARE_TIMEOUT = _env_seconds('DP_CLOUDFLARE_TIMEOUT', 60)
+DP_CLOUDFLARE_INITIAL_POLL = max(2.0, DP_CLOUDFLARE_TIMEOUT / 7.5)  # 8 s at default
 
 # Throwaway-PDF-browser fast path — how long to wait for the file to appear
 # before attaching CDP and looking for the challenge box. Kept short: a
@@ -163,8 +167,8 @@ DP_PDF_DOWNLOAD_TIMEOUT = _env_seconds('DP_PDF_DOWNLOAD_TIMEOUT', 30)
 # PDF 下载「完成」等待 — 慢网速专用。
 # 与 DP_PDF_DOWNLOAD_TIMEOUT（判“是否开始了下载”）分离：
 # 一旦 download 事件已触发（下载真实开始），就只等它完成，不因慢而重开页面/retry。
-# 默认 180 s，可通过 DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT 覆盖。
-DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT = _env_seconds('DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT', 180)
+# 默认 60 s；慢网或超大 PDF 可用 DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT 调大。
+DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT = _env_seconds('DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT', 60)
 
 # Supplemental download family — both the initial page.goto(url) and the
 # download-event wait for each supplemental link. Also covers inline-audio
@@ -173,9 +177,11 @@ DP_SUPPLEMENTAL_TIMEOUT = _env_seconds('DP_SUPPLEMENTAL_TIMEOUT', 60)
 
 # Supplemental download completion wait — after the download event fires
 # (file transfer in progress), how long to wait for download.path() to
-# resolve before giving up. Slow networks may need 10+ minutes for large
-# DOCX/MP4 files. Default: 600 s (10 min).
-DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT = _env_seconds('DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT', 600)
+# resolve before giving up. Default: 120 s. A large DOCX/MP4 on a slow link
+# can need 10+ minutes; that is what raising
+# DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT is for, rather than making every
+# run wait that long by default.
+DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT = _env_seconds('DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT', 120)
 
 # Figure download family — the CDN goto for each figure image (and the
 # fallback img_src re-fetch if the first response wasn't image/*).

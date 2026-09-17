@@ -113,7 +113,10 @@ export DP_PAGE_LOAD_TIMEOUT=120          # 默认 120
 
 # Cloudflare 挑战自动点击的总预算。派生的 initial-poll = max(2, total/7.5)，
 # 保证没挑战的页面能快速返回
-export DP_CLOUDFLARE_TIMEOUT=600         # 默认 600
+export DP_CLOUDFLARE_TIMEOUT=60          # 默认 60。注意它同时决定「等 widget 出现」
+                                         # 的窗口（本值/7.5，此处 8s）——没有挑战的
+                                         # 页面要等满这个窗口才能断定无挑战，所以别
+                                         # 随手调大
 
 # PDF 快路径探测：一次性 Chrome 启动后、附着 CDP 点验证框之前，先等这么久
 # 看 PDF 会不会自己落盘。必须短 —— 会弹验证框的出版商永远不会在这个窗口里
@@ -124,11 +127,11 @@ export DP_PDF_FASTPATH_WAIT=3            # 默认 3
 export DP_PDF_DOWNLOAD_TIMEOUT=30        # 默认 30
 
 # PDF「下载已完成」判据：已开始后允许它慢慢下多久（慢网速调大这个）
-export DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT=180      # 默认 180
+export DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT=60       # 默认 60；慢网/超大 PDF 再调大
 
 # 补充材料：每个链接的 goto + download 事件等待
 export DP_SUPPLEMENTAL_TIMEOUT=60                # 默认 60
-export DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT=600  # 默认 600
+export DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT=120  # 默认 120；大 DOCX/MP4 再调大
 
 # 图片 / 补充材料：先直接 HTTP 请求（UA + Referer），拿不到网页以外的真文件才回退浏览器。
 # export DP_HTTP_FIRST=0                 # 设 0 = 跳过直接请求，全部走浏览器。默认 1

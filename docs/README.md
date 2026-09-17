@@ -127,11 +127,11 @@ export OUTPUT_DIR_DEFAULT=/home/coze/Download_paper/captured_data  # 完整输�
 
 ```bash
 export DP_PAGE_LOAD_TIMEOUT=120
-export DP_CLOUDFLARE_TIMEOUT=600
-export DP_PDF_DOWNLOAD_TIMEOUT=30
-export DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT=180   # 慢网速 PDF 完成等待
+export DP_CLOUDFLARE_TIMEOUT=60               # 见下方说明，别随手调大
+export DP_PDF_DOWNLOAD_TIMEOUT=30             # 判「下载是否开始」
+export DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT=60    # 判「下载是否完成」，慢网再调大
 export DP_SUPPLEMENTAL_TIMEOUT=60
-export DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT=600  # 大文件 DOCX/MP4 完成等待
+export DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT=120  # 大文件 DOCX/MP4 再调大
 export DP_FIGURE_TIMEOUT=60
 ```
 
