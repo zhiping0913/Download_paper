@@ -299,13 +299,20 @@ PDF、图片、补充材料、API/页面（如 IOP 的 `/data`）走的是**同�
 - 阶梯放在 **`core/utilities.py`** 而不是主文件：publisher handler 也要用，而依赖方向
   是单向的（主文件 → publisher），handler 反向 import 主文件会造出本仓第一个循环依赖
 - 兼容：`DP_HTTP_FIRST=0` = 跳过 `request` 层；`DP_PDF_FRESH_CHROME=0` = 摘掉 `fresh` 层
-- ⚠️ **`fresh` 这一层必须跟随本次运行的有头/无头模式**，即 `headless=not force_headed`。
-  无头的一次性 Chrome 是我们能拿出的**最可疑**的浏览器，而这一层的全部意义恰恰是
-  「看起来像从没被自动化过的真人」。实测：有头运行 IOP 的 `/data` 页时误以无头启动，
-  直接撞上 `Radware Bot Manager Captcha`，阶梯各层全灭
-- handler 拿不到 `force_headed`，由主流程在 `extract_all` **之前**挂到
-  `handler._force_headed` 上（与 `_landing_url` / `_raw_server_html` 同一套惯例），
-  handler 再显式传给 `fetch_html_via_ladder(headless=...)`。别依赖该参数的默认值
+- ⚠️ **`fresh` 这一层必须跟随本次运行的有头/无头模式**，即
+  `headless=not handler.is_headed_run()`。无头的一次性 Chrome 是我们能拿出的
+  **最可疑**的浏览器，而这一层的全部意义恰恰是「看起来像从没被自动化过的真人」。
+  实测：有头运行 IOP 的 `/data` 页时误以无头启动，直接撞上
+  `Radware Bot Manager Captcha`，阶梯各层全灭
+- **怎么拿这个状态**：handler 问不到 Playwright（`Browser` 上没有 headless 标志，
+  而靠 UA 判断在 Chrome 的新无头模式下已失效），所以由主流程在 `extract_all`
+  **之前**挂到 `handler._force_headed`（与 `_landing_url` / `_raw_server_html`
+  同一套惯例），handler 统一经基类的 `is_headed_run()` 读取
+- ⚠️ **绕过主流程的路径要自己传**：`springer_book` 会直接构造 `NatureHandler`
+  并调它的 `extract_all()`，`process_with_handler` 根本不会为那个内层 handler 运行，
+  于是 `_force_headed` 永远挂不上。这类嵌套调用必须手动把状态传过去
+- `fetch_html_via_ladder(headless=...)` 的默认是 **True**：忘记传时宁可在无头批次里
+  不弹窗（较安静的那个错误答案），但对有头运行它依然是错的 —— **显式传**
 
 ### profile 生命周期（`chrome_session.prepare_profile_dir`）
 

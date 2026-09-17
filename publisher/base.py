@@ -57,6 +57,27 @@ class PublisherHandler(ABC):
                 pass
         return ''
 
+    def is_headed_run(self) -> bool:
+        """Whether the page this handler was given belongs to a headed browser.
+
+        A handler cannot ask Playwright this -- there is no ``headless`` flag
+        on a Browser, and sniffing the user agent stopped working once Chrome's
+        new headless mode began reporting an ordinary one. So the workflow pins
+        the answer on the handler as ``_force_headed`` before ``extract_all``
+        runs, the same way ``_landing_url`` and ``_raw_server_html`` are passed
+        down.
+
+        Anything that opens a browser of its own must route the answer through
+        here rather than assume: a throwaway Chrome launched headless during a
+        headed run is the most detectable browser we could present, and
+        launching a window during a headless batch is the opposite nuisance.
+
+        Defaults to False when nothing pinned it, which matches the standalone
+        case -- a handler running without a workflow has no headed browser to
+        belong to.
+        """
+        return bool(getattr(self, '_force_headed', False))
+
     @abstractmethod
     async def extract_metadata(self, page) -> dict:
         """Extract paper metadata (author, title, abstract, etc.)"""

@@ -511,6 +511,11 @@ class SpringerBookHandler(PublisherHandler):
         try:
             # Create a NatureHandler for this chapter
             handler = NatureHandler(page=page, doi=chapter_doi)
+            # This path calls extract_all() directly, so process_with_handler
+            # never runs for the inner handler and never pins the run mode on
+            # it. Carry it across, or anything the chapter opens would fall
+            # back to a default instead of the mode this run is actually in.
+            handler._force_headed = self.is_headed_run()
 
             # Navigate to chapter page via DOI
             await page.goto(f"https://doi.org/{chapter_doi}", wait_until='domcontentloaded', timeout=60000)
