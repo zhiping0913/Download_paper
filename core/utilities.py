@@ -75,6 +75,41 @@ def env_seconds(name: str, default: float) -> float:
 # that has genuinely stopped moving, never on one that is merely slow.
 DP_INPAGE_FETCH_TIMEOUT = env_seconds('DP_INPAGE_FETCH_TIMEOUT', 90)
 
+# Hard ceiling on ONE plain-HTTP file transfer (the `request` rung).
+#
+# This is NOT the same thing as the read timeout requests already takes. That
+# one only fires when the socket goes *idle*, so a server dribbling bytes never
+# trips it -- measured locally against a handler emitting one byte every 0.4 s:
+# with timeout=(15, 2) it streamed for 24 s straight and would have continued
+# indefinitely. Supplemental videos are where this bites, because they are the
+# only assets big enough for a degraded link to stay "almost working" for
+# hours.
+#
+# Generous on purpose (same rule as DP_INPAGE_FETCH_TIMEOUT): it exists to end
+# a transfer that is never going to finish, not to police slow ones. A genuine
+# 500 MB video on a slow link must still complete.
+DP_HTTP_TOTAL_TIMEOUT = env_seconds('DP_HTTP_TOTAL_TIMEOUT', 600)
+
+
+async def download_path_with_timeout(download, *, timeout_s: float,
+                                     what: str = '下载'):
+    """``download.path()`` that cannot hang. Returns None on timeout.
+
+    The third Playwright call with no timeout of its own. It resolves only once
+    the transfer finishes, so a stalled connection parks the awaiting task
+    forever -- and these awaits sit inside ``on('download')`` handlers, where a
+    hang is completely invisible: no traceback, no retry, nothing in the log.
+    Just a file that never appears and a batch that never advances.
+    """
+    try:
+        return await asyncio.wait_for(download.path(), timeout=float(timeout_s))
+    except asyncio.TimeoutError:
+        print(f"    ⏱️  {what}未在 {float(timeout_s):g}s 内完成落盘，判定为卡死并放弃")
+        return None
+    except Exception as exc:
+        print(f"    ⚠️  读取{what}落盘路径失败（{type(exc).__name__}: {str(exc)[:80]}）")
+        return None
+
 
 async def evaluate_with_timeout(page, expression, arg=None, *,
                                 timeout_s: float = None, what: str = 'in-page fetch'):
