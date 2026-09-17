@@ -960,7 +960,7 @@ class IOPHandler(PublisherHandler):
                             page, doi, captured_data_dir=self.captured_data_dir,
                             # Pinned by process_with_handler before extract_all
                             # runs; a handler has no other way to know.
-                            force_headed=getattr(self, '_force_headed', False),
+                            force_headed=self.is_headed_run(),
                         )
                     )
                 except Exception as e:
