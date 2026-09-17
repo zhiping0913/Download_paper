@@ -1369,23 +1369,25 @@ async def _download_all_resources(
 # ============================================================================
 
 
-async def _try_fresh_chrome_download(pdf_url: str, output_dir: Path,
+async def _try_fresh_chrome_download(url: str, output_dir: Path,
                                      filename: str,
                                      headless: bool = False) -> Optional[str]:
-    """Download *pdf_url* with a throwaway Chrome seeded from the real profile.
+    """Download *url* with a throwaway Chrome seeded from the real profile.
 
-    The bottom rung of the fetch ladder, and not PDF-specific despite the
-    parameter's name: it watches a download directory, so a figure or a
-    supplemental file arrives the same way.
+    The bottom rung of the fetch ladder, for any kind of file: it watches a
+    download directory, so the article PDF, a supplemental PDF or ZIP, and a
+    figure all arrive the same way. Nothing here is PDF-specific, and the
+    messages must not claim otherwise -- a supplement reported as "下载 PDF"
+    sends you looking in the wrong place.
 
     Used when the ordinary browser cannot get the file: the shared instance
     has been driven by Playwright since the article loaded and carries that
     fingerprint, and a clearance won on the article host does not transfer to
-    the separate host several publishers serve PDFs from.
+    the separate host several publishers serve files from.
 
     Returns the saved filename, or None so the caller can fall back.
     """
-    if not pdf_url or not _fresh_chrome_enabled():
+    if not url or not _fresh_chrome_enabled():
         return None
 
     from chrome_session import open_url_in_fresh_chrome
@@ -1393,11 +1395,11 @@ async def _try_fresh_chrome_download(pdf_url: str, output_dir: Path,
     session = None
     # A dedicated download directory per attempt, so "which file appeared" is
     # unambiguous.
-    download_dir = tempfile.mkdtemp(prefix='dp_pdf_')
+    download_dir = tempfile.mkdtemp(prefix='dp_dl_')
     try:
-        print("  🛡️  用独立 Chrome 下载 PDF（避开共享浏览器的自动化指纹）...")
+        print("  🛡️  用独立 Chrome 下载（避开共享浏览器的自动化指纹）...")
         session = await open_url_in_fresh_chrome(
-            pdf_url,
+            url,
             pdf_mode=True,
             download_dir=download_dir,
             timeout_s=int(DP_CLOUDFLARE_TIMEOUT),
@@ -1410,12 +1412,12 @@ async def _try_fresh_chrome_download(pdf_url: str, output_dir: Path,
             if result.get('success'):
                 print("  ✓ 挑战已通过，但未检测到下载文件")
             else:
-                print("  ⚠️  独立 Chrome 未拿到 PDF")
+                print("  ⚠️  独立 Chrome 未拿到文件")
             return None
         print(f"  ✓ 独立 Chrome 已触发下载: {landed}")
         return _finalize_downloaded_pdf(landed, output_dir, filename)
     except Exception as exc:
-        print(f"  ⚠️  独立 Chrome 下载 PDF 异常: {exc}")
+        print(f"  ⚠️  独立 Chrome 下载异常: {exc}")
         return None
     finally:
         await _close_fresh_pdf_session(session, download_dir)
