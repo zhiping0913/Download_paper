@@ -1529,7 +1529,11 @@ async def download_pdf(
                 pdf_url, output_dir, filename, headless=not force_headed)
             if saved:
                 return saved
-            print("  ↪ 回退 Playwright 导航")
+            # 只有下面真的还有一层时才说「回退」。阶梯被截断成只剩 fresh 时
+            # （DP_FETCH_PDF=fresh），先说要回退、下一行又说没有这一层，
+            # 自相矛盾。
+            if 'tab' in ladder:
+                print("  ↪ 回退 Playwright 导航")
 
         if 'tab' not in ladder:
             print("    ⚠️  阶梯里没有浏览器标签页这一层，不再尝试")
