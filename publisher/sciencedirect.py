@@ -2166,6 +2166,42 @@ class ScienceDirectHandler(PublisherHandler):
     async def get_figures(self, json_data: dict) -> dict:
         return {}
 
+    @staticmethod
+    def detect_access_from_html(html: str) -> bool:
+        """False when the article's own access label says it is not readable.
+
+        ⚠️ The label must come from the article's own ``<div>``, not from any
+        ``.content-meta-access-label`` on the page. The "recommended articles"
+        sidebar carries one ``<span>`` of that same class per suggestion,
+        showing *those* articles' access: the archived sample has five matches
+        -- one div for this article, four spans for neighbours, two of which
+        read "Open access". A bare class lookup would cheerfully report a
+        stranger's entitlement as this paper's.
+
+        A missing label counts as no access, which is what ScienceDirect does
+        for gated articles. That also means a page that failed to render fully
+        reads as gated, so the branch taken is printed: a paper skipped for the
+        wrong reason should be visible in the log rather than silent.
+        """
+        if not html:
+            return True
+        soup = BeautifulSoup(html, 'html.parser')
+        element = soup.select_one(
+            'div.content-meta-labels div.content-meta-access-label')
+        if element is None:
+            # Same element, without assuming the wrapper class is present.
+            element = soup.select_one('div.content-meta-access-label')
+        if element is None:
+            print('  🔒 页面上没有本文的 content-meta-access-label — 判定为无访问权限')
+            return False
+
+        label = element.get_text(strip=True)
+        lowered = label.lower()
+        if any(marker in lowered for marker in ('abstract only', 'no access')):
+            print(f'  🔒 访问标签为 {label!r} — 无访问权限')
+            return False
+        return True
+
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
         page, managed_playwright, managed_browser, managed_context = await init_extract_all_page(
             self, page, doi, 'ScienceDirectHandler'
@@ -2255,6 +2291,7 @@ class ScienceDirectHandler(PublisherHandler):
                 },
                 'fulltext_data': fulltext_html,
                 'journal_name': 'sciencedirect',
+                'access': self.detect_access_from_html(fulltext_html),
             }
         finally:
             if managed_context is not None:

@@ -857,6 +857,32 @@ class ScienceHandler(PublisherHandler):
     async def get_figures(self, json_data: dict) -> dict:
         return {}
 
+    @staticmethod
+    def detect_access_from_html(html: str) -> bool:
+        """False when Science states outright that this article is not readable.
+
+        The landing page carries ``data-article-access``. Values seen in the
+        captures here: "no" on a paywalled 1991 article, "free" on a 2024 one;
+        "full" also occurs.
+
+        Written as a deny-list on "no" rather than an allow-list of the values
+        that mean yes. A value Science adds later then reads as accessible and
+        costs at worst one wasted download, where an allow-list would silently
+        skip an article that was there all along. A page without the attribute
+        at all (the 2017 capture has none) is likewise treated as accessible.
+        """
+        if not html:
+            return True
+        soup = BeautifulSoup(html, 'html.parser')
+        element = soup.find(attrs={'data-article-access': True})
+        if element is None:
+            return True
+        value = (element.get('data-article-access') or '').strip().lower()
+        if value == 'no':
+            print('  🔒 data-article-access="no" — Science 未授予访问权限')
+            return False
+        return True
+
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
         page, managed_playwright, managed_browser, managed_context = await init_extract_all_page(
             self, page, doi, 'ScienceHandler'
@@ -913,6 +939,7 @@ class ScienceHandler(PublisherHandler):
                 },
                 'fulltext_data': fulltext_html,
                 'journal_name': 'science',
+                'access': self.detect_access_from_html(fulltext_html),
             }
         finally:
             if managed_context is not None:
