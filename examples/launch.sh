@@ -121,7 +121,9 @@ export DP_CLOUDFLARE_TIMEOUT=60          # 默认 60。注意它同时决定「�
 # PDF 快路径探测：一次性 Chrome 启动后、附着 CDP 点验证框之前，先等这么久
 # 看 PDF 会不会自己落盘。必须短 —— 会弹验证框的出版商永远不会在这个窗口里
 # 落盘，等待只是在推迟点框（ScienceDirect 实测：3 秒下首次点框在 +11 秒）。
-export DP_PDF_FASTPATH_WAIT=3            # 默认 3
+export DP_PDF_FASTPATH_WAIT=5            # 默认 5。等 Chrome 启动导航自己出结果：
+                                         # 文件落盘就完全不附着 CDP；若先出现页面
+                                         # （挑战/付费墙）则立即转 CDP，不白等
 
 # PDF「下载已开始」判据：download 事件多久没来就算没开始
 export DP_PDF_DOWNLOAD_TIMEOUT=30        # 默认 30

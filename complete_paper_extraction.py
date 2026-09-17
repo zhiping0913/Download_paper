@@ -151,11 +151,17 @@ DP_PAGE_LOAD_TIMEOUT = _env_seconds('DP_PAGE_LOAD_TIMEOUT', 120)
 DP_CLOUDFLARE_TIMEOUT = _env_seconds('DP_CLOUDFLARE_TIMEOUT', 60)
 DP_CLOUDFLARE_INITIAL_POLL = max(2.0, DP_CLOUDFLARE_TIMEOUT / 7.5)  # 8 s at default
 
-# Throwaway-PDF-browser fast path — how long to wait for the file to appear
-# before attaching CDP and looking for the challenge box. Kept short: a
-# publisher that challenges the PDF never drops a file in this window, so
-# every second here just postpones the click. Default: 3 s.
-DP_PDF_FASTPATH_WAIT = _env_seconds('DP_PDF_FASTPATH_WAIT', 3)
+# Throwaway-PDF-browser fast path — how long to wait for Chrome's own startup
+# navigation to resolve before attaching CDP. Default: 5 s.
+#
+# The window no longer costs a challenged publisher anything: it races the
+# finished download against a real page target appearing, and a challenge
+# produces the page almost immediately, which ends the wait. Only the
+# unchallenged case spends the full budget, and that case is the one where
+# spending it means never attaching at all -- a ~1 MB PDF does not finish in
+# the 3 s this used to allow, which is why IOP kept falling through to the
+# CDP path and getting a Radware captcha there.
+DP_PDF_FASTPATH_WAIT = _env_seconds('DP_PDF_FASTPATH_WAIT', 5)
 
 # PDF download hard cap — 判据为「下载事件」的等待上限。
 # 分享 Chrome 被 Playwright(accept_downloads=True) 接管后，文件落入 playwright-artifacts
