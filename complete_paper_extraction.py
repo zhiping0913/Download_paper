@@ -19,8 +19,10 @@ import random
 import re
 import requests
 import shutil
+import socket
 from typing import Optional
 import tempfile
+import threading
 import time
 import sys
 import signal
@@ -65,6 +67,7 @@ from core import (
 # with what is internal plumbing.
 from core.utilities import (
     cookies_for_requests,
+    download_path_with_timeout,
     env_seconds,
     evaluate_with_timeout,
     fetch_ladder,
@@ -72,6 +75,7 @@ from core.utilities import (
     http_asset_headers,
     inpage_abort_ms,
     read_body_with_timeout,
+    DP_HTTP_TOTAL_TIMEOUT,
     INPAGE_ABORT_JS,
 )
 
@@ -1618,9 +1622,15 @@ async def download_pdf(
             _seen_downloads.append(download)
             _dl_started.set()  # 第一时间标记已开始，不等 path()（path 可能因慢网速阻塞）
             try:
-                pdf_path_temp = await download.path()
+                # 同上：path() 没有自己的超时。这里的上限与外层等 _dl_done 的那个
+                # 对齐，免得回调还挂着、外层已经判超时了。
+                pdf_path_temp = await download_path_with_timeout(
+                    download,
+                    timeout_s=max(DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT, 120),
+                    what='PDF')
                 if not pdf_path_temp:
-                    print(f"    ⚠️  download.path() 为空（下载可能仍在进行）")
+                    print(f"    ⚠️  download.path() 未返回（下载未完成或已卡死）")
+                    _dl_failed.set()  # 明确置失败，让 retry_download 重试
                     return
                 final_path = output_dir / filename
                 import shutil
@@ -2050,8 +2060,14 @@ async def download_supplemental_materials(
 
                 async def on_download(download):
                     nonlocal downloaded_file
-                    # 获取下载路径（默认是临时目录）
-                    downloaded_file = await download.path()
+                    # 获取下载路径（默认是临时目录）。
+                    # download.path() 只在传输真正完成时才 resolve，且自己没有超时；
+                    # 这里又身处事件回调，卡住了连回溯都看不到 —— 只表现为文件永远
+                    # 不出现。视频最容易踩，所以上限按“补充材料完成”那条给。
+                    downloaded_file = await download_path_with_timeout(
+                        download,
+                        timeout_s=DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT,
+                        what='补充材料')
 
                 download_page.on("download", on_download)
 
@@ -2289,7 +2305,7 @@ async def _fetch_image_as_bytes(page, url: str) -> bytes:
 
 def _http_download_to(url: str, dest: Path, referer: str = None,
                       timeout: float = 60, want_image: bool = False,
-                      cookies: dict = None) -> bool:
+                      cookies: dict = None, total_timeout: float = None) -> bool:
     """GET *url* straight to *dest*. True only when a real file landed there.
 
     Streams to a ``.part`` file and renames on success, so a large video
@@ -2297,8 +2313,31 @@ def _http_download_to(url: str, dest: Path, referer: str = None,
     Rejects: non-2xx, an HTML/text response (challenge or login page), an
     empty body, and -- with *want_image* -- anything whose bytes are not an
     image.
+
+    Two different clocks, and they catch different failures:
+
+    *timeout* is requests' read timeout, which fires only when the socket goes
+    **idle**. *total_timeout* caps the whole transfer, which is the only thing
+    that can end a server dribbling bytes slowly enough to never look idle --
+    the failure that leaves a video "downloading" until someone kills the run.
     """
     part = dest.with_name(dest.name + '.part')
+    budget = float(total_timeout if total_timeout else DP_HTTP_TOTAL_TIMEOUT)
+    # Written by the watchdog thread, read after the transfer unwinds -- the
+    # stall surfaces as a socket error, so the report has to survive the except.
+    state = {'stalled': False, 'got': 0}
+
+    def _report_stall() -> bool:
+        if not state['stalled']:
+            return False
+        print(f"    ↪ 直接请求超过 {budget:g}s 仍未传完"
+              f"（已收 {state['got'] / (1024 * 1024):.2f} MB），回退到浏览器")
+        try:
+            part.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return True
+
     try:
         with requests.get(url, headers=_http_asset_headers(referer),
                           cookies=cookies or None,
@@ -2312,10 +2351,77 @@ def _http_download_to(url: str, dest: Path, referer: str = None,
                 print(f"    ↪ 直接请求拿到的是网页（{ctype.split(';')[0]}），回退到浏览器")
                 return False
             dest.parent.mkdir(parents=True, exist_ok=True)
-            with open(part, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=1 << 16):
-                    if chunk:
-                        f.write(chunk)
+
+            # ⚠️ Checking the clock inside the loop does NOT work here, and the
+            # obvious version of this fix is dead code. iter_content blocks
+            # *inside* urllib3 until it has a full chunk_size buffer, so a
+            # server trickling bytes never lets the loop body run at all --
+            # measured: 60 s of one-byte-per-0.3 s writes produced zero
+            # iterations, and the only thing that ever ended it was the read
+            # timeout firing 15 s after the server finally stopped.
+            # Closing the socket is the one thing that can interrupt that read,
+            # so a watchdog thread does it.
+            def _watchdog():
+                state['stalled'] = True
+                # ⚠️ Closing is not cancelling. Only shutting the socket down
+                # wakes a thread already blocked in recv. Measured against a
+                # trickling server: r.raw.close(), r.close() and
+                # r.raw._fp.close() each left the read blocked until the server
+                # itself stopped (8.81 s -- i.e. they did nothing), while
+                # sock.shutdown(SHUT_RDWR) returned in 1.50 s.
+                try:
+                    sock = r.raw._connection.sock
+                except Exception:
+                    sock = None
+                if sock is not None:
+                    try:
+                        sock.shutdown(socket.SHUT_RDWR)
+                    except Exception:
+                        pass
+                # Still close afterwards, to release the pooled connection.
+                for closer in (getattr(r, 'raw', None), r):
+                    try:
+                        if closer is not None:
+                            closer.close()
+                    except Exception:
+                        pass
+
+            timer = threading.Timer(budget, _watchdog)
+            timer.daemon = True
+            timer.start()
+            deadline = time.monotonic() + budget
+            try:
+                with open(part, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=1 << 16):
+                        if chunk:
+                            f.write(chunk)
+                            state['got'] += len(chunk)
+                        # Belt and braces for the other shape of the same
+                        # problem: chunks arriving steadily but endlessly. This
+                        # one exits cleanly instead of via a socket error.
+                        if time.monotonic() > deadline:
+                            state['stalled'] = True
+                            break
+            finally:
+                timer.cancel()
+        if _report_stall():
+            return False
+
+        # requests does NOT verify Content-Length: a server that dies mid-body
+        # ends the iteration without raising, so a truncated transfer arrives
+        # here looking exactly like a complete one. For a video that means a
+        # corrupt file reported as a success -- and the browser rungs, which
+        # would have got it right, never run. Only comparable when the body
+        # wasn't decoded on the way in (gzip changes the length).
+        declared = (r.headers.get('content-length') or '').strip()
+        encoded = (r.headers.get('content-encoding') or '').strip().lower()
+        if declared.isdigit() and encoded in ('', 'identity'):
+            if state['got'] < int(declared):
+                print(f"    ↪ 直接请求被截断（只收到 {state['got']}/{declared} 字节），"
+                      f"回退到浏览器")
+                part.unlink(missing_ok=True)
+                return False
+
         if not part.exists() or part.stat().st_size == 0:
             print("    ↪ 直接请求响应为空，回退到浏览器")
             part.unlink(missing_ok=True)
@@ -2332,6 +2438,10 @@ def _http_download_to(url: str, dest: Path, referer: str = None,
         part.replace(dest)
         return True
     except Exception as exc:
+        # A watchdog close surfaces here as a connection error. Report it as the
+        # stall it actually was, not as a mysterious network failure.
+        if _report_stall():
+            return False
         print(f"    ↪ 直接请求失败（{type(exc).__name__}: {str(exc)[:80]}），回退到浏览器")
         try:
             part.unlink(missing_ok=True)
@@ -2362,9 +2472,13 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
             img_filename = original_image_filename(fig_url, fig_num)
             cookies = await _cookies_for_requests(fig_url, context=context,
                                                   page=page)
+            # Tighter overall cap than a supplement gets: an image still
+            # trickling in after this long is not going to arrive, and there
+            # are dozens of them per paper, so the ceiling is paid repeatedly.
             ok = await asyncio.to_thread(
                 _http_download_to, fig_url, output_dir / img_filename,
-                referer, DP_FIGURE_TIMEOUT, True, cookies)
+                referer, DP_FIGURE_TIMEOUT, True, cookies,
+                DP_FIGURE_TIMEOUT * 3)
             if ok:
                 print(f"    ✓ 保存: {img_filename} [直接下载]")
                 return img_filename
