@@ -148,10 +148,18 @@ settle，整个批次就停在那里不动了（而不是报错重试）。这�
 
 ```bash
 export DP_MAX_RETRIES=5
-export DP_RETRY_DELAY=1.0
+export DP_RETRY_DELAY=1.0                     # 首次重试前等几秒，其后 2 倍增长
+export DP_RETRY_MAX_DELAY=60                  # 上面那个增长的上限
 export DP_IMG_MAX_RETRIES=3
 export DP_SUPP_MAX_RETRIES=5
+export DP_REFERER_PAGE_RETRIES=1              # 第 4 层来路页被拦时重载几次
 ```
+
+⚠️ `DP_RETRY_DELAY` / `DP_RETRY_MAX_DELAY` 是**一篇之内唯一的节流** —— `BATCH_SLEEP`
+只隔开篇与篇。而这个退避此前只写在 `except` 分支里，阶梯各层却是「返回 `None`」报告
+失败的，于是重试实际上**零间隔连打**。对按 IP 计分的拦截器（IOP 的 Radware）来说那是
+最差的形状：实测零间隔连打 5 次一次都没成，而唯一成功的那次发生在已过去好几分钟之后。
+跑这类站点时调大 `DP_RETRY_DELAY`（如 30），比加大 `DP_MAX_RETRIES` 有用。
 
 **启动示例：**
 
