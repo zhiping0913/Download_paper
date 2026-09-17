@@ -46,6 +46,11 @@ try:                                        # bs4 warns when html.parser sees XM
 except ImportError:                         # older bs4 -- nothing to silence
     pass
 
+from core.utilities import (
+    evaluate_with_timeout,
+    inpage_abort_ms,
+    INPAGE_ABORT_JS,
+)
 from publisher.base import PublisherHandler
 from publisher.wildcard import init_extract_all_page, set_actual_base_url
 
@@ -241,12 +246,14 @@ class IEEEHandler(PublisherHandler):
         """
         print(f"  ↪ 请求 {url.replace(self.IEEE_BASE, '')}")
         try:
-            result = await page.evaluate(
-                """async (url) => {
+            result = await evaluate_with_timeout(
+                page,
+                ("""async (url) => {""" + INPAGE_ABORT_JS + """
                     try {
                         const r = await fetch(url, {
                             method: 'GET',
                             credentials: 'include',
+                            signal: __dpAbort(__MS__),
                             headers: {'Accept': 'application/json, text/html, */*'},
                         });
                         if (!r.ok) return {__err: 'status ' + r.status};
@@ -254,8 +261,9 @@ class IEEEHandler(PublisherHandler):
                     } catch (e) {
                         return {__err: String(e)};
                     }
-                }""",
+                }""").replace('__MS__', inpage_abort_ms()),
                 url,
+                what='IEEE REST in-page fetch',
             )
         except Exception as exc:
             print(f"    ⚠️  in-page fetch 异常: {type(exc).__name__}: {str(exc)[:120]}")
@@ -1072,11 +1080,13 @@ class IEEEHandler(PublisherHandler):
         import base64
 
         try:
-            result = await page.evaluate(
-                """async (url) => {
+            result = await evaluate_with_timeout(
+                page,
+                ("""async (url) => {""" + INPAGE_ABORT_JS + """
                     try {
                         const r = await fetch(url, {
                             credentials: 'include',
+                            signal: __dpAbort(__MS__),
                             headers: {'Accept': 'application/pdf,*/*'},
                         });
                         if (!r.ok) return {__err: 'status ' + r.status};
@@ -1091,8 +1101,9 @@ class IEEEHandler(PublisherHandler):
                     } catch (e) {
                         return {__err: String(e)};
                     }
-                }""",
+                }""").replace('__MS__', inpage_abort_ms()),
                 url,
+                what='IEEE PDF in-page fetch',
             )
         except Exception as exc:
             print(f"    ⚠️  in-page fetch 异常: {type(exc).__name__}: {str(exc)[:120]}")

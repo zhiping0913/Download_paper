@@ -43,6 +43,11 @@ from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
+from core.utilities import (
+    evaluate_with_timeout,
+    inpage_abort_ms,
+    INPAGE_ABORT_JS,
+)
 from html_to_md_converter import mathml_to_latex_pandoc
 from publisher.base import PublisherHandler
 from publisher.wildcard import init_extract_all_page, set_actual_base_url
@@ -370,12 +375,14 @@ class SPIEHandler(PublisherHandler):
     async def _post_fulltext(self, page, api: str, doi: str, referer: str) -> str:
         """One POST to a fulltext endpoint; '' when it yields no body."""
         try:
-            payload = await page.evaluate(
-                """async ([api, urlId, referer]) => {
+            payload = await evaluate_with_timeout(
+                page,
+                ("""async ([api, urlId, referer]) => {""" + INPAGE_ABORT_JS + """
                     try {
                         const r = await fetch(api, {
                             method: 'POST',
                             credentials: 'include',
+                            signal: __dpAbort(__MS__),
                             headers: {
                                 'Content-Type': 'application/json',
                                 'Accept': 'application/json',
@@ -388,8 +395,9 @@ class SPIEHandler(PublisherHandler):
                     } catch (e) {
                         return {__err: String(e)};
                     }
-                }""",
+                }""").replace('__MS__', inpage_abort_ms()),
                 [api, doi, referer],
+                what='SPIE 正文 API',
             )
         except Exception as exc:
             print(f"  ⚠️  正文 API 异常: {type(exc).__name__}: {str(exc)[:120]}")
