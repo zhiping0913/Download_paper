@@ -241,7 +241,7 @@ python batch_process.py --file dois.txt                     # 批量
 - ⚠️ **下载目录的基线必须是空的**。一次性 Chrome 的下载目录由 `mkdtemp` 每次新建，
   里面出现的任何文件都属于本次下载。`bypass_cloudflare_cdp` 曾用 `os.listdir` 给
   `_dl_baseline` 播种，于是「在附着期间就落盘」的文件被当成已存在、永远不算新文件，
-  循环空等到 `DP_CLOUDFLARE_TIMEOUT` 耗尽（launch.sh 下是 600 秒）才由收尾的 5 秒
+  循环空等到 `DP_CLOUDFLARE_TIMEOUT` 耗尽（当时 launch.sh 下是 600 秒，现默认 60）才由收尾的 5 秒
   兜底捡回来。Optica 这类**现场渲染几秒**的出版商每次都踩：实测 PDF 阶段
   **128 秒 → 6 秒**，且改为循环首轮正常检出；ScienceDirect 不受影响（点框仍 +11 秒、
   完成 +16 秒）
