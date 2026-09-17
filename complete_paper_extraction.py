@@ -204,16 +204,25 @@ DP_FIGURE_TIMEOUT = _env_seconds('DP_FIGURE_TIMEOUT', 60)
 DP_MAX_RETRIES = int(_env_seconds('DP_MAX_RETRIES', 5))          # generic downloads
 # Flat pause between download attempts -- no growth, the same wait every time.
 #
-# 30 s because this is the ONLY pacing inside one paper: BATCH_SLEEP separates
-# papers, not attempts, and before this the pause never ran at all on the path
-# the ladder actually takes (see retry_download). Five attempts fired back to
-# back is the worst possible shape against a bot manager that scores by IP.
+# 90 s because this is the ONLY pacing inside one paper (BATCH_SLEEP separates
+# papers, not attempts) and because IOP's bot manager appears to hold a block
+# for minutes, not attempts. Two runs, both ending in success the moment the
+# block lifted rather than on any particular retry:
 #
-# ⚠️ Figures share this knob (DP_IMG_MAX_RETRIES retries each), so a figure
-# that genuinely cannot be fetched now costs 2 x 30 s instead of a couple of
-# seconds. That is the price of pacing the PDF path; give figures their own
-# smaller delay at the call site if it starts to hurt.
-DP_RETRY_DELAY = _env_seconds('DP_RETRY_DELAY', 30)              # seconds between retries
+#   no pacing at all   success on attempt 4, ~4-5 min in
+#   60 s pacing        success on attempt 5, ~6 min in -- and that attempt was
+#                      visibly clean: no Cloudflare challenge at all, and the
+#                      throwaway Chrome's startup navigation went straight to
+#                      the PDF instead of to validate.perfdrive.com
+#
+# That sharp transition is what a penalty expiring looks like; probabilistic
+# sampling would not produce it. 90 s x 4 waits gives ~6 min of pure waiting,
+# i.e. margin over the observed window. n=2, so this is a calibrated guess.
+DP_RETRY_DELAY = _env_seconds('DP_RETRY_DELAY', 90)              # seconds between retries
+# Figures get their own, much smaller pause. They share retry_download but not
+# the problem: a figure that 404s is simply absent, and a paper has dozens of
+# them, so the PDF's anti-bot pacing would be paid over and over for nothing.
+DP_IMG_RETRY_DELAY = _env_seconds('DP_IMG_RETRY_DELAY', 10)      # seconds between figure retries
 DP_IMG_MAX_RETRIES = int(_env_seconds('DP_IMG_MAX_RETRIES', 3))  # figure/image downloads
 DP_SUPP_MAX_RETRIES = int(_env_seconds('DP_SUPP_MAX_RETRIES', 5)) # supplemental downloads
 
@@ -1180,8 +1189,9 @@ async def retry_download(download_func, *args, max_retries=DP_MAX_RETRIES, retry
     minutes had passed.
 
     The pause is *retry_delay* flat -- the same wait before every attempt, no
-    growth. See DP_RETRY_DELAY for why the default is 30 s and what that costs
-    a figure that cannot be fetched.
+    growth. See DP_RETRY_DELAY (90 s) for why it is that long. Figures pass
+    DP_IMG_RETRY_DELAY (10 s) instead: they are not what the pacing is for, and
+    a paper has dozens of them.
     """
     for attempt in range(max_retries):
         reason = ''
@@ -1300,7 +1310,7 @@ async def _download_all_resources(
                     img_filename = await retry_download(
                         download_figure,
                         download_page, fig_url, int(fig_num), output_dir, download_context, force_headed,
-                        max_retries=DP_MAX_RETRIES, retry_delay=DP_RETRY_DELAY
+                        max_retries=DP_MAX_RETRIES, retry_delay=DP_IMG_RETRY_DELAY
                     )
                     # Fall back to the original (lower-res) URL if the high-res fetch failed
                     if not img_filename and fallback_url and fallback_url != fig_url:
@@ -1308,7 +1318,7 @@ async def _download_all_resources(
                         img_filename = await retry_download(
                             download_figure,
                             download_page, fallback_url, int(fig_num), output_dir, download_context, force_headed,
-                            max_retries=DP_IMG_MAX_RETRIES, retry_delay=DP_RETRY_DELAY
+                            max_retries=DP_IMG_MAX_RETRIES, retry_delay=DP_IMG_RETRY_DELAY
                         )
                     if img_filename:
                         downloads['figures'][fig_num] = img_filename
