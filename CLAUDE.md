@@ -298,12 +298,26 @@ PDF、图片、补充材料、API/页面（如 IOP 的 `/data`）走的是**同�
 - 来路页从哪来：普通流程用主流程钉住的 `metadata['_landing_url']`，**零配置**；
   `--json` 里可用顶层 `referer` 指定，缺省读 `header.referer`。**都没有就不走这一层**
   —— 不拿 `link` 顶替（pdf-only 模式下 `link` 不一定给，给了也不一定是本文的文章页）
+- ✅ **已在真实 IOP 验证可用**：`DP_FETCH_PDF=referer` 强制只走这一层，
+  `10.1088/0741-3335/51/3/035013` 拿到 694,344 字节的真 PDF（13 页），
+  与不带 Referer 的对照组字节数完全一致
+- ⚠️ **附着前必须等文档真正提交**。`/json` 对**正在加载**的标签页报告的是**待定 URL**，
+  照它附着会落在**预提交的 `about:blank` 文档**上；把点击监听器挂在那上面，真正的页面
+  一提交就连监听器一起销毁，于是点击落空、却只报一句「没拿到文件」。实测踩过：
+  日志显示「来路页实际停在 about:blank」、点击后停在文章页。修法是轮询
+  `location.href` + `document.readyState`，确认已离开 `about:` 且解析完成再挂
+- ⚠️ **「点击后没导航」不等于失败**。目标若以 `Content-Disposition: attachment` 响应，
+  浏览器按**下载**处理，标签页本来就不动。成败只看下载目录是否落盘 ——
+  早先把这句报成「未发生导航」，差点据此误判该层无效
 - **默认 `tab`**。`request` 那层对普通 CDN 很有效，但对正在挑战你的站点基本无效——
   Cloudflare 的 clearance cookie 绑定 UA、IP 和 **TLS 指纹**，`requests` 三样都对不上
-- ⚠️ **显式配置是截断语义**（`DP_FETCH_PDF=fresh` 就是只用 fresh），而调用方给的
-  `default` 是完整顺序。有头 PDF 的默认是 `('fresh','tab')`——那是有实测支撑的
-  （见上面「PDF 下载顺序」），而截断表达不了这个顺序，所以 `fetch_ladder()` 才要
-  分开这两种语义
+- ⚠️ **显式配置是截断语义**：从指定那层起、连同其后各层。`DP_FETCH_PDF=fresh`
+  得到的是 `('fresh','referer')` 而**不是**只有 fresh；要真的只跑一层，得指定最后
+  那层（`DP_FETCH_PDF=referer` → `('referer',)`）
+- 而调用方给的 `default` 是**完整顺序**：有头 PDF 默认 `('fresh','tab','referer')`，
+  无头默认 `('tab','fresh','referer')`。有头之所以把 `fresh` 排在 `tab` 前面是有实测
+  支撑的（见上面「PDF 下载顺序」），而截断表达不了这种**重排**，所以 `fetch_ladder()`
+  才要把「截断」和「默认顺序」分成两种语义
 - ⚠️ **浏览器层必须校验拿回来的是不是目标页面**。挑战页、登录页、404 都是合法 HTML，
   「非空」什么也证明不了。`fetch_html_via_ladder(expect=...)` 收一个子串或谓词；
   不校验的话挑战页会被当成正常页解析出「0 个结果」，而不是继续回退

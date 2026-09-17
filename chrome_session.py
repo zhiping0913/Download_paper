@@ -1963,13 +1963,38 @@ async def _download_via_referer_click(session, referer_url: str, target_url: str
             # that buy nothing are two commands worth not sending.
             # Runtime.evaluate and Input.dispatchMouseEvent are commands and
             # need no domain enabled.
-            # Where we actually landed. The referring page can itself be
-            # challenged, in which case the click happens on a captcha and the
-            # premise of this rung is already gone -- worth saying so rather
-            # than reporting a bare "no file".
-            before = await _send(ws, "Runtime.evaluate", {
-                "expression": "location.href", "returnByValue": True})
-            before_url = (before.get('result') or {}).get('value') or '?'
+            # Wait for the referring document to actually commit before
+            # touching it.
+            #
+            # ⚠️ /json reports a *loading* tab's pending URL, so a target that
+            # looks like the referring page there can still be the pre-commit
+            # about:blank document. A handler armed on that document dies the
+            # instant the real page commits, and the click then lands on a page
+            # with no handler -- which is precisely how this rung reported "no
+            # file" while quietly doing nothing. Observed on IOP: attached at
+            # about:blank, clicked, ended up on the article page instead of the
+            # PDF. readyState is checked too, so the handler goes on a document
+            # that is done parsing.
+            before_url = ''
+            for _ in range(int(max(3.0, min(20.0, timeout_s)))):
+                probe = await _send(ws, "Runtime.evaluate", {
+                    "expression": "location.href + '|' + document.readyState",
+                    "returnByValue": True})
+                value = (probe.get('result') or {}).get('value') or ''
+                href, _, ready = value.partition('|')
+                if (href and not href.startswith(('about:', 'chrome://'))
+                        and ready in ('interactive', 'complete')):
+                    before_url = href
+                    break
+                await asyncio.sleep(1)
+
+            if not before_url:
+                print("  ⚠️  来路页未在预期时间内加载完成，放弃点击跳转")
+                return result
+
+            # The referring page can itself be challenged, in which case the
+            # click happens on a captcha and the premise of this rung is
+            # already gone -- worth saying so rather than a bare "no file".
             print(f"  📄 来路页实际停在: {before_url[:90]}")
 
             armed = await _send(ws, "Runtime.evaluate", {
@@ -1999,7 +2024,15 @@ async def _download_via_referer_click(session, referer_url: str, target_url: str
                     print(f"  📄 点击后跳到: {seen[:110]}")
                     break
             else:
-                print(f"  📄 点击后仍停在原页（未发生导航）: {before_url[:80]}")
+                # Staying put is not failure. A target that answers with
+                # Content-Disposition: attachment is handled as a download,
+                # and a download does not navigate the tab -- which is the
+                # successful case for this rung, not a broken one. Measured on
+                # IOP: the tab stayed on the article page while the PDF landed.
+                # Whether a file actually arrived is decided below; this line
+                # only states what the tab did.
+                print("  📄 点击后标签页仍停在来路页"
+                      "（目标若以下载响应，本就不会导航）")
     except Exception as exc:
         print(f"  ⚠️  点击跳转失败: {type(exc).__name__}: {str(exc)[:80]}")
         return result

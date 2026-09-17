@@ -98,7 +98,7 @@ def fetch_ladder(kind: str, default: tuple = ('tab', 'fresh')) -> tuple:
     throwaway Chrome, which is what someone naming a rung explicitly wants.
     *default* is a full order instead, so a caller can express a preference
     that is not a prefix of request/tab/fresh -- a headed PDF wants
-    ('fresh', 'tab'), and truncation could not say that.
+    ('fresh', 'tab', 'referer'), and truncation could not say that.
     """
     start = (os.environ.get(f'DP_FETCH_{kind.upper()}')
              or os.environ.get('DP_FETCH_ORDER')
