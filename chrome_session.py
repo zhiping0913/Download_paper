@@ -1068,10 +1068,18 @@ async def bypass_cloudflare_cdp(
         async with websockets.connect(ws_url, max_size=10 * 1024 * 1024, open_timeout=10) as ws:
             _current_ws_url = ws_url
 
-            # 启用必要的域
+            # 启用必要的域。
+            #
+            # ⚠️ Runtime.enable 被刻意省掉：它是业界公认的 CDP 检测点（开启后
+            # DevTools 会序列化控制台对象，触发 Error.stack 的 getter，Radware /
+            # DataDome 都靠这个认出附着的调试会话）。而我们**根本用不到它**——
+            # Runtime.evaluate 是命令，不需要 enable；enable 只负责推送事件。
+            #
+            # 同理 Page.enable / Network.enable 也是多余的（_send 直接丢弃所有
+            # 无 id 的事件消息，本模块从不消费 CDP 事件），暂按原样保留，
+            # 要不要一并清掉另行决定。
             await _send(ws, "Page.enable")
             await _send(ws, "Network.enable")
-            await _send(ws, "Runtime.enable")
 
             if created_at_target:
                 # The tab is already on (or loading) the target URL: either
@@ -1839,19 +1847,33 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
     # directory *after* the file landed, see nothing new, and report failure
     # for a download that had already succeeded.
     #
-    # It is deliberately short. A publisher that challenges the PDF (as
-    # ScienceDirect does) will never drop a file here, so every second spent
-    # waiting is a second before the Turnstile box is even looked for -- and
-    # the attach that follows costs up to ten more. An unchallenged PDF lands
-    # within a second or two of startup, so a brief probe loses nothing.
+    # The window no longer has to be short. It races the finished download
+    # against a real page target appearing, and a publisher that challenges the
+    # PDF produces that page within a second or so, which ends the wait -- the
+    # Turnstile box is looked for just as promptly as before. Only the
+    # unchallenged case spends the full budget, and there spending it is the
+    # entire point: the file lands and no CDP command ever touches the tab.
+    #
+    # Three seconds was too little for that to happen. A ~1 MB PDF does not
+    # finish in the window, so IOP fell through to the CDP path every time and
+    # met a Radware captcha there -- on a link that downloads perfectly well
+    # when left alone.
     if pdf_mode and download_dir:
-        landed = await _await_download(
-            download_dir, timeout_s=min(fast_path_wait_s, timeout_s))
-        if landed:
-            print(f"  ✓ 文件已下载（未经 CDP 交互）: {landed}")
-            session.result = {'success': True, 'downloaded_file': landed,
+        kind, value = await _await_download_or_tab(
+            download_dir, session.port,
+            timeout_s=min(fast_path_wait_s, timeout_s))
+        if kind == 'file':
+            print(f"  ✓ 文件已下载（未经 CDP 交互）: {value}")
+            session.result = {'success': True, 'downloaded_file': value,
                               'target_id': None, 'ws_url': None}
             return session
+        if kind == 'page':
+            # A real page instead of a download: a challenge, a paywall, or a
+            # viewer. Stop waiting -- the rest of the budget would be spent on
+            # a file that is never coming. The URL is printed because what the
+            # startup navigation actually turns into on a PDF link has never
+            # been observed directly; this is the log line that will say.
+            print(f"  ↪ 启动导航停在页面而非下载，转 CDP 流程: {value[:90]}")
 
     try:
         await session.open_url(url, expected_doi=expected_doi,
@@ -1878,6 +1900,52 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
             session.result = dict(session.result or {},
                                   success=True, downloaded_file=landed)
     return session
+
+
+async def _await_download_or_tab(download_dir: str, debug_port: int,
+                                 timeout_s: float = 5.0,
+                                 settle_s: float = 1.0) -> tuple:
+    """Race Chrome's startup navigation to its two possible outcomes.
+
+    Returns ``('file', path)`` when the download finished, ``('page', url)``
+    when a real page target appeared instead, or ``('', '')`` on timeout.
+
+    Both halves matter. Waiting only for the file means a challenged publisher
+    burns the whole window before anyone looks for the checkbox. Waiting only
+    for a tab means an unchallenged PDF -- which produces no page at all --
+    falls through to the CDP path and gets challenged *there*, which is
+    precisely how IOP ended up showing a Radware captcha on a link that
+    downloads fine when left alone.
+
+    The page half deliberately does **not** match on host. The host check in
+    ``bypass_cloudflare_cdp``'s ``already_open`` branch never once matched on a
+    PDF link in practice, so anything but ``about:blank`` / ``chrome://newtab``
+    counts here, and the caller logs what it found.
+    """
+    ignored = ('about:blank', 'chrome://newtab', 'chrome://new-tab-page')
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        landed = await _await_download(download_dir, timeout_s=0.01,
+                                       settle_s=settle_s)
+        if landed:
+            return 'file', landed
+
+        try:
+            with urllib.request.urlopen(
+                    f"http://localhost:{debug_port}/json", timeout=5) as resp:
+                targets = json.loads(resp.read().decode())
+        except Exception:
+            targets = []
+        for target in targets:
+            if target.get('type') != 'page':
+                continue
+            page_url = (target.get('url') or '').strip()
+            if not page_url or page_url.startswith(ignored):
+                continue
+            return 'page', page_url
+
+        await asyncio.sleep(0.5)
+    return '', ''
 
 
 async def _await_download(download_dir: str, timeout_s: float = 20.0,
