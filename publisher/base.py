@@ -89,7 +89,19 @@ class PublisherHandler(ABC):
 
     @abstractmethod
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
-        """Run the complete publisher-specific extraction and return the shared workflow payload."""
+        """Run the complete publisher-specific extraction and return the shared workflow payload.
+
+        Keys consumed by the workflow: ``metadata``, ``links``,
+        ``fulltext_data``, ``journal_name``, and optionally ``access``.
+
+        ``access`` is True unless the handler can see that the publisher has
+        refused this article. False makes the workflow stop after saving the
+        landing page and crossref.json -- no PDF, figures, supplements or
+        markdown, all of which are gated the same way and would only burn the
+        retry budget. Omit the key when the publisher gives no such signal;
+        never guess, since a wrong False silently skips a paper that was
+        actually available.
+        """
         pass
 
     @abstractmethod

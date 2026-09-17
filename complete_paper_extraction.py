@@ -2613,6 +2613,9 @@ async def complete_extraction_workflow(
         metadata = extraction_result['metadata']
         links = extraction_result['links']
         fulltext_data = extraction_result['fulltext_data']
+        # Handlers that can tell whether the article is readable say so here.
+        # Default True: a handler with no opinion must not cause a skip.
+        access = extraction_result.get('access', True)
 
         # Record the article URL pinned above — after the doi.org redirect
         # this is the direct publisher URL. save_metadata_json surfaces it as
@@ -2703,6 +2706,23 @@ async def complete_extraction_workflow(
                 captured_data_dir.rmdir()
             except OSError:
                 pass  # not empty (shouldn't happen) — leave it alone
+
+        # The publisher said outright that this article is not readable, so
+        # everything below is wasted effort: the PDF 404s or redirects back to
+        # the landing page, the figures and supplements are gated the same
+        # way, and there is no body text to turn into markdown. Keep the
+        # landing page itself (html/ shows how the call was made) and
+        # crossref.json, and stop.
+        if not access:
+            save_crossref_json(paper_output_dir, crossref_data)
+            print("\n" + "=" * 80)
+            print("🔒 无访问权限 — 跳过 PDF / 图片 / 补充材料 / Markdown")
+            print("=" * 80)
+            print(f"  📄 标题: {(metadata.get('title') or 'N/A')[:60]}")
+            print(f"  💾 输出目录: {paper_output_dir}")
+            print(f"     已保留: html/ 与 crossref.json")
+            print()
+            return str(paper_output_dir)
 
         markdown_filename = "paper.md"
         markdown_file = paper_output_dir / markdown_filename

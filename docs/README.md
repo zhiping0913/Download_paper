@@ -464,23 +464,45 @@ def convert_to_markdown(self, metadata, article_text, **kwargs) -> str
     },
     "fulltext_data": str | dict,
     "journal_prefix" or "journal_name": str,
+    "access": bool,          # 可选，缺省 True
 }
 ```
 
 主流程不关心 `fulltext_data` 是 HTML 还是 JSON。APS 当前返回 JSON，Nature 当前返回 HTML。具体转换逻辑由各自的 `convert_to_markdown()` 实现。
+
+### `access`（可选）
+
+handler 若能从页面上**看出**出版商拒绝了这篇文章，就返回 `access: False`；主流程随即跳过
+PDF、图片、补充材料和 Markdown，只保留 `html/` 与 `crossref.json`。这些资源受同一道
+权限闸门管辖，继续下去只会把重试预算烧光，最后仍是 404 或被重定向回落地页。
+
+⚠️ **看不出来就别返回这个键**。缺省是 True，代价是白下一次；而错误的 `False` 会**静默
+跳过一篇本来能拿到的文章**，且日志里看不出异常。宁可多下一次，不可漏一篇。
+
+当前实现：
+
+| Publisher | 判定依据 | 无权限的取值 |
+|---|---|---|
+| Science | `data-article-access` 属性 | `"no"`（已见取值还有 `"free"`、`"full"`） |
+| ScienceDirect | `div.content-meta-access-label` 的文本 | `Abstract only`、`No access`，**或该元素不存在** |
 
 ## 统一处理阶段
 
 无论 publisher 是 APS 还是 Nature，只要进入 `process_with_handler()`，后续流程一致：
 
 1. 调用 `handler.extract_all(captured=captured_data)`。
-2. 取出 `metadata`、`links`、`fulltext_data`。
+2. 取出 `metadata`、`links`、`fulltext_data`，以及可选的 `access`（缺省 True）。
 3. 使用 Semantic Scholar 数据补全缺失的 `year/title`。
 4. 创建最终论文目录：
 
    ```text
    {year}--{title}/
    ```
+
+   并把抓取过程中的 HTML / API 响应搬进 `html/`。
+
+   **若 `access` 为 False，到此为止**：保存 `crossref.json` 后直接返回，跳过下面的
+   5–8 步。目录里只留 `html/` 和 `crossref.json`。
 
 5. 调用 `_download_all_resources()` 下载资源。
 6. 调用 `handler.convert_to_markdown()` 生成 Markdown。

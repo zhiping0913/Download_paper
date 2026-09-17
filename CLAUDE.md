@@ -93,6 +93,26 @@ python batch_process.py --file dois.txt                     # 批量
 | `10.3788` / researching.cn | ResearchingHandler | 有头 | 完整 |
 | opticsjournal.net | OpticsJournalHandler | 有头 | 完整（无补充材料） |
 
+### access 判定（handler 可选返回，缺省 True）
+
+handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract_all()` 的返回里带上
+`access: False`。主流程随即跳过 **PDF、图片、补充材料、Markdown**，只保留 `html/`
+和 `crossref.json` —— 这些资源受同一道权限闸门管辖，继续下去只会烧光重试预算，
+最后仍是 404 或被重定向回落地页。
+
+- ⚠️ **看不出来就别返回这个键**。缺省 True 的代价是白下一次；错误的 `False` 会
+  **静默跳过一篇本来能拿到的文章**，日志里还看不出异常
+- **Science**：读 `data-article-access`。**只在等于 `"no"` 时判无权限**（否定式，
+  不是白名单）—— 实测取值还有 `"free"`、`"full"`，而 2017 年那篇存档**根本没有这个
+  属性**。写成白名单的话，Science 日后新增一个取值就会让整批文章被静默跳过
+- **ScienceDirect**：读 `div.content-meta-access-label` 的文本；`Abstract only`、
+  `No access`、**或该元素不存在**都判无权限
+- ⚠️ **ScienceDirect 必须限定标签名和容器**，不能用裸的 `.content-meta-access-label`：
+  「推荐文章」侧栏里每条推荐都带一个**同类名的 `<span>`**，显示的是**别人文章**的权限。
+  实测一份存档页有 5 处命中 —— 本文 1 个 `<div>`、邻居 4 个 `<span>`，其中两个写着
+  "Open access"。用裸类名去取，一篇无权限的文章只要侧栏推荐了开放获取论文就会被
+  判成有权限
+
 ### researching.cn（中国激光杂志社，`10.3788`）
 
 - `doi.org/10.3788/...` 就跳到这里。Photonics Insights 等与 SPIE 联合出版的，
