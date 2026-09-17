@@ -119,12 +119,38 @@ Finds `<h2 id="footnotes">`, then the following `div > ul.clear-list.wd-content-
 
 ## 8. Supplemental Material Extraction
 
-**Methods**: `_extract_supplemental_links_from_html(html_content) → list`, `_extract_supplementary_from_data_page(page, doi) → (urls, descriptions)`
+**Method actually used**: `_extract_supplementary_from_data_page(page, doi) → (urls, descriptions)`
 
-Two strategies:
+⚠️ **Gate first — most IOP articles have no supplementary material at all.**
+`extract_all` only reaches the `/data` endpoint when the article page carries
 
-1. **From article page**: scans `<a href>` for links containing `/data`.
-2. **From `/data` endpoint**: navigates to `https://iopscience.iop.org/article/{doi}/data`, then runs a JS snippet: `document.querySelector('#supplementarydata').querySelectorAll('a.link--decoration-none')`. Returns resolved URLs and link text.
+```html
+<a id="supplDataLink" href="/article/{doi}/data" class="btn btn-primary wd-btn-supp-data mb-2">
+```
+
+IOP renders that anchor exactly when there is something behind the endpoint.
+Without the gate every article walked the whole fetch ladder (plain request →
+browser tab → throwaway Chrome) to fetch a page with nothing on it, which on
+IOP also means courting a Radware challenge for no reason. Checked against two
+captured articles: the anchor is in both `page.html` and `page_raw.html` of the
+one that has data, and absent from the one that does not.
+
+The gate skips **only** when the markup is in hand and lacks the anchor. If the
+article HTML came back empty, it falls through and tries anyway — silently
+dropping supplements for every article whose DOM read hiccuped would be a far
+worse failure than one wasted fetch.
+
+**How the links are obtained**: `_extract_supplementary_from_data_page` navigates to
+`https://iopscience.iop.org/article/{doi}/data` and parses the returned markup with
+BeautifulSoup (`_parse_supplementary_links`), returning resolved URLs and link text.
+
+⚠️ `_extract_supplemental_links_from_html` (iop.py:708) scans the article page's
+`<a href>` for `/article/.../data` links, and this file used to present it as the
+first of "two strategies". It is **not wired into anything** — zero call sites in
+the tree — so IOP has exactly one live strategy, the `/data` endpoint above. The
+same-named method *is* live in aip.py, mdpi.py and cambridge.py, which is probably
+how the claim survived here. Left in place rather than deleted; if it goes, delete
+this note with it.
 
 ## 9. Markdown Assembly
 
@@ -153,5 +179,5 @@ The main entry point called by the publisher orchestrator:
 3. Captures full page HTML.
 4. Extracts references, raw references, and footnotes from HTML.
 5. Extracts figures and tables from HTML.
-6. Navigates to `/data` endpoint for supplementary material links.
+6. Navigates to `/data` endpoint for supplementary material links — **only if** the article page carries the `supplDataLink` anchor (see §8).
 7. Returns unified dict `{metadata, links, fulltext_data, journal_name}`.
