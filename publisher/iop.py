@@ -704,22 +704,10 @@ class IOPHandler(PublisherHandler):
     # Supplemental material extraction
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _extract_supplemental_links_from_html(html_content: str) -> list:
-        """Extract supplemental material download links from the article page."""
-        if not html_content:
-            return []
-
-        soup = BeautifulSoup(html_content, 'html.parser')
-        links = []
-
-        # IOP main article page may link to supplementary via an <a> tag
-        for a in soup.find_all('a', href=True):
-            href = a['href'].strip()
-            if '/data' in href and 'article' in href:
-                links.append(href)
-
-        return links
+    # NB: no _extract_supplemental_links_from_html here. The same-named method
+    # is live in aip.py / mdpi.py / cambridge.py; IOP's copy scanned the article
+    # page for /article/.../data links but was never called, and extract_all now
+    # gates on the supplDataLink anchor instead. Don't re-add it for symmetry.
 
     @staticmethod
     def _looks_like_data_page(html: str) -> bool:
