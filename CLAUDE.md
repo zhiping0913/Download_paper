@@ -386,13 +386,17 @@ PDF、图片、补充材料、API/页面（如 IOP 的 `/data`）走的是**同�
 - `fetch_html_via_ladder(headless=...)` 的默认是 **True**：忘记传时宁可在无头批次里
   不弹窗（较安静的那个错误答案），但对有头运行它依然是错的 —— **显式传**
 
-### 卡死防线（`page.evaluate` / `response.body()` 没有超时）
+### 卡死防线（`evaluate` / `body()` / 下载落盘 都没有超时）
 
-Playwright 里**有三个调用不接受 `timeout=`**，也不受 `set_default_timeout` 管辖：
-`page.evaluate()`、`response.body()`、`download.path()`。别处的等待全都有上限，所以
-「一次网络抖动把整批任务钉死」的地方就只剩它们 —— 而它们恰好在最热的路径上：每一张图、
-每一次页面内 API 取数、每一个补充材料。防线在 `core/utilities.py`（publisher 也要用，
-依赖方向单向）。
+Playwright 里这几个调用**都不接受 `timeout=`**，也不受 `set_default_timeout` 管辖：
+`page.evaluate()`、`response.body()`、`download.save_as()`、`download.path()`。
+别处的等待全都有上限，所以「一次网络抖动把整批任务钉死」的地方就只剩它们 ——
+而它们恰好在最热的路径上：每一张图、每一次页面内 API 取数、每一个补充材料、
+每一个 PDF。防线在 `core/utilities.py`（publisher 也要用，依赖方向单向）。
+
+⚠️ 其中 `download.path()` **本仓已不再使用**，`download_path_with_timeout()` 也随之
+删除 —— 不是因为它会卡（那一层早就包住了），而是因为它交出的路径指向随页面消失的
+临时产物，见下面那条。要落盘就用 `save_as()`，别把 `path()` 请回来。
 
 ⚠️ 还有**第四处，且不在 Playwright 里**：`_http_download_to()` 的流式循环。
 `requests` 的读超时只在**套接字空闲**时触发，服务器一点一点吐字节就永远不算空闲。
@@ -442,9 +446,18 @@ Playwright 里**有三个调用不接受 `timeout=`**，也不受 `set_default_t
   慢链路调**大**，别调小 —— 一个 500 MB 的真视频必须还能下完
 - 图片的总时限单独收紧成 `DP_FIGURE_TIMEOUT * 3`：一张图拖这么久就不会来了，而一篇论文
   有几十张，这个上限是要反复付的
-- `download.path()` 的等待全部走 `download_path_with_timeout()`。⚠️ 它的两处调用都在
-  `on('download')` **事件回调**里 —— 回调里卡住是**最隐蔽的一种**：没有回溯、没有重试、
-  日志里什么都没有，只是文件永远不出现、批次永远不前进
+- ⚠️ **落盘一律用 `download.save_as()`，不要 `path()` + `shutil.copy`**。
+  `path()` 返回的是 Playwright **自己 artifacts 目录**里的文件，而那个文件在
+  页面/上下文关闭时就被删掉 —— 于是「取到路径」到「复制走」之间的每一行，都是一个
+  **已经下载成功的文件会凭空消失**的窗口。而这些调用都在 `on('download')` 事件回调里，
+  **没有任何地方 await 它们**，外层却会关掉 `download_page`（有头时那是新建标签页）。
+  实测 IOP：`tab` 层已经拿到 PDF，却死在
+  `[Errno 2] ... /tmp/playwright-artifacts-.../...`，还被当成「网络波动」去重试 ——
+  等于把一次成功的下载丢了。补充材料那条更宽：取路径与复制相隔上百行，中间还夹着
+  一次 `close()`
+- `save_as()` 在 Download 仍存活时落盘，窗口不存在。⚠️ 但它**和 `path()` 一样没有超时**，
+  所以照样要包一层（`download_save_as_with_timeout()`），否则只是把一种卡死换成另一种。
+  它返回 `None`，**唯一诚实的成功判据是文件本身**：存在且非空
 - `evaluate_with_timeout()` **抛**异常、`read_body_with_timeout()` **返回 `b''`** ——
   差异是故意的，为的是两者都不必改调用点：前者每处都已有 `except Exception` 兜底，且
   `retry_download` 认异常；后者每处都已把空 body 当成「没拿到，继续下一个」

@@ -138,11 +138,15 @@ export DP_INPAGE_FETCH_TIMEOUT=90             # 页面内 fetch / 读响应体�
 export DP_HTTP_TOTAL_TIMEOUT=600              # 单个直接下载的总时限（视频靠它兜底）
 ```
 
-⚠️ `DP_INPAGE_FETCH_TIMEOUT` 和上面几个不是一类东西。`page.evaluate()` 与
-`response.body()` 是 Playwright 里**仅有的两个不接受 `timeout=`、也不受
-`set_default_timeout` 管辖**的调用 —— 网络一抖，页面内的 `fetch()` promise 永不
+⚠️ `DP_INPAGE_FETCH_TIMEOUT` 和上面几个不是一类东西。`page.evaluate()`、
+`response.body()`、`download.save_as()` 都**不接受 `timeout=`、也不受
+`set_default_timeout` 管辖** —— 网络一抖，页面内的 `fetch()` promise 永不
 settle，整个批次就停在那里不动了（而不是报错重试）。这个值是**死锁断路器**：
 慢链路调**大**，别调小。详见 CLAUDE.md「卡死防线」。
+
+⚠️ 下载落盘一律用 `download.save_as()`，**不要** `path()` + `shutil.copy`：`path()`
+给的是 Playwright 自己 artifacts 目录里的文件，页面一关就被删，于是「取到路径」到
+「复制走」之间的每一行都可能把一次**已经成功**的下载弄丢（实测在 IOP 上丢过一次）。
 
 **重试配置：**
 
