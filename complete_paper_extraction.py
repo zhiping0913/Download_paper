@@ -202,12 +202,18 @@ DP_FIGURE_TIMEOUT = _env_seconds('DP_FIGURE_TIMEOUT', 60)
 
 # Retry knobs — configurable via environment variables
 DP_MAX_RETRIES = int(_env_seconds('DP_MAX_RETRIES', 5))          # generic downloads
-DP_RETRY_DELAY = _env_seconds('DP_RETRY_DELAY', 1.0)             # seconds between retries
-# Ceiling for the geometric growth of that delay. Retries inside one paper had
-# NO pacing at all before (see retry_download), and nothing else supplies any:
-# BATCH_SLEEP only separates papers. Raise DP_RETRY_DELAY for a publisher whose
-# block decays with time -- IOP's does, or appears to.
-DP_RETRY_MAX_DELAY = _env_seconds('DP_RETRY_MAX_DELAY', 60)
+# Flat pause between download attempts -- no growth, the same wait every time.
+#
+# 30 s because this is the ONLY pacing inside one paper: BATCH_SLEEP separates
+# papers, not attempts, and before this the pause never ran at all on the path
+# the ladder actually takes (see retry_download). Five attempts fired back to
+# back is the worst possible shape against a bot manager that scores by IP.
+#
+# ⚠️ Figures share this knob (DP_IMG_MAX_RETRIES retries each), so a figure
+# that genuinely cannot be fetched now costs 2 x 30 s instead of a couple of
+# seconds. That is the price of pacing the PDF path; give figures their own
+# smaller delay at the call site if it starts to hurt.
+DP_RETRY_DELAY = _env_seconds('DP_RETRY_DELAY', 30)              # seconds between retries
 DP_IMG_MAX_RETRIES = int(_env_seconds('DP_IMG_MAX_RETRIES', 3))  # figure/image downloads
 DP_SUPP_MAX_RETRIES = int(_env_seconds('DP_SUPP_MAX_RETRIES', 5)) # supplemental downloads
 
@@ -1173,9 +1179,9 @@ async def retry_download(download_func, *args, max_retries=DP_MAX_RETRIES, retry
     possible shape -- the one run that ever succeeded did so only after several
     minutes had passed.
 
-    The delay grows geometrically from *retry_delay*, capped at
-    DP_RETRY_MAX_DELAY. The default stays small so figures (three retries) cost
-    nothing; raise DP_RETRY_DELAY for publishers whose block decays with time.
+    The pause is *retry_delay* flat -- the same wait before every attempt, no
+    growth. See DP_RETRY_DELAY for why the default is 30 s and what that costs
+    a figure that cannot be fetched.
     """
     for attempt in range(max_retries):
         reason = ''
@@ -1188,10 +1194,9 @@ async def retry_download(download_func, *args, max_retries=DP_MAX_RETRIES, retry
         except Exception as e:
             reason = f": {str(e)[:100]}"
         if attempt < max_retries - 1:
-            pause = min(retry_delay * (2 ** attempt), DP_RETRY_MAX_DELAY)
-            print(f"    ⚠️  本次未拿到文件{reason}，{pause:g}s 后重试 "
+            print(f"    ⚠️  本次未拿到文件{reason}，{retry_delay:g}s 后重试 "
                   f"(尝试 {attempt + 1}/{max_retries})")
-            await asyncio.sleep(pause)
+            await asyncio.sleep(retry_delay)
         else:
             print(f"    ❌ 已达最大重试次数 ({max_retries}){reason}")
     return None
