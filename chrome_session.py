@@ -1114,6 +1114,15 @@ async def bypass_cloudflare_cdp(
             turnstile_tried = False
             last_status = ""
 
+            # 下面这四个都在循环体内赋值，超时那行要读它们来如实说明失败原因。
+            # 先给初值：首轮轮询若在赋值前抛异常、或 deadline 已过导致循环一次
+            # 都没跑，超时分支就会 NameError —— 一条「说清楚为什么失败」的改动
+            # 反而把程序弄崩。
+            title = ""
+            body_text = ""
+            is_challenge = False
+            has_cf = False
+
             # ── PDF 模式：监控下载目录新文件作为「挑战真正通过」的实体判据 ──
             # Chrome 已配置 always_open_pdf_externally=True + prompt_for_download=False，
             # 只有真正绕过挑战拿到 PDF 才会自动落盘新文件（.pdf / .crdownload ）。
@@ -1491,8 +1500,30 @@ async def bypass_cloudflare_cdp(
 
                 await asyncio.sleep(check_interval)
 
-            # 超时
-            print(f"  ⏰  Cloudflare 挑战未在 {timeout_s}s 内通过")
+            # 超时。两种截然不同的失败，此前都被报成「挑战未通过」：
+            #   1) 确实卡在挑战页
+            #   2) 页面其实早就正常打开了，只是始终没有文件落盘
+            # pdf 模式下第 2 种最常见的原因是**没有访问权限**（出版商把
+            # /doi/pdf/... 重定向回落地页），跟 Cloudflare 毫无关系。照旧报成
+            # 挑战未通过会把人引去查反爬，而该查的是订阅权限。
+            # ⚠️ 判据**不能**用 is_challenge。实测 science.org 的每一个页面——
+            # 包括完整加载的文章页（590KB、正文 6786 字）——都挂着
+            # <script src="/cdn-cgi/challenge-platform/scripts/precursor/main.js">，
+            # 而 _CHALLENGE_DOM_JS 第一分支的 querySelector 没有正文长度护栏，
+            # 于是 is_challenge 恒为 True，这个分支永远进不来。改用正向信号：
+            # 标题不是挑战页、正文够长，就说明页面本身是好的。
+            page_looks_real = (
+                title
+                and not _is_challenge_title(title.lower())
+                and len(body_text) > 2000
+            )
+            if pdf_mode and download_dir and page_looks_real:
+                print(f"  ⏰  {timeout_s}s 内没有文件落盘，但页面是打开的"
+                      f"（title={title[:40]!r}, body={len(body_text)} 字, "
+                      f"cf={'✓' if has_cf else '✗'}）")
+                print(f"      → 不是挑战未通过；通常是该文章没有访问权限/需订阅")
+            else:
+                print(f"  ⏰  Cloudflare 挑战未在 {timeout_s}s 内通过")
             return result
 
     except Exception as e:
