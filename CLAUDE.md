@@ -342,6 +342,39 @@ PDF、图片、补充材料、API/页面（如 IOP 的 `/data`）走的是**同�
 - `fetch_html_via_ladder(headless=...)` 的默认是 **True**：忘记传时宁可在无头批次里
   不弹窗（较安静的那个错误答案），但对有头运行它依然是错的 —— **显式传**
 
+### 卡死防线（`page.evaluate` / `response.body()` 没有超时）
+
+Playwright 里**只有这两个调用不接受 `timeout=`**，也不受 `set_default_timeout` 管辖：
+`page.evaluate()` 和 `response.body()`。别处的等待全都有上限，所以「一次网络抖动把整批
+任务钉死」的地方就只剩它们 —— 而它们恰好在最热的路径上：每一张图、每一次页面内 API 取数。
+防线在 `core/utilities.py`（publisher 也要用，依赖方向单向）。
+
+- **为什么是「卡住」而不是「失败」**：连接停住不报错，页面内的 `fetch()` promise 永不
+  settle，`evaluate` 就永不返回。而 `retry_download` **只在抛异常时重试** —— 于是一次
+  卡死会把重试、回退低清链接、`fresh` 那一层**全部跳过**，后面什么都不再发生。
+  这就是「这张图没下来」（没事，会重试）和「批次停在凌晨三点」（要命）的区别
+- 两层都要，各自补对方的盲区：
+
+  | 层 | 做什么 | 补的是对方哪个盲区 |
+  |---|---|---|
+  | 页面内 `AbortController` | 浏览器自己掐断请求，落进 snippet 原有的 `catch` | 悬着的传输会让**下一次** `goto(wait_until='networkidle')` 永远等不到 idle |
+  | `asyncio.wait_for` | 真正的兜底 | 渲染进程本身卡住时，页面内的 `setTimeout` 根本跑不起来 |
+
+- `DP_INPAGE_FETCH_TIMEOUT`（默认 90 s）是**死锁断路器，不是性能旋钮**：只该在连接真的
+  不动了时触发，不该去管「慢」。慢链路调大它，别调小
+- `evaluate_with_timeout()` **抛**异常、`read_body_with_timeout()` **返回 `b''`** ——
+  差异是故意的，为的是两者都不必改调用点：前者每处都已有 `except Exception` 兜底，且
+  `retry_download` 认异常；后者每处都已把空 body 当成「没拿到，继续下一个」
+- ⚠️ **`INPAGE_ABORT_JS` 必须拼进函数体*里面***：
+  `"""async (u) => {""" + INPAGE_ABORT_JS + """ ...rest... }"""`。
+  拼在箭头函数**前面**会让整个表达式变成两条语句，而 Playwright 对「看起来不是函数」的
+  表达式是按表达式求值的 —— 每次调用、每个出版商都会立刻 SyntaxError。
+  用 node 逐个 `--check` 过一遍再提交（7 处 snippet 全部验过）
+- ⚠️ 毫秒值用 `.replace('__MS__', ...)` 而**不是** `%`：这些 snippet 满是 JS 花括号
+- ⚠️ **空 body 绝不能算保存成功**。`download_figure` 里一旦返回文件名就等于告诉
+  `retry_download`「成了」，于是重试、回退低清链接、`fresh` 层全被跳过，只留下一个
+  0 字节的 `.jpg` —— 事后还分辨不出它和真图的区别
+
 ### profile 生命周期（`chrome_session.prepare_profile_dir`）
 
 - **抓取 profile 永不复用**。每次开浏览器都是「先删再建」，两个实例（正文页的共享实例、

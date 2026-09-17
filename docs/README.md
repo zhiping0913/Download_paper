@@ -134,7 +134,14 @@ export DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT=60    # 判「下载是否完成」，�
 export DP_SUPPLEMENTAL_TIMEOUT=60
 export DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT=120  # 大文件 DOCX/MP4 再调大
 export DP_FIGURE_TIMEOUT=60
+export DP_INPAGE_FETCH_TIMEOUT=90             # 页面内 fetch / 读响应体的死锁断路器
 ```
+
+⚠️ `DP_INPAGE_FETCH_TIMEOUT` 和上面几个不是一类东西。`page.evaluate()` 与
+`response.body()` 是 Playwright 里**仅有的两个不接受 `timeout=`、也不受
+`set_default_timeout` 管辖**的调用 —— 网络一抖，页面内的 `fetch()` promise 永不
+settle，整个批次就停在那里不动了（而不是报错重试）。这个值是**死锁断路器**：
+慢链路调**大**，别调小。详见 CLAUDE.md「卡死防线」。
 
 **重试配置：**
 

@@ -29,6 +29,118 @@ HEADERS = {
 
 
 # ============================================================================
+# Bounded waits for the two Playwright calls that have no timeout
+# ============================================================================
+# ``page.evaluate()`` and ``response.body()`` take no ``timeout=`` argument and
+# are NOT governed by ``set_default_timeout``. They wait forever. Every other
+# wait in this tree is bounded, so these two are the only places a blip can
+# wedge the whole run -- and they sit on the hottest path there is: every
+# figure, every in-page API fetch.
+#
+# Why that hangs instead of failing: a stalled TCP connection produces no
+# error, so the in-page ``fetch()`` promise never settles, so ``evaluate``
+# never returns. ``retry_download`` only retries on *exceptions*, which means
+# a hang skips the retry ladder, the fallback-URL rung and the ``fresh`` rung
+# alike. Nothing downstream ever runs. That is the difference between "this
+# figure failed" (fine, we retry) and "the batch stopped at 3am" (not fine).
+#
+# Both layers below are needed, because each covers the other's blind spot:
+#   in-page AbortController  aborts the request while the page still runs,
+#                            and stops a dangling transfer from keeping the
+#                            next goto()'s 'networkidle' from ever arriving
+#   asyncio.wait_for         the real backstop -- it still fires when the
+#                            renderer itself is wedged, which is exactly when
+#                            no in-page timer can run
+
+def env_seconds(name: str, default: float) -> float:
+    """Read a positive float number of seconds from environment.
+
+    Returns ``default`` if the var is unset, empty, or unparseable.
+    """
+    raw = os.environ.get(name, '').strip()
+    if not raw:
+        return float(default)
+    try:
+        val = float(raw)
+        if val <= 0:
+            return float(default)
+        return val
+    except ValueError:
+        return float(default)
+
+
+# Hard cap on any single "pull bytes out of the browser" call -- an in-page
+# fetch or a response-body read. Generous on purpose: this is a deadlock
+# breaker, not a performance knob. It should only ever fire on a connection
+# that has genuinely stopped moving, never on one that is merely slow.
+DP_INPAGE_FETCH_TIMEOUT = env_seconds('DP_INPAGE_FETCH_TIMEOUT', 90)
+
+
+async def evaluate_with_timeout(page, expression, arg=None, *,
+                                timeout_s: float = None, what: str = 'in-page fetch'):
+    """``page.evaluate`` that cannot hang. Raises on timeout.
+
+    The raise is deliberate and is what makes this a one-line change at every
+    call site: each one already wraps its ``evaluate`` in ``except Exception``
+    and degrades to a fallback, and ``retry_download`` already retries on
+    exceptions. Returning a sentinel instead would mean teaching all of them a
+    new failure shape.
+    """
+    budget = float(timeout_s if timeout_s else DP_INPAGE_FETCH_TIMEOUT)
+    try:
+        return await asyncio.wait_for(page.evaluate(expression, arg), timeout=budget)
+    except asyncio.TimeoutError:
+        print(f"    ⏱️  {what} 超过 {budget:g}s 未返回，判定为卡死并放弃")
+        raise
+
+
+async def read_body_with_timeout(response, *, timeout_s: float = None,
+                                 what: str = '响应体') -> bytes:
+    """``response.body()`` that cannot hang. Returns b'' instead of raising.
+
+    Unlike :func:`evaluate_with_timeout`, every caller of this one already
+    treats an empty body as "didn't work, move on", so b'' needs no new
+    handling anywhere and keeps the timeout from aborting a loop that still
+    has other files to fetch.
+    """
+    budget = float(timeout_s if timeout_s else DP_INPAGE_FETCH_TIMEOUT)
+    try:
+        return await asyncio.wait_for(response.body(), timeout=budget)
+    except asyncio.TimeoutError:
+        print(f"    ⏱️  读取{what}超过 {budget:g}s 未完成，判定为卡死并放弃")
+        return b''
+    except Exception as exc:
+        print(f"    ⚠️  读取{what}失败（{type(exc).__name__}: {str(exc)[:80]}）")
+        return b''
+
+
+# The in-page half of the pair: hand ``signal: __dpAbort(ms)`` to fetch() and
+# the browser aborts the request itself, which rejects the promise and lands in
+# the snippet's own catch.
+#
+# ⚠️ This is a *statement*, so it must be spliced INSIDE the function body --
+#    """async (u) => {""" + INPAGE_ABORT_JS + """ ...rest... }"""
+#    Putting it in front of the arrow function instead makes the expression two
+#    statements, and Playwright evaluates a non-function expression as an
+#    expression: instant SyntaxError, on every call, for every publisher.
+# ⚠️ Substitute the millisecond value with ``.replace('__MS__', ...)``, not
+#    ``%``: these snippets are full of JS braces and a stray ``%`` in a future
+#    one would turn into a formatting error nobody expects.
+INPAGE_ABORT_JS = """
+    const __dpAbort = (ms) => {
+        const c = new AbortController();
+        setTimeout(() => c.abort(), ms);
+        return c.signal;
+    };
+"""
+
+
+def inpage_abort_ms() -> str:
+    """The millisecond budget to splice into an in-page ``__dpAbort`` call."""
+    return str(int(DP_INPAGE_FETCH_TIMEOUT * 1000))
+
+
+# ============================================================================
 # The fetch ladder
 # ============================================================================
 # Three rungs, one order for every kind of fetch -- API pages, the PDF,
@@ -675,16 +787,19 @@ async def fetch_view_source_html(page, url: str = None, timeout_ms: int = 30000)
     if not target:
         return ''
     try:
-        html = await page.evaluate(
-            """async (u) => {
+        html = await evaluate_with_timeout(
+            page,
+            ("""async (u) => {""" + INPAGE_ABORT_JS + """
                 const r = await fetch(u, {
                     credentials: 'include',
+                    signal: __dpAbort(__MS__),
                     headers: {'Accept': 'text/html,application/xhtml+xml'},
                 });
                 if (!r.ok) return '';
                 return await r.text();
-            }""",
+            }""").replace('__MS__', inpage_abort_ms()),
             target,
+            what='view-source 抓取',
         )
     except Exception as e:
         print(f"  ⚠️  view-source 抓取失败: {e}")

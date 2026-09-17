@@ -33,6 +33,11 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
+from core.utilities import (
+    evaluate_with_timeout,
+    inpage_abort_ms,
+    INPAGE_ABORT_JS,
+)
 from html_to_md_converter import mathml_to_latex_pandoc
 from publisher.base import PublisherHandler
 from publisher.wildcard import (
@@ -2020,12 +2025,14 @@ class ScienceDirectHandler(PublisherHandler):
         # article, so it is accepted.
         payload = None
         try:
-            payload = await page.evaluate(
-                """async (url) => {
+            payload = await evaluate_with_timeout(
+                page,
+                ("""async (url) => {""" + INPAGE_ABORT_JS + """
                     try {
                         const r = await fetch(url, {
                             method: 'GET',
                             credentials: 'include',
+                            signal: __dpAbort(__MS__),
                             headers: {'Accept': 'application/json'},
                         });
                         if (!r.ok) return {__err: 'status ' + r.status};
@@ -2033,8 +2040,9 @@ class ScienceDirectHandler(PublisherHandler):
                     } catch (e) {
                         return {__err: String(e)};
                     }
-                }""",
+                }""").replace('__MS__', inpage_abort_ms()),
                 api_url,
+                what='ScienceDirect body API',
             )
         except Exception as exc:
             print(f"  ⚠️  body API in-page fetch 异常: {type(exc).__name__}: {str(exc)[:120]}")

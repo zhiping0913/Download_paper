@@ -65,9 +65,14 @@ from core import (
 # with what is internal plumbing.
 from core.utilities import (
     cookies_for_requests,
+    env_seconds,
+    evaluate_with_timeout,
     fetch_ladder,
     fresh_chrome_enabled,
     http_asset_headers,
+    inpage_abort_ms,
+    read_body_with_timeout,
+    INPAGE_ABORT_JS,
 )
 
 # Private aliases so the call sites here read as they always did.
@@ -115,25 +120,21 @@ OUTPUT_DIR = OUTPUT_DIR_DEFAULT
 #                              download-event wait
 #   DP_FIGURE_TIMEOUT          figure navigation (both primary and
 #                              fallback img re-fetch)
+#   DP_INPAGE_FETCH_TIMEOUT    hard cap on one in-page fetch() or one
+#                              response-body read -- the only two Playwright
+#                              calls that take no timeout of their own and so
+#                              wait forever. Defined in core.utilities because
+#                              publisher handlers need it too. Raise it for a
+#                              slow link; it is a deadlock breaker, not a
+#                              throughput knob.
 #
 # Missing / unparseable env vars fall through to the hardcoded defaults
 # that were in place before this refactor.
 
-def _env_seconds(name: str, default: float) -> float:
-    """Read a positive float number of seconds from environment.
-
-    Returns ``default`` if the var is unset, empty, or unparseable.
-    """
-    raw = os.environ.get(name, '').strip()
-    if not raw:
-        return float(default)
-    try:
-        val = float(raw)
-        if val <= 0:
-            return float(default)
-        return val
-    except ValueError:
-        return float(default)
+# The parser itself lives in core.utilities, because the knobs defined there
+# (DP_INPAGE_FETCH_TIMEOUT) have to read the environment the same way these do
+# and the dependency only runs one way.
+_env_seconds = env_seconds
 
 
 # Page-load family — covers the initial article navigation (headed + headless),
@@ -1968,7 +1969,13 @@ async def download_supplemental_materials(
                         is_too_large = content_length > DIRECT_FETCH_MAX_BYTES
 
                         if api_response.ok and not is_html_challenge and not is_too_large:
-                            body = await api_response.body()
+                            # The size cap above keeps this from being the
+                            # 200 MB case; the timeout covers the transfer
+                            # simply stopping partway.
+                            body = await read_body_with_timeout(
+                                api_response,
+                                timeout_s=DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT,
+                                what='补充材料')
                             if body:
                                 output_path.write_bytes(body)
                                 output_path = _detect_and_rename(output_path)
@@ -2029,12 +2036,11 @@ async def download_supplemental_materials(
                         )
                         if is_ours:
                             if resp.ok and 'audio/' in ct:
-                                try:
-                                    body = await resp.body()
-                                    if body:
-                                        _audio_body = body
-                                except Exception:
-                                    pass
+                                body = await read_body_with_timeout(
+                                    resp, timeout_s=DP_SUPPLEMENTAL_TIMEOUT,
+                                    what='内嵌音频')
+                                if body:
+                                    _audio_body = body
                             _audio_done.set()
 
                     download_page.on('response', _on_audio_response)
@@ -2148,7 +2154,10 @@ async def download_supplemental_materials(
                         content_type = response.headers.get('content-type', '').lower() if response else ''
 
                         if response.ok and 'text/html' not in content_type and content_type:
-                            body = await response.body()
+                            body = await read_body_with_timeout(
+                                response,
+                                timeout_s=DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT,
+                                what='补充材料')
                             if len(body) > 0:
                                 output_path.write_bytes(body)
                                 output_path = _detect_and_rename(output_path)
@@ -2229,19 +2238,32 @@ async def _fetch_image_as_bytes(page, url: str) -> bytes:
     encoded binary responses.
     """
     import base64
-    b64 = await page.evaluate("""
-        async (url) => {
-            const resp = await fetch(url, {credentials: 'include'});
-            if (!resp.ok) return null;
-            const buf = await resp.arrayBuffer();
-            const bytes = new Uint8Array(buf);
-            let binary = '';
-            for (let i = 0; i < bytes.byteLength; i++) {
-                binary += String.fromCharCode(bytes[i]);
-            }
-            return btoa(binary);
-        }
-    """, url)
+    # Swallows the timeout rather than propagating it: the caller's very next
+    # move is ``response.body()``, a genuinely different transport (Playwright's
+    # own, not an in-page fetch) that may well work when this one stalled.
+    # Raising here would skip it.
+    try:
+        b64 = await evaluate_with_timeout(
+            page,
+            ("""async (url) => {""" + INPAGE_ABORT_JS + """
+                const resp = await fetch(url, {
+                    credentials: 'include',
+                    signal: __dpAbort(__MS__),
+                });
+                if (!resp.ok) return null;
+                const buf = await resp.arrayBuffer();
+                const bytes = new Uint8Array(buf);
+                let binary = '';
+                for (let i = 0; i < bytes.byteLength; i++) {
+                    binary += String.fromCharCode(bytes[i]);
+                }
+                return btoa(binary);
+            }""").replace('__MS__', inpage_abort_ms()),
+            url,
+            what='图片 in-page fetch',
+        )
+    except Exception:
+        return None
     if b64 is None:
         return None
     return base64.b64decode(b64)
@@ -2383,12 +2405,18 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
             # Use browser-side fetch to avoid CDP binary corruption
             image_data = await _fetch_image_as_bytes(download_page, fig_url)
             if not image_data:
-                image_data = await response.body()
-            img_filename = original_image_filename(fig_url, fig_num)
-            img_path = output_dir / img_filename
-            img_path.write_bytes(image_data)
-            print(f"    ✓ 保存: {img_filename}")
-            return img_filename
+                image_data = await read_body_with_timeout(response, what='图片')
+            # An empty body must NOT be reported as a save. Returning a filename
+            # tells retry_download this succeeded, so the retries, the
+            # fallback (lower-res) URL and the `fresh` rung would all be skipped
+            # -- leaving a 0-byte .jpg and no way to tell it apart from a real
+            # one later.
+            if image_data:
+                img_filename = original_image_filename(fig_url, fig_num)
+                img_path = output_dir / img_filename
+                img_path.write_bytes(image_data)
+                print(f"    ✓ 保存: {img_filename}")
+                return img_filename
 
         img_elements = await download_page.query_selector_all('img')
 
@@ -2404,14 +2432,15 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
                         await auto_solve_bot_challenge(download_page, timeout_s=DP_CLOUDFLARE_TIMEOUT, initial_poll_s=DP_CLOUDFLARE_INITIAL_POLL)
                     except Exception:
                         pass
-                    image_data = await response.body()
-                img_filename = original_image_filename(img_src, fig_num)
-                img_path = output_dir / img_filename
-                img_path.write_bytes(image_data)
-                print(f"    ✓ 保存: {img_filename}")
-                if download_page is not page:
-                    await download_page.close()
-                return img_filename
+                    image_data = await read_body_with_timeout(response, what='图片')
+                if image_data:
+                    img_filename = original_image_filename(img_src, fig_num)
+                    img_path = output_dir / img_filename
+                    img_path.write_bytes(image_data)
+                    print(f"    ✓ 保存: {img_filename}")
+                    if download_page is not page:
+                        await download_page.close()
+                    return img_filename
 
     except Exception as e:
         print(f"    ❌ 下载失败: {e}")

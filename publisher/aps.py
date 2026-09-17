@@ -12,6 +12,11 @@ from html import unescape
 
 from publisher.base import PublisherHandler
 from core.network_capture import setup_response_capture
+from core.utilities import (
+    evaluate_with_timeout,
+    inpage_abort_ms,
+    INPAGE_ABORT_JS,
+)
 from html_to_md_converter import cleanup_markdown, convert_html_to_markdown, mathml_to_latex_pandoc, remove_newlines_in_paragraph
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
@@ -1012,12 +1017,14 @@ class APSHandler(PublisherHandler):
 
         payload = None
         try:
-            payload = await page.evaluate(
-                """async (url) => {
+            payload = await evaluate_with_timeout(
+                page,
+                ("""async (url) => {""" + INPAGE_ABORT_JS + """
                     try {
                         const r = await fetch(url, {
                             method: 'GET',
                             credentials: 'include',
+                            signal: __dpAbort(__MS__),
                             headers: {'Accept': 'application/json'},
                         });
                         if (!r.ok) return {__err: 'status ' + r.status};
@@ -1029,8 +1036,9 @@ class APSHandler(PublisherHandler):
                     } catch (e) {
                         return {__err: String(e)};
                     }
-                }""",
+                }""").replace('__MS__', inpage_abort_ms()),
                 url,
+                what='APS fulltext in-page fetch',
             )
         except Exception as exc:
             print(f"  ⚠️  fulltext in-page fetch 异常: {type(exc).__name__}: {str(exc)[:120]}")
