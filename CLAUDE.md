@@ -479,12 +479,18 @@ Playwright 里**有三个调用不接受 `timeout=`**，也不受 `set_default_t
   （authors + affiliation、abstract、keywords、pdfUrl / pdfPath、supplementGroup）
 - 响应会缓存到 `html/`：`rest.html`、`references.json`、`multimedia.json`、
   `footnotes.json`，可离线重跑渲染
-- **PDF 不能靠导航下载**：`pdfPath` 的 `/iel7/...pdf` 会重定向到 `stamp.jsp`，
-  而 stamp 页只是个查看器，要人手点「open」才触发下载 —— 浏览器 download 事件
-  永远不会触发。handler 用 `download_pdf_via_page()` 页面内 `fetch()` 直接取字节，
-  首选 `https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber={aid}`
-  （查看器自己调的那个接口，直接回 PDF），失败再回退 metadata 里的两个链接并跟随
-  查看器页里的 `<iframe src>`
+- **PDF 走通用取数阶梯，和别的出版商一样**：`get_pdf_url()` 返回
+  `https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber={aid}` ——
+  查看器自己调的那个接口，直接回 PDF 字节，所以导航到它就能下载
+- ⚠️ **`pdfPath` / `pdfUrl` 只能兜底，绝不能排在前面**：`pdfPath` 的 `/iel7/...pdf`
+  会重定向到 `stamp.jsp`，而 stamp 页只是个查看器，要人手点「open」才触发下载 ——
+  浏览器 download 事件永远不会触发，整个重试预算白烧。IEEE 早先之所以需要一条自己的
+  PDF 下载路径（`download_pdf_via_page()` 页面内 fetch），根源就是这个返回顺序；
+  现在那条路径已删除，把顺序改回去就会把它招回来
+- ⚠️ **注意与 entitlement 规则的相互作用**：IEEE 把权限绑在**渲染文章的那个会话**上，
+  而有头阶梯的第一层是**一次性 Chrome，完全没有正文页会话**。订阅内容多半要落到第二层
+  `tab`（在已打开文章的浏览器里开新标签页，会话相同）才拿得到。整批跑 IEEE 可以直接
+  `DP_FETCH_PDF=tab` 跳过第一层，省掉每篇一次的空跑
 - `xplGlobal` 里的 `title` / `abstract` / `keywords` **是 HTML 片段不是纯文本**，
   摘要里常有 `<inline-formula><tex-math>`，必须走 `field_md()`（同一套公式管道）
 - `supplementGroup` 是**仓库分组的列表**，条目带的是外部 DOI（IEEE DataPort）而不是

@@ -1191,7 +1191,6 @@ async def _download_all_resources(
     doi: str = None,
     force_headed: bool = False,
     reuse_context: bool = False,
-    handler=None,
     pdf_only: bool = False,
     referer_url: str = '',
 ) -> dict:
@@ -1204,10 +1203,6 @@ async def _download_all_resources(
         context: Playwright browser context (for new tabs)
         metadata: Paper metadata (for supplemental material naming)
         doi: DOI for constructing PDF URL if pdf_url not provided
-        handler: publisher handler; when it exposes ``download_pdf_via_page``
-            that is tried before the navigation-based download (some
-            publishers never fire a browser download event -- see
-            IEEEHandler.download_pdf_via_page)
         pdf_only: stop once the PDF is in. Figures, the key image and the
             supplemental files exist to be referenced from the markdown, and
             a pdf-only run writes no markdown
@@ -1243,32 +1238,20 @@ async def _download_all_resources(
             try:
                 pdf_filename = "paper.pdf"
 
-                # Publisher-owned download path, when the handler has one.
-                # Used by publishers whose PDF URL cannot be downloaded by
-                # navigating to it (IEEE redirects to a viewer that waits for
-                # a human click), so navigation would burn the whole retry
-                # budget and still produce nothing.
-                pdf_result = None
-                if handler is not None and hasattr(handler, 'download_pdf_via_page'):
-                    try:
-                        pdf_result = await handler.download_pdf_via_page(
-                            download_page, output_dir, pdf_filename
-                        )
-                    except Exception as e:
-                        print(f"  ⚠️  handler PDF 下载失败，回退通用流程: "
-                              f"{type(e).__name__}: {str(e)[:100]}")
-
-                if not pdf_result:
-                    pdf_result = await retry_download(
-                        download_pdf,
-                        download_page, pdf_url, output_dir, pdf_filename,
-                        download_context, force_headed,
-                        # Keyword, not positional: retry_download forwards
-                        # *args straight through, so an extra positional here
-                        # would land on the wrong parameter.
-                        referer_url=referer_url,
-                        max_retries=DP_MAX_RETRIES, retry_delay=DP_RETRY_DELAY,
-                    )
+                # Every publisher goes through the same ladder now. IEEE used
+                # to need its own in-page fetch here because get_pdf_url handed
+                # back a viewer URL that no navigation could download; it
+                # returns /stampPDF/getPDF.jsp instead, which serves the bytes.
+                pdf_result = await retry_download(
+                    download_pdf,
+                    download_page, pdf_url, output_dir, pdf_filename,
+                    download_context, force_headed,
+                    # Keyword, not positional: retry_download forwards
+                    # *args straight through, so an extra positional here
+                    # would land on the wrong parameter.
+                    referer_url=referer_url,
+                    max_retries=DP_MAX_RETRIES, retry_delay=DP_RETRY_DELAY,
+                )
                 downloads['pdf'] = pdf_result
             except Exception as e:
                 print(f"⚠️  PDF下载失败: {e}")
@@ -2936,7 +2919,6 @@ async def complete_extraction_workflow(
             doi,
             force_headed_downloads,
             reuse_context=browser_session is not None,
-            handler=handler,
             pdf_only=pdf_only,
             # The article URL, pinned before extract_all ran. It is what the
             # last rung clicks through from, so a normal run gets that rung
