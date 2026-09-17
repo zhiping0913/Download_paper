@@ -24,10 +24,21 @@ Every endpoint response is cached next to ``page.html`` (``rest.html``,
 ``references.json``, ``multimedia.json``, ``footnotes.json``) so a capture can
 be re-rendered offline without touching the network.
 
-All requests are issued from *inside* the page via ``fetch()``. IEEE binds
-entitlement to the session that rendered the article; an out-of-page
+The REST endpoints are all fetched from *inside* the page via ``fetch()``. IEEE
+binds entitlement to the session that rendered the article; an out-of-page
 ``context.request`` shares cookies but not the JS/TLS fingerprint and comes
 back as a denial stub.
+
+The PDF is the exception: it goes through the ordinary download ladder, like
+every other publisher, because :meth:`get_pdf_url` hands back
+``/stampPDF/getPDF.jsp`` -- the endpoint the stamp viewer itself calls, which
+answers with the file instead of with viewer chrome.
+
+⚠️ Mind the interaction with the entitlement rule above: the headed ladder's
+first rung is a *throwaway* Chrome carrying no article session at all. On
+subscription content expect it to miss and the ``tab`` rung (a new tab in the
+browser already holding the article, hence the same session) to be the one that
+succeeds. ``DP_FETCH_PDF=tab`` skips straight to it for an IEEE-heavy batch.
 """
 
 from __future__ import annotations
@@ -972,171 +983,29 @@ class IEEEHandler(PublisherHandler):
     # ==================================================================
 
     async def get_pdf_url(self, doi: str = None) -> Optional[str]:
-        """PDF link, preferring the metadata blob over the constructed one.
+        """PDF link: the endpoint that answers with the file itself.
 
-        ``pdfPath`` (``/iel7/.../10398424.pdf``) is the file itself and
-        ``pdfUrl`` (``/stamp/stamp.jsp?tp=&arnumber=...``) the viewer around
-        it; both are site-relative. ``pdfPath`` is returned first -- see
-        :meth:`download_pdf_via_page` for why neither URL can be downloaded by
-        navigating to it.
+        ``/stampPDF/getPDF.jsp`` is the one the stamp viewer calls for the
+        bytes, so it responds with the PDF directly -- which is what makes the
+        ordinary download ladder work here at all.
 
-        With neither field present the stamp URL is constructed from the
-        article id, since that is the only form derivable without the
-        metadata blob.
+        ⚠️ The two URLs in the metadata blob are a last resort, not a
+        preference: ``pdfUrl`` (``/stamp/stamp.jsp?...``) is the viewer chrome,
+        and ``pdfPath`` (``/iel7/.../10398424.pdf``) redirects to that same
+        viewer. Navigating to either renders the PDF in an embedded reader that
+        waits for a human to click "open", so no download event ever fires and
+        the whole retry budget burns for nothing. Returning them first is
+        exactly the bug that once made IEEE need its own download path.
         """
+        if self.article_id:
+            return (f"{self.IEEE_BASE}/stampPDF/getPDF.jsp"
+                    f"?tp=&arnumber={self.article_id}")
         xpl = self._xpl_cache or {}
         for key in ('pdfPath', 'pdfUrl'):
             path = (xpl.get(key) or '').strip()
             if path:
                 return path if path.startswith('http') else self.IEEE_BASE + path
-        if self.article_id:
-            return f"{self.IEEE_BASE}/stamp/stamp.jsp?tp=&arnumber={self.article_id}"
         return None
-
-    async def download_pdf_via_page(self, page, output_dir, filename: str = 'paper.pdf'):
-        """Fetch the article PDF with an in-page ``fetch()`` and write it out.
-
-        Navigating to an IEEE PDF URL never produces a file: the ``iel7`` path
-        redirects to ``stamp.jsp``, and the stamp page renders the PDF in an
-        embedded viewer that waits for a human to click "open". Either way the
-        browser's download event never fires and the generic downloader
-        exhausts its retry budget.
-
-        Fetching the bytes from inside the page sidesteps the viewer entirely
-        -- same session, same cookies, same fingerprint as the rendered
-        article, so entitlement is honoured -- and writes the file directly.
-        The payload comes back base64-encoded because ``page.evaluate`` can
-        only return JSON-serialisable values.
-
-        Returns the filename on success, or ``None`` so the caller can fall
-        back to the normal navigation-based download.
-        """
-        from pathlib import Path as _Path
-
-        print("  📥 IEEE: 页面内 fetch PDF...")
-
-        # /stampPDF/getPDF.jsp is the endpoint the stamp viewer itself calls
-        # for the bytes, so it answers with the file directly -- unlike
-        # /stamp/stamp.jsp (the viewer chrome, which waits for a human to
-        # click "open") and unlike pdfPath's /iel7/... (which redirects to
-        # that viewer). Try it first, then fall back to the metadata blob's
-        # URLs, following any viewer page's embedded <iframe src>.
-        candidates: List[str] = []
-        if self.article_id:
-            candidates.append(
-                f"{self.IEEE_BASE}/stampPDF/getPDF.jsp?tp=&arnumber={self.article_id}"
-            )
-        primary = await self.get_pdf_url(self.doi)
-        if primary and primary not in candidates:
-            candidates.append(primary)
-        if self.article_id:
-            stamp = f"{self.IEEE_BASE}/stamp/stamp.jsp?tp=&arnumber={self.article_id}"
-            if stamp not in candidates:
-                candidates.append(stamp)
-
-        seen = set()
-        for _ in range(4):                      # getPDF -> pdfPath -> viewer -> iframe
-            if not candidates:
-                break
-            url = candidates.pop(0)
-            if url in seen:
-                continue
-            seen.add(url)
-
-            print(f"     链接: {url}")
-            payload = await self._fetch_bytes(page, url)
-            if payload is None:
-                continue
-            data, content_type = payload
-
-            if data.startswith(b'%PDF'):
-                out = _Path(output_dir) / filename
-                out.parent.mkdir(parents=True, exist_ok=True)
-                out.write_bytes(data)
-                print(f"    ✓ 已保存: {filename} ({len(data) / 1024 / 1024:.2f} MB)")
-                return filename
-
-            # Not the file -- most likely the stamp viewer, which embeds the
-            # real PDF in an <iframe>/<embed> whose src carries the session
-            # token (an /ielx7/... path, note the "x", unlike pdfPath's
-            # /iel7/...). Follow that and try again.
-            embedded = self._embedded_pdf_src(data)
-            if embedded:
-                candidates.append(embedded)
-                continue
-
-            head = data[:16].decode('latin-1', 'replace')
-            print(f"    ⚠️  响应不是 PDF (content-type={content_type or '?'}, "
-                  f"起始={head!r})")
-
-        return None
-
-    async def _fetch_bytes(self, page, url: str):
-        """In-page ``fetch()`` returning ``(bytes, content_type)`` or ``None``.
-
-        ``page.evaluate`` can only hand back JSON, so the body is base64'd on
-        the JS side and decoded here.
-        """
-        import base64
-
-        try:
-            result = await evaluate_with_timeout(
-                page,
-                ("""async (url) => {""" + INPAGE_ABORT_JS + """
-                    try {
-                        const r = await fetch(url, {
-                            credentials: 'include',
-                            signal: __dpAbort(__MS__),
-                            headers: {'Accept': 'application/pdf,*/*'},
-                        });
-                        if (!r.ok) return {__err: 'status ' + r.status};
-                        const buf = new Uint8Array(await r.arrayBuffer());
-                        let s = '';
-                        const CHUNK = 0x8000;
-                        for (let i = 0; i < buf.length; i += CHUNK) {
-                            s += String.fromCharCode.apply(
-                                null, buf.subarray(i, i + CHUNK));
-                        }
-                        return {b64: btoa(s), type: r.headers.get('content-type') || ''};
-                    } catch (e) {
-                        return {__err: String(e)};
-                    }
-                }""").replace('__MS__', inpage_abort_ms()),
-                url,
-                what='IEEE PDF in-page fetch',
-            )
-        except Exception as exc:
-            print(f"    ⚠️  in-page fetch 异常: {type(exc).__name__}: {str(exc)[:120]}")
-            return None
-
-        if not isinstance(result, dict) or result.get('__err'):
-            print(f"    ⚠️  请求失败: {(result or {}).get('__err', 'no response')}")
-            return None
-        try:
-            return base64.b64decode(result.get('b64') or ''), (result.get('type') or '')
-        except Exception:
-            return None
-
-    @classmethod
-    def _embedded_pdf_src(cls, data: bytes) -> str:
-        """Find the PDF that a viewer page embeds, if this is a viewer page."""
-        try:
-            html = data.decode('utf-8', errors='replace')
-        except Exception:
-            return ''
-        m = re.search(
-            r'<(?:iframe|embed)[^>]+src=["\']([^"\']*\.pdf[^"\']*)["\']',
-            html, re.IGNORECASE)
-        if not m:
-            m = re.search(r'["\'](/ielx?\d*/[^"\']+\.pdf[^"\']*)["\']', html)
-        if not m:
-            return ''
-        src = m.group(1).replace('&amp;', '&').strip()
-        if src.startswith('//'):
-            return 'https:' + src
-        if src.startswith('/'):
-            return cls.IEEE_BASE + src
-        return src
 
     async def get_supplemental_url(self, doi: str) -> Optional[str]:
         # Supplemental files come from the multimedia endpoint in extract_all.
