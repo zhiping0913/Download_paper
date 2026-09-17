@@ -75,6 +75,7 @@ from core.utilities import (
     http_asset_headers,
     inpage_abort_ms,
     read_body_with_timeout,
+    url_looks_like_bot_challenge,
     DP_HTTP_TOTAL_TIMEOUT,
     INPAGE_ABORT_JS,
 )
@@ -320,20 +321,11 @@ def is_bot_challenge_page(url: str, html: str = None) -> bool:
 
     Checks URL patterns and page content for common bot-detection / CAPTCHA indicators.
     """
-    if url:
-        url_lower = url.lower()
-        challenge_domains = [
-            'validate.perfdrive.com',
-            'distilnetworks.com',
-            'distilidentify.com',
-            'captcha',
-            'challenge',
-            'accessdenied',
-            'blocked',
-        ]
-        for pattern in challenge_domains:
-            if pattern in url_lower:
-                return True
+    # The URL half lives in core.utilities: chrome_session needs the same test
+    # and cannot import this module (cycle), and two copies of a list like this
+    # drift the moment one publisher's interstitial gets added to one of them.
+    if url_looks_like_bot_challenge(url):
+        return True
 
     if html:
         html_lower = html.lower()

@@ -309,6 +309,21 @@ PDF、图片、补充材料、API/页面（如 IOP 的 `/data`）走的是**同�
 - ⚠️ **「点击后没导航」不等于失败**。目标若以 `Content-Disposition: attachment` 响应，
   浏览器按**下载**处理，标签页本来就不动。成败只看下载目录是否落盘 ——
   早先把这句报成「未发生导航」，差点据此误判该层无效
+- ⚠️ **来路页自己也可能是拦截页，那时这一层的前提就已经没了**。从验证码页点击，
+  发出去的请求 Referer 是验证码页 —— 比不带 Referer 更糟，而且会静默烧掉一次尝试。
+  实测 IOP `10.1088/1361-6587/aaa57d`：连续 **3 次外层尝试全死在这里**，每次都已先付掉
+  两次 Chrome 启动 + 两轮 20 秒验证码等待；第 4 次成功的唯一原因，就是它的来路页恰好
+  加载出来了。所以**重载来路页的重试必须放在这一层内部**（`_REFERER_PAGE_RETRIES`，
+  一次导航），交给外层重试等于整条阶梯从头再来
+- ⚠️ **判定拦截页只能匹配主机名或完整路径段，绝不能拿 URL 做子串匹配**。
+  `core/utilities.url_looks_like_bot_challenge()` 里 `captcha`/`challenge`/`blocked`
+  这类弱词用子串匹配看着等价，实则会把 `/article/…/challenges-in-tokamak-control`、
+  `10.1002/challenge.20250101` 判成拦截页 —— 实测 4 个普通文章 URL **全中招**。
+  判据放在 `core/utilities`（`chrome_session` 也要用，而它 import 主文件会成环），
+  主文件的 `is_bot_challenge_page()` 在它之上再加 HTML 标记判断
+- ⚠️ 而且两个调用方的**误报代价不对称**，所以不能图省事共用整张表：无头预检误报只是
+  升级到有头（可容忍）；referer 层误报是**拒掉一个本来好好的来路页**、白白重载、
+  再放弃一条能走通的路 —— 比它要防的问题更糟
 - **默认 `tab`**。`request` 那层对普通 CDN 很有效，但对正在挑战你的站点基本无效——
   Cloudflare 的 clearance cookie 绑定 UA、IP 和 **TLS 指纹**，`requests` 三样都对不上
 - ⚠️ **显式配置是截断语义**：从指定那层起、连同其后各层。`DP_FETCH_PDF=fresh`

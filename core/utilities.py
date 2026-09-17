@@ -10,7 +10,7 @@ import re
 import requests
 from pathlib import Path
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 # ============================================================================
 # Semantic Scholar API Configuration
@@ -173,6 +173,58 @@ INPAGE_ABORT_JS = """
 def inpage_abort_ms() -> str:
     """The millisecond budget to splice into an in-page ``__dpAbort`` call."""
     return str(int(DP_INPAGE_FETCH_TIMEOUT * 1000))
+
+
+# ============================================================================
+# Bot-interstitial URLs
+# ============================================================================
+# A bot manager answers by *redirecting* rather than by an error status, so the
+# landed URL alone identifies the interstitial -- no HTML needed. That matters
+# where only the URL is available: over CDP, where reading the body costs a
+# round-trip, and inside chrome_session, which cannot import the main module
+# without creating this tree's first import cycle.
+#
+# Lives here so the one list serves both sides. complete_paper_extraction's
+# is_bot_challenge_page() adds HTML-marker checks on top of it.
+# Unambiguous interstitial hosts: seeing one of these IS the answer.
+BOT_CHALLENGE_HOSTS = (
+    'validate.perfdrive.com',      # Radware Bot Manager (IOP)
+    'distilnetworks.com',
+    'distilidentify.com',
+)
+
+# Weak words. A bot manager may sit at captcha.example.com or example.com/blocked,
+# but these words also turn up in ordinary article URLs.
+BOT_CHALLENGE_HINTS = ('captcha', 'challenge', 'accessdenied', 'blocked')
+
+
+def url_looks_like_bot_challenge(url: str) -> bool:
+    """True when *url* is a bot-manager interstitial rather than the real page.
+
+    ⚠️ Matches the host and whole path SEGMENTS only -- never a bare substring
+    of the URL. Substring matching on the weak words looks equivalent and is
+    not: it flags ``/article/10.1088/…/challenges-in-tokamak-control`` and
+    ``10.1002/challenge.20250101`` as interstitials. Measured on four otherwise
+    ordinary article URLs, a substring version misjudged all four.
+
+    That matters because the cost of a false positive is not symmetric between
+    the two callers. In the headless preflight it only escalates to headed; in
+    the referer rung it *refuses a referring page that was fine*, reloads it
+    pointlessly and abandons a path that would have worked -- a worse failure
+    than the one this check exists to prevent.
+    """
+    if not url:
+        return False
+    parts = urlsplit(url.lower())          # urlsplit, not urlparse: the latter
+    host = parts.netloc                    # eats everything after ';' into
+    if not host and not parts.path:        # .params, and SICI DOIs contain ';'
+        return False
+    if any(h in host for h in BOT_CHALLENGE_HOSTS):
+        return True
+    if any(w in host for w in BOT_CHALLENGE_HINTS):
+        return True
+    segments = [s for s in parts.path.split('/') if s]
+    return any(s in BOT_CHALLENGE_HINTS for s in segments)
 
 
 # ============================================================================
