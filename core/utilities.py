@@ -174,7 +174,7 @@ async def fetch_html_via_ladder(url: str, *, kind: str = 'api', page=None,
                                 context=None, referer: str = None,
                                 expect=None, timeout_s: float = 30.0,
                                 restore_url: str = None,
-                                headless: bool = True) -> str:
+                                headless: bool = False) -> str:
     """Fetch *url* as HTML, walking the ladder until something usable comes back.
 
     *expect* is a substring or a predicate identifying the page we wanted; see
@@ -185,6 +185,15 @@ async def fetch_html_via_ladder(url: str, *, kind: str = 'api', page=None,
     *restore_url* is navigated back to after the 'tab' rung, because that rung
     drives the caller's own page: leaving the shared article tab parked on a
     supplemental listing is how metadata ends up recording the wrong URL.
+
+    ⚠️ *headless* must be given the mode the run is actually in --
+    ``headless=not force_headed``, as every other throwaway-Chrome caller does.
+    The whole point of the bottom rung is to present a browser that has never
+    been automated; launching it headless during a headed run throws that away
+    and walks straight into a bot check (observed on IOP's /data page, which
+    answered with a Radware captcha). The default is False to match
+    chrome_session's own, but relying on the default is a bug waiting to
+    happen: pass it explicitly.
     """
     tiers = fetch_ladder(kind)
 

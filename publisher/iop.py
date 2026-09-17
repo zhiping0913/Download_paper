@@ -781,7 +781,8 @@ class IOPHandler(PublisherHandler):
         return urls, descriptions
 
     @staticmethod
-    async def _extract_supplementary_from_data_page(page, doi: str, captured_data_dir=None) -> tuple:
+    async def _extract_supplementary_from_data_page(page, doi: str, captured_data_dir=None,
+                                                    force_headed: bool = False) -> tuple:
         """Fetch the IOP supplementary /data page and extract download links.
 
         Every IOP article has a standard supplementary endpoint:
@@ -817,6 +818,10 @@ class IOPHandler(PublisherHandler):
             referer=current_url or None,
             expect=IOPHandler._looks_like_data_page,
             restore_url=current_url or None,
+            # The throwaway Chrome has to match the run. Headless on a headed
+            # run is the most detectable browser we could show IOP, and its
+            # Radware check answers with a captcha instead of the page.
+            headless=not force_headed,
         )
 
         if not html:
@@ -952,7 +957,10 @@ class IOPHandler(PublisherHandler):
                 try:
                     supp_urls, supp_descriptions = (
                         await self._extract_supplementary_from_data_page(
-                            page, doi, captured_data_dir=self.captured_data_dir
+                            page, doi, captured_data_dir=self.captured_data_dir,
+                            # Pinned by process_with_handler before extract_all
+                            # runs; a handler has no other way to know.
+                            force_headed=getattr(self, '_force_headed', False),
                         )
                     )
                 except Exception as e:

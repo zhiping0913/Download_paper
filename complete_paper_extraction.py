@@ -2586,6 +2586,14 @@ async def complete_extraction_workflow(
         print(f"Step 2️⃣  使用{publisher.upper()}Handler完整提取...")
         print("=" * 80)
 
+        # Whether this run is headed. A handler cannot see it, but the bottom
+        # rung of the fetch ladder must: a throwaway Chrome launched headless
+        # during a headed run is the most detectable thing we could present,
+        # and IOP's Radware check refuses exactly that. Set unconditionally,
+        # before the landing-url block below, which is skipped when there is
+        # no page at all.
+        handler._force_headed = bool(force_headed_downloads)
+
         # Pin the article URL BEFORE extract_all runs. Handlers navigate the
         # page during extraction — the APS one visits /supplemental/{doi} to
         # enumerate attachments — so reading page.url afterwards records
