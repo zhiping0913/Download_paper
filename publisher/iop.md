@@ -144,13 +144,11 @@ worse failure than one wasted fetch.
 `https://iopscience.iop.org/article/{doi}/data` and parses the returned markup with
 BeautifulSoup (`_parse_supplementary_links`), returning resolved URLs and link text.
 
-⚠️ `_extract_supplemental_links_from_html` (iop.py:708) scans the article page's
-`<a href>` for `/article/.../data` links, and this file used to present it as the
-first of "two strategies". It is **not wired into anything** — zero call sites in
-the tree — so IOP has exactly one live strategy, the `/data` endpoint above. The
-same-named method *is* live in aip.py, mdpi.py and cambridge.py, which is probably
-how the claim survived here. Left in place rather than deleted; if it goes, delete
-this note with it.
+⚠️ That is IOP's **only** strategy. `_extract_supplemental_links_from_html` — live
+in aip.py, mdpi.py and cambridge.py — used to exist here too, unwired and uncalled,
+and this file presented it as a second strategy. Both are gone. Don't re-add it for
+symmetry with the other publishers: the `supplDataLink` gate above already answers
+"does this article have supplements?", and answers it more precisely.
 
 ## 9. Markdown Assembly
 
