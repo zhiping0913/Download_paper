@@ -318,13 +318,94 @@ async def wait_for_cdp_port(port: int, timeout_s: float = 20.0,
     return False
 
 
-def kill_chrome() -> None:
-    """Kill every Chrome process (cross-platform)."""
-    if IS_WINDOWS:
-        subprocess.run(['taskkill', '/f', '/im', 'chrome.exe'], capture_output=True)
-    else:
-        subprocess.run(['pkill', '-9', 'chrome'], capture_output=True)
-    print("✓ Chrome processes killed")
+def _scraping_chrome_pids(user_data_dir=None) -> list:
+    """PIDs of Chrome processes this tool started.
+
+    Identified by ``--user-data-dir``: ours always sit in a temp directory
+    named with one of :data:`TEMP_PROFILE_PREFIXES`, either as the directory
+    itself or as its parent (``/tmp/dp_profiles_ab12cd/main_dir``). A browser
+    the user opened themselves never carries such a path, which is the whole
+    point of looking.
+
+    Pass *user_data_dir* to narrow it to one profile.
+    """
+    wanted = str(user_data_dir).rstrip(os.sep) if user_data_dir else ''
+    pids = []
+    try:
+        listing = subprocess.run(['ps', '-eo', 'pid=,args='],
+                                 capture_output=True, text=True,
+                                 timeout=10).stdout
+    except Exception:
+        return pids
+
+    for line in listing.splitlines():
+        line = line.strip()
+        if not line or 'chrome' not in line.lower():
+            continue
+        pid_str, _, args = line.partition(' ')
+        profile = ''
+        for token in args.split():
+            if token.startswith('--user-data-dir='):
+                profile = token.split('=', 1)[1].rstrip(os.sep)
+                break
+        if not profile:
+            continue
+
+        if wanted:
+            if profile != wanted and not profile.startswith(wanted + os.sep):
+                continue
+        else:
+            base = os.path.basename(profile)
+            parent = os.path.basename(os.path.dirname(profile))
+            if not any(name.startswith(p)
+                       for name in (base, parent)
+                       for p in TEMP_PROFILE_PREFIXES):
+                continue
+        try:
+            pids.append(int(pid_str))
+        except ValueError:
+            continue
+    return pids
+
+
+def kill_chrome(user_data_dir=None) -> None:
+    """Close the scraping Chromes this tool started. Never a blanket kill.
+
+    This used to be ``pkill -9 chrome``, which took out the user's own browser
+    along with every other extraction running on the machine -- a batch job
+    that had been going for hours would lose its browser because an unrelated
+    run decided the debug port looked stale.
+
+    ⚠️ It still cannot tell a crashed leftover from another *live* extraction:
+    both have a profile under the same temp prefixes, and both have been
+    reparented to init, so there is nothing left in the process table to
+    separate them. Running two extractions at once therefore needs
+    CHROME_DEBUG_PORT / CHROME_AUX_DEBUG_PORT set apart, so neither ever looks
+    at the other's port and calls this in the first place.
+    """
+    import signal
+
+    pids = _scraping_chrome_pids(user_data_dir)
+    if not pids:
+        print("✓ 没有需要关闭的抓取 Chrome")
+        return
+
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    time.sleep(2)
+
+    survivors = 0
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+            survivors += 1
+        except OSError:
+            pass
+    print(f"✓ 已关闭 {len(pids)} 个抓取 Chrome 进程"
+          + (f"（其中 {survivors} 个需强制结束）" if survivors else ""))
 
 
 # Temporary-profile name prefixes owned by this module. Anything matching
@@ -1810,6 +1891,91 @@ class FreshChromeSession:
         self.profile_dir = None
 
 
+_REFERER_CLICK_JS = """(() => {
+    document.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        location.href = %s;
+    }, {once: true, capture: true});
+    return JSON.stringify({
+        x: Math.max(4, Math.floor(window.innerWidth / 2)),
+        y: Math.max(4, Math.floor(window.innerHeight / 2))
+    });
+})()"""
+
+
+async def _download_via_referer_click(session, referer_url: str, target_url: str,
+                                      download_dir: str,
+                                      timeout_s: float) -> dict:
+    """Reach *target_url* by clicking through from *referer_url*.
+
+    Chrome is already open on the referring page, loaded by its own startup
+    navigation. This attaches once, arms a capture-phase one-shot click
+    handler, and dispatches a trusted click. The handler cancels whatever the
+    page would have done and navigates to the target instead.
+
+    Measured against a local server, the resulting request is byte-identical
+    to a human clicking a link: Referer set to the referring page,
+    Sec-Fetch-Site: same-origin, and -- the part that matters --
+    ``Sec-Fetch-User: ?1``. Launching straight at the target URL sends no
+    Referer and Sec-Fetch-Site: none, which is what a bot manager sees as a
+    request that came from nowhere.
+
+    Two details are load-bearing. ``capture: true`` puts the handler ahead of
+    the page's own, and ``preventDefault`` stops it, so the click may land on
+    any element -- including a link to a PDF *viewer*, which is exactly what
+    publishers like Wiley put there -- without going where the page wanted.
+    And ``preventDefault`` does not consume the user activation, so the
+    navigation still counts as user-initiated; that was verified, not assumed.
+    """
+    result = {'success': False, 'target_id': None, 'ws_url': None}
+
+    ws_url = ''
+    deadline = time.monotonic() + min(20.0, timeout_s)
+    while time.monotonic() < deadline and not ws_url:
+        try:
+            with urllib.request.urlopen(
+                    f"http://localhost:{session.port}/json", timeout=5) as resp:
+                for target in json.loads(resp.read().decode()):
+                    if target.get('type') != 'page':
+                        continue
+                    page_url = (target.get('url') or '')
+                    if page_url.startswith(('about:', 'chrome://')):
+                        continue
+                    ws_url = target.get('webSocketDebuggerUrl') or ''
+                    break
+        except Exception:
+            pass
+        if not ws_url:
+            await asyncio.sleep(0.5)
+
+    if not ws_url:
+        print("  ⚠️  referer 页面未就绪，放弃点击跳转")
+        return result
+
+    try:
+        async with websockets.connect(ws_url, max_size=10 * 1024 * 1024,
+                                      open_timeout=10) as ws:
+            await _send(ws, "Page.enable")
+            await _send(ws, "Network.enable")
+            armed = await _send(ws, "Runtime.evaluate", {
+                "expression": _REFERER_CLICK_JS % json.dumps(target_url),
+                "returnByValue": True,
+            })
+            box = json.loads((armed.get('result') or {}).get('value') or '{}')
+            print(f"  🖱️  自 referer 页点击跳转 → {target_url[:70]}")
+            await _click_at_cdp(ws, box.get('x', 8), box.get('y', 8))
+    except Exception as exc:
+        print(f"  ⚠️  点击跳转失败: {type(exc).__name__}: {str(exc)[:80]}")
+        return result
+
+    landed = await _await_download(download_dir, timeout_s=timeout_s)
+    if landed:
+        result = {'success': True, 'downloaded_file': landed,
+                  'target_id': None, 'ws_url': None}
+    return result
+
+
 async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
                                    pdf_mode: bool = False,
                                    download_dir: str = '',
@@ -1817,6 +1983,7 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
                                    port: Optional[int] = None,
                                    headless: bool = False,
                                    want_html: bool = False,
+                                   referer_url: str = '',
                                    fast_path_wait_s: float = 3.0
                                    ) -> FreshChromeSession:
     """Launch a clean Chrome, open *url* in it, and hand back the session.
@@ -1834,8 +2001,17 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
     # Launch straight at the URL: Chrome's own startup navigation fetches the
     # page, so nothing automated participates in the load. Attaching happens
     # afterwards, only to watch the challenge and click it through.
-    if not await session.start(start_url=url):
+    #
+    # With referer_url the browser starts on the referring page instead, and
+    # reaches the target by a click from there -- see
+    # _download_via_referer_click for why that changes what the server sees.
+    if not await session.start(start_url=referer_url or url):
         await session.close()
+        return session
+
+    if referer_url:
+        session.result = await _download_via_referer_click(
+            session, referer_url, url, download_dir, timeout_s)
         return session
 
     # Fast path: a PDF that is served without a challenge is already on disk
