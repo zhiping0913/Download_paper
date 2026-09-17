@@ -785,8 +785,15 @@ class IOPHandler(PublisherHandler):
                                                     force_headed: bool = False) -> tuple:
         """Fetch the IOP supplementary /data page and extract download links.
 
-        Every IOP article has a standard supplementary endpoint:
+        The endpoint is uniform for every article:
             https://iopscience.iop.org/article/{doi}/data
+
+        ⚠️ But most articles have nothing behind it. Do NOT call this
+        unconditionally -- ``extract_all`` gates it on the ``supplDataLink``
+        anchor in the article page, because reaching this endpoint costs the
+        whole fetch ladder and, on IOP, a chance of a Radware challenge. The
+        docstring used to claim every article "has" a supplementary endpoint,
+        which is how the unconditional call got written in the first place.
 
         The page goes through the shared fetch ladder (plain request with the
         article session's cookies, then a browser tab, then a throwaway
@@ -952,8 +959,29 @@ class IOPHandler(PublisherHandler):
                 if key_image_url:
                     metadata['key_image_url'] = key_image_url
 
-            # Supplementary: navigate to IOP /data endpoint (requires headed session)
-            if page is not None:
+            # Supplementary: only a minority of IOP articles have any, and the
+            # article page says so up front -- it renders
+            #     <a id="supplDataLink" href="/article/{doi}/data" ...>
+            # exactly when there is something behind that endpoint. Checking it
+            # here is what keeps the majority from walking the whole fetch
+            # ladder (plain request -> tab -> throwaway Chrome) to reach a page
+            # with nothing on it, which on IOP also means courting a Radware
+            # challenge for no reason.
+            #
+            # ⚠️ Skip only when the markup is in hand AND lacks the anchor. If
+            # fulltext_html came back empty (the content() above failed), fall
+            # through and try anyway: silently dropping supplements for every
+            # article whose DOM read hiccuped is a far worse failure than one
+            # wasted fetch. Verified against both captured samples -- the
+            # anchor is present in page.html and page_raw.html of the article
+            # that has data, and absent from the one that does not.
+            _has_supp_link = (
+                'supplDataLink' in fulltext_html
+                or 'wd-btn-supp-data' in fulltext_html
+            )
+            if fulltext_html and not _has_supp_link:
+                print("  ⏭  正文页无 supplDataLink，本文没有补充材料，跳过 /data 页面")
+            elif page is not None:
                 try:
                     supp_urls, supp_descriptions = (
                         await self._extract_supplementary_from_data_page(
