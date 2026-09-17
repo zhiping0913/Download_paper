@@ -44,7 +44,14 @@ HEADERS = {
 # publisher), and a handler importing the main module would be the first cycle
 # in the tree.
 
-FETCH_TIERS = ('request', 'tab', 'fresh')
+# 'referer' is the last rung and only applies to downloads: a throwaway Chrome
+# opens the referring page (the article), then reaches the file by a trusted
+# click from it. That is the only way to send a Referer *and* keep
+# Sec-Fetch-User: ?1 -- setting the header via CDP produces a request that
+# claims a referrer with no user activation behind it, which is a worse tell
+# than sending none at all. Measured, not assumed; see
+# chrome_session._download_via_referer_click.
+FETCH_TIERS = ('request', 'tab', 'fresh', 'referer')
 FETCH_KINDS = ('api', 'pdf', 'figure', 'supplement')
 
 DP_HTTP_USER_AGENT = os.environ.get(

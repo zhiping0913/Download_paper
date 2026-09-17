@@ -1188,6 +1188,7 @@ async def _download_all_resources(
     reuse_context: bool = False,
     handler=None,
     pdf_only: bool = False,
+    referer_url: str = '',
 ) -> dict:
     """Unified download manager for all resources (PDF, figures, supplemental)
 
@@ -1257,6 +1258,10 @@ async def _download_all_resources(
                         download_pdf,
                         download_page, pdf_url, output_dir, pdf_filename,
                         download_context, force_headed,
+                        # Keyword, not positional: retry_download forwards
+                        # *args straight through, so an extra positional here
+                        # would land on the wrong parameter.
+                        referer_url=referer_url,
                         max_retries=DP_MAX_RETRIES, retry_delay=DP_RETRY_DELAY,
                     )
                 downloads['pdf'] = pdf_result
@@ -1383,7 +1388,8 @@ async def _download_all_resources(
 
 async def _try_fresh_chrome_download(url: str, output_dir: Path,
                                      filename: str,
-                                     headless: bool = False) -> Optional[str]:
+                                     headless: bool = False,
+                                     referer_url: str = '') -> Optional[str]:
     """Download *url* with a throwaway Chrome seeded from the real profile.
 
     The bottom rung of the fetch ladder, for any kind of file: it watches a
@@ -1409,13 +1415,17 @@ async def _try_fresh_chrome_download(url: str, output_dir: Path,
     # unambiguous.
     download_dir = tempfile.mkdtemp(prefix='dp_dl_')
     try:
-        print("  🛡️  用独立 Chrome 下载（避开共享浏览器的自动化指纹）...")
+        if referer_url:
+            print(f"  🛡️  用独立 Chrome 下载，先开 referer 页再点击跳转...")
+        else:
+            print("  🛡️  用独立 Chrome 下载（避开共享浏览器的自动化指纹）...")
         session = await open_url_in_fresh_chrome(
             url,
             pdf_mode=True,
             download_dir=download_dir,
             timeout_s=int(DP_CLOUDFLARE_TIMEOUT),
             headless=headless,
+            referer_url=referer_url,
             fast_path_wait_s=DP_PDF_FASTPATH_WAIT,
         )
         result = session.result or {}
@@ -1484,6 +1494,7 @@ async def download_pdf(
     filename: str = "paper.pdf",
     context=None,
     force_headed: bool = False,
+    referer_url: str = '',
 ) -> str:
     """下载论文PDF
 
@@ -1520,8 +1531,14 @@ async def download_pdf(
         # 取数阶梯。pdf 这一类的**默认**顺序仍随有头/无头而定，理由见上面那段
         # 注释：有头时先起一次性 Chrome 是有实测支撑的。显式设了 DP_FETCH_PDF
         # 或 DP_FETCH_ORDER 就完全以它为准。
+        # 'referer' sits last: it costs an extra page load, so it is only
+        # worth reaching for once the cheaper rungs have failed. It is also
+        # the only rung that needs something the others do not -- a page to
+        # click from -- so it stays inert when no referer is known.
         ladder = _fetch_ladder(
-            'pdf', default=('fresh', 'tab') if force_headed else ('tab', 'fresh'))
+            'pdf',
+            default=('fresh', 'tab', 'referer') if force_headed
+            else ('tab', 'fresh', 'referer'))
 
         try:
             pdf_referer = page.url if page is not None else None
@@ -1550,6 +1567,14 @@ async def download_pdf(
                 print("  ↪ 回退 Playwright 导航")
 
         if 'tab' not in ladder:
+            # Still give 'referer' its turn: with the ladder truncated to
+            # ('referer',) this is the only place it could ever run.
+            if 'referer' in ladder and referer_url:
+                saved = await _try_fresh_chrome_download(
+                    pdf_url, output_dir, filename,
+                    headless=not force_headed, referer_url=referer_url)
+                if saved:
+                    return saved
             print("    ⚠️  阶梯里没有浏览器标签页这一层，不再尝试")
             return None
 
@@ -1715,6 +1740,17 @@ async def download_pdf(
         if 'fresh' in ladder and ladder.index('fresh') > ladder.index('tab'):
             saved = await _try_fresh_chrome_download(
                 pdf_url, output_dir, filename, headless=not force_headed)
+            if saved:
+                return saved
+
+        # Last rung: open the referring page in the throwaway Chrome and click
+        # through to the file, so the request carries a Referer and still
+        # looks user-initiated. Needs a referer to click from, so a run that
+        # has none simply stops here.
+        if 'referer' in ladder and referer_url:
+            saved = await _try_fresh_chrome_download(
+                pdf_url, output_dir, filename,
+                headless=not force_headed, referer_url=referer_url)
             if saved:
                 return saved
         return None
@@ -2411,6 +2447,7 @@ async def _pdf_link_direct_download(
     output_path: Path,
     captured_data_dir: Path,
     force_headed: bool = False,
+    referer: str = '',
 ) -> Optional[str]:
     """Fetch a PDF whose URL was handed to us, without opening the article page.
 
@@ -2467,6 +2504,9 @@ async def _pdf_link_direct_download(
             print(f"  ⊘ Crossref publisher '{publisher_label}' 不在无头直连列表中 "
                   f"→ 改用有头一次性 Chrome")
 
+    if referer:
+        print(f"  ↪ 备用来路（最后一层用它点击跳转）: {referer[:80]}")
+
     downloads = await _download_all_resources(
         None,                     # 没有论文页面，这条路径也不需要
         {'pdf_url': pdf_link},
@@ -2477,6 +2517,7 @@ async def _pdf_link_direct_download(
         force_headed,
         reuse_context=False,      # 让它按需自起浏览器（无头时唯一的那次启动）
         pdf_only=True,
+        referer_url=referer or '',
     )
 
     # Step 0 之前建的 DOI 缓存目录在这条路径上始终是空的，收掉
@@ -2513,6 +2554,7 @@ async def complete_extraction_workflow(
     extra_headers: dict = None,
     pdf_only: bool = False,
     pdf_link: str = None,
+    referer: str = None,
 ):
     """完整提取工作流 - Phase 4/5 重构版本
 
@@ -2753,6 +2795,10 @@ async def complete_extraction_workflow(
             reuse_context=browser_session is not None,
             handler=handler,
             pdf_only=pdf_only,
+            # The article URL, pinned before extract_all ran. It is what the
+            # last rung clicks through from, so a normal run gets that rung
+            # for free -- no JSON, no configuration.
+            referer_url=(metadata.get('_landing_url') or ''),
         )
 
         # Step 3.5: Check if paper has meaningful content before saving
@@ -3110,6 +3156,7 @@ async def complete_extraction_workflow(
             output_path=output_path,
             captured_data_dir=captured_data_dir,
             force_headed=force_headed,
+            referer=referer or '',
         )
 
     # ========== 第1步判断：根据Crossref publisher决定是否需要Phase 0 ==========
@@ -3846,6 +3893,11 @@ JSON 格式:
         "pdf_link": "https://.../paper.pdf",                            # 可选：直接给 PDF 地址；
                                                                         #   跳过预检和 doi.org，
                                                                         #   元数据取自 Crossref
+        "referer": "https://www.nature.com/articles/xxx",               # 可选：来路页。前几层都
+                                                                        #   失败时，一次性 Chrome 先
+                                                                        #   打开它，再点击跳到 pdf_link
+                                                                        #   （缺省则读 header.referer；
+                                                                        #    都没有就不走这一层）
         "header": {"referer": "https://pubs.aip.org/aip/pop/issue/24/12"} # 可选：附加 HTTP header
       }
     ]
@@ -3871,8 +3923,10 @@ JSON 格式:
             type=str,
             metavar='FILE',
             help='含 article 列表的 JSON 文件 (每篇必须有 "doi"，可选 "link"、'
-                 '"pdf_link" 和 "header" 字典)。给了 "pdf_link" 就跳过预检和 '
-                 'doi.org 直接下载该 PDF。见 examples/examples.json 的格式。'
+                 '"pdf_link"、"referer" 和 "header" 字典)。给了 "pdf_link" 就跳过'
+                 '预检和 doi.org 直接下载该 PDF；"referer" 供取数阶梯最后一层'
+                 '点击跳转使用（缺省读 header.referer）。'
+                 '见 examples/examples.json 的格式。'
         )
 
         parser.add_argument(
@@ -3949,6 +4003,18 @@ JSON 格式:
                     header = item.get('header')
                     if isinstance(header, dict) and header:
                         entry['header'] = header
+                    # 顶层 "referer" 优先，其次 header 里的 referer（键名大小写
+                    # 不敏感）。两者都没有就不设：没有可点的来路页，最后那一层
+                    # 本来就无从谈起，不去猜一个（比如拿 "link" 顶替 —— pdf-only
+                    # 模式下 link 不一定给，给了也不一定是本文的文章页）。
+                    referer_val = str(item.get('referer') or '').strip()
+                    if not referer_val and isinstance(header, dict):
+                        for _k, _v in header.items():
+                            if str(_k).lower() == 'referer' and _v:
+                                referer_val = str(_v).strip()
+                                break
+                    if referer_val:
+                        entry['referer'] = referer_val
                     articles.append(entry)
                 print(f"📌 从 JSON 读取 {len(articles)} 个 article: {args.json}\n")
             except FileNotFoundError:
@@ -4013,6 +4079,7 @@ JSON 格式:
                             # 给了 pdf_link 就没有 markdown 可生成，隐含 pdf-only
                             pdf_only=args.pdf_only or bool(article.get('pdf_link')),
                             pdf_link=article.get('pdf_link'),
+                            referer=article.get('referer'),
                         )
                         if md_path:
                             success_count += 1

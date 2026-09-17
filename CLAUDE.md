@@ -281,9 +281,23 @@ PDF、图片、补充材料、API/页面（如 IOP 的 `/data`）走的是**同�
 | `request` | 裸 HTTP，带上**正文页会话的 cookies**（按目标 host 作用域过滤） |
 | `tab` | 在已打开论文的浏览器里开新标签页 |
 | `fresh` | 全新播种 profile 的一次性 Chrome（辅助实例，`aux_dir`） |
+| `referer` | 一次性 Chrome **先打开来路页**，再从它**点击跳转**到目标（仅下载类） |
 
 - 环境变量给的是「**从哪一层开始**」，失败自动向下回退：全局 `DP_FETCH_ORDER`，
-  单类覆盖 `DP_FETCH_{PDF,FIGURE,SUPPLEMENT,API}`，取值 `request|tab|fresh`
+  单类覆盖 `DP_FETCH_{PDF,FIGURE,SUPPLEMENT,API}`，取值 `request|tab|fresh|referer`
+- ⚠️ **`referer` 层为什么必须用「点击」而不是设 HTTP 头**：实测（本地服务器抓真实请求头）
+  —— 直接启动到 PDF 链接会发出「无 Referer + `Sec-Fetch-Site: none`」的请求，形同凭空直达；
+  而用 CDP 的 `Network.setExtraHTTPHeaders` 补一个 Referer，又会造出「有 Referer 却**缺**
+  `Sec-Fetch-User`」的组合，比不带更可疑。只有**受信任的点击**能同时给出 Referer、
+  `same-origin` 和 `Sec-Fetch-User: ?1`，与真人点击逐字段一致
+- 实现在 `chrome_session._download_via_referer_click()`：在 `document` 上挂**捕获阶段**的
+  一次性监听器，`preventDefault()` 掐掉页面自己的跳转，再 `location.href` 跳到目标。
+  两点是关键：捕获 + `preventDefault` 使得**点在哪都行**（哪怕正好点中「在线阅读器」链接
+  —— Wiley 那类点了只开阅读器的场景正因此可绕过）；而 `preventDefault` **不会**消耗
+  用户激活，所以 `Sec-Fetch-User` 仍在（这点是实测确认的，不是推断）
+- 来路页从哪来：普通流程用主流程钉住的 `metadata['_landing_url']`，**零配置**；
+  `--json` 里可用顶层 `referer` 指定，缺省读 `header.referer`。**都没有就不走这一层**
+  —— 不拿 `link` 顶替（pdf-only 模式下 `link` 不一定给，给了也不一定是本文的文章页）
 - **默认 `tab`**。`request` 那层对普通 CDN 很有效，但对正在挑战你的站点基本无效——
   Cloudflare 的 clearance cookie 绑定 UA、IP 和 **TLS 指纹**，`requests` 三样都对不上
 - ⚠️ **显式配置是截断语义**（`DP_FETCH_PDF=fresh` 就是只用 fresh），而调用方给的

@@ -43,7 +43,8 @@ export CHROME_DOWNLOAD_DIR=/root/Downloads             # Chrome 默认下载目�
 export HEADLESS=false                                  # true/false；Cloudflare 站点建议 false
 export DP_HTTP_USER_AGENT="Mozilla/5.0 ..."            # 直接请求用的 UA（可选）
 
-# 取数阶梯：request（带 cookies 的裸 HTTP）→ tab（现有浏览器新标签页）→ fresh（一次性 Chrome）
+# 取数阶梯：request（带 cookies 的裸 HTTP）→ tab（现有浏览器新标签页）
+#         → fresh（一次性 Chrome）→ referer（一次性 Chrome 先开来路页再点击跳转，仅下载类）
 # 取值是「从哪一层开始」，失败自动向下回退
 export DP_FETCH_ORDER=tab                              # 全局默认（默认 tab）
 export DP_FETCH_PDF=tab                                # 单类覆盖：pdf
