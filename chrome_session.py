@@ -1342,7 +1342,7 @@ async def bypass_cloudflare_cdp(
                             except Exception as _e:
                                 print(f"    ⚠️  下载目录检测异常: {_e}")
                         if _new_dl is not None:
-                            print(f"  ✅ [PDF模式] 检测到下载事件（新文件: {_new_dl}），挑战真实通过")
+                            print(f"  ✅ [下载模式] 检测到下载事件（新文件: {_new_dl}），挑战真实通过")
                             target_id = _current_ws_url.rstrip("/").split("/")[-1]
                             result["success"] = True
                             result["target_id"] = target_id
@@ -1355,7 +1355,7 @@ async def bypass_cloudflare_cdp(
                             pass
                         # 退路：无 download_dir 时沿用 cookie 判据（向后兼容）
                         if has_cf and not is_challenge and not download_dir:
-                            print(f"  ✅ [PDF模式] cf_clearance 已获取，挑战通过")
+                            print(f"  ✅ [下载模式] cf_clearance 已获取，挑战通过")
                             target_id = _current_ws_url.rstrip("/").split("/")[-1]
                             result["success"] = True
                             result["target_id"] = target_id
@@ -1848,7 +1848,7 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
         landed = await _await_download(
             download_dir, timeout_s=min(fast_path_wait_s, timeout_s))
         if landed:
-            print(f"  ✓ PDF 已下载（未经 CDP 交互）: {landed}")
+            print(f"  ✓ 文件已下载（未经 CDP 交互）: {landed}")
             session.result = {'success': True, 'downloaded_file': landed,
                               'target_id': None, 'ws_url': None}
             return session
