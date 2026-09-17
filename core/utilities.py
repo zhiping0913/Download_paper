@@ -91,24 +91,44 @@ DP_INPAGE_FETCH_TIMEOUT = env_seconds('DP_INPAGE_FETCH_TIMEOUT', 90)
 DP_HTTP_TOTAL_TIMEOUT = env_seconds('DP_HTTP_TOTAL_TIMEOUT', 600)
 
 
-async def download_path_with_timeout(download, *, timeout_s: float,
-                                     what: str = '下载'):
-    """``download.path()`` that cannot hang. Returns None on timeout.
+async def download_save_as_with_timeout(download, dest, *, timeout_s: float,
+                                        what: str = '下载') -> bool:
+    """``download.save_as()`` that cannot hang. True only when *dest* landed.
 
-    The third Playwright call with no timeout of its own. It resolves only once
-    the transfer finishes, so a stalled connection parks the awaiting task
-    forever -- and these awaits sit inside ``on('download')`` handlers, where a
-    hang is completely invisible: no traceback, no retry, nothing in the log.
-    Just a file that never appears and a batch that never advances.
+    ⚠️ Prefer this over ``path()`` + ``shutil.copy`` whenever the destination
+    is known. ``path()`` hands back a file inside Playwright's own artifacts
+    directory, and that file is deleted when the page or context closes -- so
+    every line between resolving the path and copying it is a window in which
+    a *successful* download can vanish. Measured on IOP: the tab rung had the
+    PDF, the page was closed while the handler was still between the two
+    calls, and the copy died with
+
+        [Errno 2] No such file or directory: /tmp/playwright-artifacts-.../...
+
+    which the caller then reported as a network failure and retried. ``save_as``
+    copies while the Download is still live, so the window does not exist.
+
+    Like ``path()``, it has no timeout of its own and only returns once the
+    transfer finishes, hence the wrapper.
     """
     try:
-        return await asyncio.wait_for(download.path(), timeout=float(timeout_s))
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"    ⚠️  无法创建{what}的目标目录（{type(exc).__name__}: {str(exc)[:80]}）")
+        return False
+    try:
+        await asyncio.wait_for(download.save_as(str(dest)), timeout=float(timeout_s))
     except asyncio.TimeoutError:
         print(f"    ⏱️  {what}未在 {float(timeout_s):g}s 内完成落盘，判定为卡死并放弃")
-        return None
+        return False
     except Exception as exc:
-        print(f"    ⚠️  读取{what}落盘路径失败（{type(exc).__name__}: {str(exc)[:80]}）")
-        return None
+        print(f"    ⚠️  保存{what}失败（{type(exc).__name__}: {str(exc)[:80]}）")
+        return False
+    # save_as returns None; the only honest success check is the file itself.
+    try:
+        return Path(dest).is_file() and Path(dest).stat().st_size > 0
+    except OSError:
+        return False
 
 
 async def evaluate_with_timeout(page, expression, arg=None, *,

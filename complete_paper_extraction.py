@@ -67,7 +67,7 @@ from core import (
 # with what is internal plumbing.
 from core.utilities import (
     cookies_for_requests,
-    download_path_with_timeout,
+    download_save_as_with_timeout,
     env_seconds,
     evaluate_with_timeout,
     fetch_ladder,
@@ -188,8 +188,8 @@ DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT = _env_seconds('DP_PDF_DOWNLOAD_COMPLETE_TIMEOU
 DP_SUPPLEMENTAL_TIMEOUT = _env_seconds('DP_SUPPLEMENTAL_TIMEOUT', 60)
 
 # Supplemental download completion wait — after the download event fires
-# (file transfer in progress), how long to wait for download.path() to
-# resolve before giving up. Default: 120 s. A large DOCX/MP4 on a slow link
+# (file transfer in progress), how long to let download.save_as() finish
+# writing before giving up. Default: 120 s. A large DOCX/MP4 on a slow link
 # can need 10+ minutes; that is what raising
 # DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT is for, rather than making every
 # run wait that long by default.
@@ -1635,19 +1635,24 @@ async def download_pdf(
             _seen_downloads.append(download)
             _dl_started.set()  # 第一时间标记已开始，不等 path()（path 可能因慢网速阻塞）
             try:
-                # 同上：path() 没有自己的超时。这里的上限与外层等 _dl_done 的那个
-                # 对齐，免得回调还挂着、外层已经判超时了。
-                pdf_path_temp = await download_path_with_timeout(
-                    download,
-                    timeout_s=max(DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT, 120),
-                    what='PDF')
-                if not pdf_path_temp:
-                    print(f"    ⚠️  download.path() 未返回（下载未完成或已卡死）")
+                # ⚠️ save_as, NOT path() + copy. path() returns a file inside
+                # Playwright's artifacts directory, which is deleted when the
+                # page closes -- and this handler is fire-and-forget, so the
+                # outer flow can close download_page (a new tab under
+                # force_headed) while we sit between the two calls. Measured on
+                # IOP: the download had already succeeded and was lost to
+                # "[Errno 2] ... /tmp/playwright-artifacts-.../...", then
+                # reported as a network failure and retried. save_as copies
+                # while the Download is still live, so there is no window.
+                # The budget matches the outer _dl_done wait, so the handler
+                # cannot still be running after the outer flow gave up.
+                final_path = output_dir / filename
+                if not await download_save_as_with_timeout(
+                        download, final_path,
+                        timeout_s=max(DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT, 120),
+                        what='PDF'):
                     _dl_failed.set()  # 明确置失败，让 retry_download 重试
                     return
-                final_path = output_dir / filename
-                import shutil
-                shutil.copy(str(pdf_path_temp), str(final_path))
                 pdf_size_mb = final_path.stat().st_size / (1024 * 1024)
                 print(f"    ✓ 保存: {filename} ({pdf_size_mb:.2f} MB) [context下载事件]")
                 _dl_done.set()
@@ -2073,14 +2078,18 @@ async def download_supplemental_materials(
 
                 async def on_download(download):
                     nonlocal downloaded_file
-                    # 获取下载路径（默认是临时目录）。
-                    # download.path() 只在传输真正完成时才 resolve，且自己没有超时；
-                    # 这里又身处事件回调，卡住了连回溯都看不到 —— 只表现为文件永远
-                    # 不出现。视频最容易踩，所以上限按“补充材料完成”那条给。
-                    downloaded_file = await download_path_with_timeout(
-                        download,
-                        timeout_s=DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT,
-                        what='补充材料')
+                    # ⚠️ 直接 save_as 到最终位置，不用 path() 再复制。
+                    # path() 给的是 Playwright 自己 artifacts 目录里的文件，而那个
+                    # 文件在页面/上下文关闭时就被删掉 —— 从取到路径到复制之间的每一行，
+                    # 都是一个「已经下载成功的文件可能凭空消失」的窗口。这条路的窗口
+                    # 尤其宽：取路径在此处，真正复制在一百行之后，中间还夹着一次
+                    # download_page.close()。save_as 在 Download 仍存活时落盘，窗口不存在。
+                    # save_as 同样没有自己的超时，所以照样要包一层。
+                    if await download_save_as_with_timeout(
+                            download, output_path,
+                            timeout_s=DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT,
+                            what='补充材料'):
+                        downloaded_file = str(output_path)
 
                 download_page.on("download", on_download)
 
@@ -2141,13 +2150,13 @@ async def download_supplemental_materials(
                             timeout=DP_SUPPLEMENTAL_TIMEOUT + 2
                         )
                         if download_event:
-                            try:
-                                downloaded_file = await asyncio.wait_for(
-                                    download_event.path(),
-                                    timeout=float(DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT)
-                                )
-                            except asyncio.TimeoutError:
-                                print(f"    ⏰  补充材料下载未在 {DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT}s 内完成")
+                            # 同上：save_as 直接落到最终位置，不经 Playwright 的
+                            # artifacts 目录，免得文件在复制前随页面关闭而消失。
+                            if await download_save_as_with_timeout(
+                                    download_event, output_path,
+                                    timeout_s=DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT,
+                                    what='补充材料'):
+                                downloaded_file = str(output_path)
                 except asyncio.TimeoutError:
                     # 如果等待超时，继续使用response方法
                     pass
@@ -2156,12 +2165,16 @@ async def download_supplemental_materials(
 
                 await asyncio.sleep(1)
 
-                # 如果捕获到下载，复制文件
+                # 如果捕获到下载，文件此时已由 save_as 落在 output_path 上。
+                # ⚠️ 不能再 shutil.copy 一次 —— 源和目标是同一个文件，会抛
+                # SameFileError。保留 copy 分支只为兼容「downloaded_file 来自别处」
+                # 的情况（目前没有，但这段历史上换过几次来源）。
                 if downloaded_file and Path(downloaded_file).exists():
                     try:
                         file_size = Path(downloaded_file).stat().st_size
                         if file_size > 0:
-                            shutil.copy(str(downloaded_file), str(output_path))
+                            if Path(downloaded_file) != Path(output_path):
+                                shutil.copy(str(downloaded_file), str(output_path))
                             output_path = _detect_and_rename(output_path)
                             file_size_mb = output_path.stat().st_size / (1024 * 1024)
                             print(f"    ✓ 已保存: {output_path.name} ({file_size_mb:.2f} MB)")
