@@ -693,12 +693,24 @@ def _is_challenge_title(title_lower: str) -> bool:
 
 # Language-independent fallback: the challenge page's own DOM. Any of these
 # means Cloudflare is holding the request, whatever the title says.
+#
+# ⚠️ script[src*="cdn-cgi/challenge-platform"] does NOT belong in the
+# unguarded list. That is Cloudflare's bot-management precursor script, and it
+# is served on every protected page, including fully loaded articles -- the
+# science.org page for 10.1126/science.252.5004.384 carries it at 590KB with
+# 6786 characters of body text. Having it here made is_challenge permanently
+# true on that whole publisher, which silently defeats any check written as
+# "not is_challenge". The second branch below already covers the same script
+# and is guarded on body length, which is what tells a challenge page (short)
+# apart from an article that merely ships the script (long).
+#
+# The id selectors stay unguarded on purpose: they matched zero times on that
+# same loaded article page, so they really do only appear on a challenge.
 _CHALLENGE_DOM_JS = r"""(function () {
     try {
         if (document.querySelector(
                 '#challenge-form, #challenge-running, #challenge-stage, ' +
-                '#cf-challenge-running, [id^="cf-chl"], ' +
-                'script[src*="cdn-cgi/challenge-platform"]')) {
+                '#cf-challenge-running, [id^="cf-chl"]')) {
             return true;
         }
         return /cdn-cgi\/challenge-platform/.test(document.documentElement.innerHTML)
