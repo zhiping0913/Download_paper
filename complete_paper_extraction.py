@@ -3219,8 +3219,8 @@ async def complete_extraction_workflow(
                         headless_success = False  # Force fallback to headed browser
                         headless_blocked = True
                         headless_publisher = None  # Prevent headless-only handler path
-
-                    headless_success = True
+                    else:
+                        headless_success = True
 
                     if headless_publisher in HEADLESS_ACCESSIBLE_PUBLISHERS:
                         print()
