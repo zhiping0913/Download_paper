@@ -2159,7 +2159,27 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
             # a file that is never coming. The URL is printed because what the
             # startup navigation actually turns into on a PDF link has never
             # been observed directly; this is the log line that will say.
-            print(f"  ↪ 启动导航停在页面而非下载，转 CDP 流程: {value[:90]}")
+            print(f"  ↪ 启动导航停在页面而非下载: {value[:90]}")
+
+            # ⚠️ An interstitial ends this rung. Going on to the CDP flow
+            # cannot help and actively hurts: that flow finds the startup tab
+            # by matching HOST against the target's, the interstitial's host is
+            # not the target's, so the match fails ("未找到启动时打开的 tab")
+            # and it falls through to opening a NEW tab straight at the target
+            # -- a second, Referer-less request from a browser the bot manager
+            # has just flagged. Measured on IOP: three consecutive attempts
+            # each paid a Chrome launch plus a 20 s captcha wait here, and not
+            # one of them could have succeeded.
+            #
+            # Returning with session.result left empty is the documented
+            # "this rung produced nothing" shape; the caller's finally closes
+            # the browser, so nothing leaks by not closing it here.
+            if url_looks_like_bot_challenge(value):
+                print("  ⛔ 落在拦截器页面 —— 放弃本层"
+                      "（继续只会从已被标记的浏览器再发一次无 Referer 的请求）")
+                return session
+
+            print("  ↪ 转 CDP 流程")
 
     try:
         await session.open_url(url, expected_doi=expected_doi,
