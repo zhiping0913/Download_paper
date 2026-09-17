@@ -1963,6 +1963,15 @@ async def _download_via_referer_click(session, referer_url: str, target_url: str
             # that buy nothing are two commands worth not sending.
             # Runtime.evaluate and Input.dispatchMouseEvent are commands and
             # need no domain enabled.
+            # Where we actually landed. The referring page can itself be
+            # challenged, in which case the click happens on a captcha and the
+            # premise of this rung is already gone -- worth saying so rather
+            # than reporting a bare "no file".
+            before = await _send(ws, "Runtime.evaluate", {
+                "expression": "location.href", "returnByValue": True})
+            before_url = (before.get('result') or {}).get('value') or '?'
+            print(f"  📄 来路页实际停在: {before_url[:90]}")
+
             armed = await _send(ws, "Runtime.evaluate", {
                 "expression": _REFERER_CLICK_JS % json.dumps(target_url),
                 "returnByValue": True,
@@ -1970,6 +1979,27 @@ async def _download_via_referer_click(session, referer_url: str, target_url: str
             box = json.loads((armed.get('result') or {}).get('value') or '{}')
             print(f"  🖱️  自 referer 页点击跳转 → {target_url[:70]}")
             await _click_at_cdp(ws, box.get('x', 8), box.get('y', 8))
+
+            # Did the click actually navigate, and to where? Without this the
+            # two failure modes are indistinguishable: a request that was made
+            # and refused (lands on the bot-manager domain) versus a click
+            # that never navigated at all (still on the referring page).
+            for _ in range(8):
+                await asyncio.sleep(1)
+                try:
+                    now = await _send(ws, "Runtime.evaluate", {
+                        "expression": "location.href + ' | ' + (document.title||'')",
+                        "returnByValue": True})
+                    seen = (now.get('result') or {}).get('value') or ''
+                except Exception:
+                    seen = '(tab 已关闭 —— 通常意味着导航变成了下载)'
+                    print(f"  📄 点击后: {seen}")
+                    break
+                if seen.split(' | ')[0] != before_url:
+                    print(f"  📄 点击后跳到: {seen[:110]}")
+                    break
+            else:
+                print(f"  📄 点击后仍停在原页（未发生导航）: {before_url[:80]}")
     except Exception as exc:
         print(f"  ⚠️  点击跳转失败: {type(exc).__name__}: {str(exc)[:80]}")
         return result
