@@ -1901,7 +1901,23 @@ class FreshChromeSession:
 # attempt that finally worked had its referring page load on the first try.
 # Retrying here costs one navigation; leaving it to the outer retry costs two
 # Chrome launches and two captcha waits before this rung is reached again.
-_REFERER_PAGE_RETRIES = 3
+def _referer_page_retries() -> int:
+    raw = (os.environ.get('DP_REFERER_PAGE_RETRIES') or '').strip()
+    try:
+        return max(1, int(raw)) if raw else 1
+    except ValueError:
+        return 1
+
+
+# ⚠️ Default 1, i.e. check the premise and decline to click -- do NOT reload.
+#
+# Reloading was this constant's original purpose, on the reasoning that the
+# interstitial is transient. That reasoning was WRONG, and the data says so:
+# across five attempts the referring page was reloaded ten times and landed
+# back on the bot manager every single time. The reloads bought nothing and
+# added request volume, which is the one thing most likely to make a
+# rate-scored block worse. The premise check itself is still right and free.
+_REFERER_PAGE_RETRIES = _referer_page_retries()
 
 
 async def _wait_for_committed_url(ws, timeout_s: float) -> str:
@@ -2024,14 +2040,21 @@ async def _download_via_referer_click(session, referer_url: str, target_url: str
                 if not url_looks_like_bot_challenge(landed):
                     before_url = landed
                     break
-                print(f"  🚧 来路页被拦截器接管（{landed[:64]}），"
-                      f"重新加载来路页 [{attempt + 1}/{_REFERER_PAGE_RETRIES}]")
-                if attempt + 1 < _REFERER_PAGE_RETRIES:
-                    try:
-                        await _send(ws, "Page.navigate", {"url": referer_url})
-                    except Exception:
-                        break
-                    await asyncio.sleep(2)
+                will_reload = attempt + 1 < _REFERER_PAGE_RETRIES
+                # Say what is about to happen, not what the loop is called:
+                # printing "重新加载" on the last iteration -- the only one at
+                # the default of 1 -- claimed a reload that never came.
+                print(f"  🚧 来路页被拦截器接管（{landed[:64]}）"
+                      + (f"，重新加载来路页 "
+                         f"[{attempt + 1}/{_REFERER_PAGE_RETRIES}]"
+                         if will_reload else ""))
+                if not will_reload:
+                    break
+                try:
+                    await _send(ws, "Page.navigate", {"url": referer_url})
+                except Exception:
+                    break
+                await asyncio.sleep(2)
 
             if not before_url:
                 print("  ⚠️  来路页始终停在拦截页 —— 本层前提不成立，不做无谓点击")

@@ -205,7 +205,19 @@ export DP_HTTP_TOTAL_TIMEOUT=600         # 默认 600。单个直接下载的总
 export DP_MAX_RETRIES=5                  # 通用下载（含 PDF）。默认 5
 export DP_IMG_MAX_RETRIES=3              # 图片。默认 3
 export DP_SUPP_MAX_RETRIES=5             # 补充材料。默认 5
-export DP_RETRY_DELAY=1                  # 每次重试之间等几秒。默认 1
+export DP_RETRY_DELAY=1                  # 首次重试前等几秒，其后按 2 倍增长。默认 1
+export DP_RETRY_MAX_DELAY=60             # 上面那个增长的上限。默认 60
+
+# ⚠️ 这两条是**一篇之内**唯一的节流。`BATCH_SLEEP` 只隔开篇与篇，不隔开重试；
+# 而退避曾经只写在 except 分支里，阶梯各层却是「返回 None」报告失败的，
+# 于是重试实际上是**零间隔连打**。对按 IP 计分的拦截器（IOP 的 Radware）来说，
+# 那是最差的形状 —— 实测唯一成功的一次，发生在已过去好几分钟之后。
+# 整批跑 IOP 这类站点时把 DP_RETRY_DELAY 调大（如 30），比加大重试次数有用得多。
+
+# 第 4 层：来路页被拦截时重载几次。默认 1 = 只校验前提、不重载。
+# ⚠️ 实测重载**清不掉**拦截（5 次尝试共 10 次重载，无一奏效），只会多发请求，
+# 所以除非有新证据，别调大。
+# export DP_REFERER_PAGE_RETRIES=1
 
 # ---------------------------------------------------------------------------
 # 6. 批处理间隔（秒）—— 相邻两篇论文之间的随机 sleep
@@ -254,7 +266,8 @@ for v in DP_FETCH_ORDER DP_FETCH_PDF DP_FETCH_FIGURE \
          DP_PDF_DOWNLOAD_TIMEOUT DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT \
          DP_SUPPLEMENTAL_TIMEOUT DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT \
          DP_FIGURE_TIMEOUT DP_INPAGE_FETCH_TIMEOUT DP_HTTP_TOTAL_TIMEOUT \
-         DP_MAX_RETRIES DP_IMG_MAX_RETRIES DP_SUPP_MAX_RETRIES DP_RETRY_DELAY \
+         DP_MAX_RETRIES DP_IMG_MAX_RETRIES DP_SUPP_MAX_RETRIES \
+         DP_RETRY_DELAY DP_RETRY_MAX_DELAY DP_REFERER_PAGE_RETRIES \
          BATCH_SLEEP_MIN BATCH_SLEEP_MAX \
          CAPTURED_DATA_DIR OUTPUT_DIR_DEFAULT \
          DOWNLOAD_PAPER_HEADLESS_AUTH_STATE; do

@@ -203,6 +203,11 @@ DP_FIGURE_TIMEOUT = _env_seconds('DP_FIGURE_TIMEOUT', 60)
 # Retry knobs — configurable via environment variables
 DP_MAX_RETRIES = int(_env_seconds('DP_MAX_RETRIES', 5))          # generic downloads
 DP_RETRY_DELAY = _env_seconds('DP_RETRY_DELAY', 1.0)             # seconds between retries
+# Ceiling for the geometric growth of that delay. Retries inside one paper had
+# NO pacing at all before (see retry_download), and nothing else supplies any:
+# BATCH_SLEEP only separates papers. Raise DP_RETRY_DELAY for a publisher whose
+# block decays with time -- IOP's does, or appears to.
+DP_RETRY_MAX_DELAY = _env_seconds('DP_RETRY_MAX_DELAY', 60)
 DP_IMG_MAX_RETRIES = int(_env_seconds('DP_IMG_MAX_RETRIES', 3))  # figure/image downloads
 DP_SUPP_MAX_RETRIES = int(_env_seconds('DP_SUPP_MAX_RETRIES', 5)) # supplemental downloads
 
@@ -1157,8 +1162,23 @@ async def _find_pw_page_by_cdp_target(browser, target_id):
 
 
 async def retry_download(download_func, *args, max_retries=DP_MAX_RETRIES, retry_delay=DP_RETRY_DELAY, **kwargs):
-    """Retry a download function with automatic retries on network failures."""
+    """Retry a download function, pausing between attempts.
+
+    ⚠️ The pause used to sit inside the ``except`` branch only, so a function
+    that reports failure by **returning None** -- which is how every rung of
+    the fetch ladder reports it -- was retried with no gap whatsoever. Nothing
+    else paces a single paper either: BATCH_SLEEP separates papers, not
+    attempts. Measured on IOP, five attempts fired back to back within a couple
+    of minutes, and against a bot manager that scores by IP that is the worst
+    possible shape -- the one run that ever succeeded did so only after several
+    minutes had passed.
+
+    The delay grows geometrically from *retry_delay*, capped at
+    DP_RETRY_MAX_DELAY. The default stays small so figures (three retries) cost
+    nothing; raise DP_RETRY_DELAY for publishers whose block decays with time.
+    """
     for attempt in range(max_retries):
+        reason = ''
         try:
             result = await download_func(*args, **kwargs)
             if result is not None:
@@ -1166,11 +1186,14 @@ async def retry_download(download_func, *args, max_retries=DP_MAX_RETRIES, retry
                     print(f"    ✓ 重试成功 (第 {attempt + 1} 次尝试)")
                 return result
         except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"    ⚠️  下载失败，{retry_delay}秒后重试... (尝试 {attempt + 1}/{max_retries})")
-                await asyncio.sleep(retry_delay)
-            else:
-                print(f"    ❌ 已达最大重试次数 ({max_retries}): {str(e)[:100]}")
+            reason = f": {str(e)[:100]}"
+        if attempt < max_retries - 1:
+            pause = min(retry_delay * (2 ** attempt), DP_RETRY_MAX_DELAY)
+            print(f"    ⚠️  本次未拿到文件{reason}，{pause:g}s 后重试 "
+                  f"(尝试 {attempt + 1}/{max_retries})")
+            await asyncio.sleep(pause)
+        else:
+            print(f"    ❌ 已达最大重试次数 ({max_retries}){reason}")
     return None
 
 
