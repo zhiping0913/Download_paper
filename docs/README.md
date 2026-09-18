@@ -57,6 +57,7 @@ export DP_HTTP_FIRST=1                                 # 旧开关：0 = 跳过 
 export CHROME_PROFILE_ROOT=/tmp/dp_profiles_ab12cd     # 抓取 profile 的根目录（可选）
 export CHROME_PROFILE_SOURCE_DIR=/root/.config/google-chrome   # 播种来源（可选）
 export FRESH_PROFILE=0                                 # 1 = 不播种，用空 profile
+export DP_SEED_DROP_BOT_COOKIES=1                      # 播种时剔除反爬 cookie（0 = 整份照抄）
 ```
 
 ### 程序怎么用你的 Chrome profile

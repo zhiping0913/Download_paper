@@ -81,6 +81,13 @@ export CHROME_PROFILE_ROOT="${CHROME_PROFILE_ROOT:-/tmp/dp_profiles}"
 #                                              指纹最干净，但没有机构订阅）
 # export FRESH_PROFILE=1
 
+# ★ 播种时剔除 bot manager 的 cookie（`__uzm*` / `__ss*` / perfdrive 整套），
+# 只保留订阅态。同一份 Cookies 里两者都有：不剔除的话，每个「全新」的一次性
+# Chrome 都戴着刚被标记过的那张身份证出门 —— 实测 FRESH_PROFILE=1（完全无 cookie）
+# 能直接下到 IOP / ScienceDirect 的 PDF，而播种过的 profile 撞 perfdrive。
+# 这正是「既要订阅态、又不要案底」的折中。设 0 恢复整份照抄，便于 A/B。
+# export DP_SEED_DROP_BOT_COOKIES=1
+
 # ★ cookie 解密用的密钥存放方式。Linux 上 Chrome 的 cookie 密钥在系统钥匙环里，
 # 接不到就只能解开极少数条目（实测 1712 条只剩 22 条、出版商 cookie 一条不剩）。
 # 程序在 Linux + 有 DBUS 会话时自动加 --password-store=gnome-libsecret；
