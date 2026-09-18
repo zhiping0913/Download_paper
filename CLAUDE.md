@@ -482,6 +482,35 @@ Playwright 里这几个调用**都不接受 `timeout=`**，也不受 `set_defaul
   `retry_download`「成了」，于是重试、回退低清链接、`fresh` 层全被跳过，只留下一个
   0 字节的 `.jpg` —— 事后还分辨不出它和真图的区别
 
+### Windows 路径预算（`organize_paper_output`）
+
+Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
+`[Errno 2] No such file or directory` —— 对一个**明明存在**的目录说「不存在」。
+实测：156 字符的标题放在 `C:\Users\…\captured_data`（55 字符）下，补充材料路径达
+**272 字符**（超 12），于是 `paper.pdf` 和图片都下来了、**只有补充材料全军覆没**。
+
+- ⚠️ **原有的长度保护全是「单个组件」上限，挡不住这个**：标题 150 字符、补充材料
+  stem 200 字节（ext4 的 255 字节/组件）、图片名 180 字符 —— 它们各自都合法，
+  加起来仍然超。Windows 限的是**整条路径**
+- 所以 `organize_paper_output()` **按输出根目录的实际长度反推**标题上限：
+  `259 - len(root) - 1 - WINDOWS_CHILD_RESERVE - len("{year}--")`，
+  钳在 `[20, 150]`；根目录深到连下限都放不下时**明确告警**，不静默截断。
+  Linux 不受影响，仍是 150（否则会悄悄改变既有语料的目录名）
+- ⚠️ **预留值必须按"最长的尾部"算，不是"最深的那条路径"** —— 这两者不是一回事，
+  我第一版就栽在这：只算了补充材料（更深），漏了图片（更长，且直接躺在论文目录下）：
+
+  | 尾部 | 长度 |
+  |---|---|
+  | `\supplemental\` + stem(80) + `.docx` + `_100` | 103 |
+  | 图片名（Windows 上限 80）+ 分隔符 | 81 |
+  | `\html\page_raw.html` | 19 |
+
+  `WINDOWS_CHILD_RESERVE = 104` 覆盖三者
+- ⚠️ **三个常数是一组，改一个就要重算这张表**：`WINDOWS_CHILD_RESERVE`
+  （`core/utilities.py`）、`MAX_STEM_BYTES`（补充材料）、`name_cap`（图片）。
+  第一版把预留写成 96 而最坏尾部是 100 —— **差 4 个字符，等于把要修的 bug 放回去**，
+  是逐项相加才发现的，不是看出来的
+
 ### profile 生命周期（`chrome_session.prepare_profile_dir`）
 
 - **抓取 profile 永不复用**。每次开浏览器都是「先删再建」，两个实例（正文页的共享实例、

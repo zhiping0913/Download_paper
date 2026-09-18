@@ -125,6 +125,16 @@ export CAPTURED_DATA_DIR=captured_data                 # 捕获数据子目录�
 export OUTPUT_DIR_DEFAULT=/home/coze/Download_paper/captured_data  # 完整输出目录路径
 ```
 
+⚠️ **Windows：输出根目录越深，文章目录名就越短。** Windows 拒绝任何超过 MAX_PATH(260)
+的路径，而且报的是 `[Errno 2] No such file or directory` —— 对一个明明存在的目录说
+"不存在"，极具误导性。实测过一次：156 字符的标题放在
+`C:\Users\…\captured_data` 下，补充材料路径达 272 字符（超 12），于是 `paper.pdf`
+和图片都下来了、**只有补充材料全军覆没**。
+
+现在 `organize_paper_output()` 会按根目录的实际长度反推标题上限（Linux 不受影响，
+仍是 150）。所以在 Windows 上把 `OUTPUT_DIR_DEFAULT` 指向较短的路径（如 `D:\papers`），
+能换来更完整的目录名；根目录深到连下限都放不下时，程序会明确告警而不是静默截断。
+
 **超时配置（单位：秒）：**
 
 ```bash

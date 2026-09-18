@@ -99,6 +99,7 @@ from config import (
     CHROME_PROFILE,
     CHROME_PROFILE_SOURCE_DIR,
     FRESH_PROFILE,
+    IS_WINDOWS,
     OUTPUT_DIR_DEFAULT,
     SAVE_WITHOUT_REFERENCES,
 )
@@ -1095,10 +1096,18 @@ def original_image_filename(image_url: str, fig_num: int, default_ext: str = '.p
         basename = Path(unquote(parsed.path or '')).name
         basename = re.sub(r'[/\\:*?"<>|\x00-\x1f]', '-', basename).strip().strip('.')
 
+        # ⚠️ Two limits again. 180 is just "stop a pathological URL"; on Windows
+        # the whole path is bounded, and figures sit DIRECTLY in the paper
+        # directory, so a long figure name is the longest tail there is --
+        # longer than the supplemental one, which merely sits deeper.
+        # organize_paper_output reserves WINDOWS_CHILD_RESERVE (104) for the
+        # deepest child, so cap at 80 here to stay inside it. Real publisher
+        # names are ~19 chars (ppcfadd59df1_hr.jpg), so this never bites.
+        name_cap = 80 if IS_WINDOWS else 180
         if basename and Path(basename).suffix.lower() in IMAGE_EXTENSIONS:
-            if len(basename) > 180:
+            if len(basename) > name_cap:
                 suffix = Path(basename).suffix
-                basename = f"{Path(basename).stem[:180 - len(suffix)]}{suffix}"
+                basename = f"{Path(basename).stem[:name_cap - len(suffix)]}{suffix}"
             return basename
 
     return f"figure_{fig_num}{default_ext}"
@@ -1922,7 +1931,13 @@ async def download_supplemental_materials(
                 # recognisable.
                 suffix = Path(output_filename).suffix
                 stem = output_filename[:-len(suffix)] if suffix else output_filename
-                MAX_STEM_BYTES = 200  # leave headroom for suffix + dedup suffix
+                # ⚠️ Two different limits. 200 bytes is ext4's per-component
+                # headroom; Windows instead bounds the WHOLE path at MAX_PATH,
+                # and this file sits one directory deeper than everything else
+                # (<paper>\supplemental\supplemental--…), so it is the first to
+                # blow it. organize_paper_output reserves
+                # WINDOWS_CHILD_RESERVE for this tail -- keep the two in step.
+                MAX_STEM_BYTES = 80 if IS_WINDOWS else 200
                 stem_bytes = stem.encode('utf-8')
                 if len(stem_bytes) > MAX_STEM_BYTES:
                     truncated = stem_bytes[:MAX_STEM_BYTES]

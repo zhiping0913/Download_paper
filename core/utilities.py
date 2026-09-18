@@ -9,6 +9,8 @@ import os
 import re
 import requests
 from pathlib import Path
+
+from config import IS_WINDOWS
 from datetime import datetime
 from urllib.parse import urlparse, urlsplit
 
@@ -613,8 +615,42 @@ def fetch_crossref(doi: str) -> dict:
 # File Organization Functions
 # ============================================================================
 
-def _clean_title_for_directory(title: str) -> str:
-    """Clean title for use as directory name, handling formulas and HTML tags."""
+# Windows refuses any path over MAX_PATH, and the limit counts the terminating
+# NUL, so the usable string length is 259.
+WINDOWS_MAX_PATH = 260
+
+# Room to leave under the paper directory for the deepest thing that goes in it,
+# which is always a supplemental file. Add the parts up rather than guessing --
+# the first version of this reserve was 96 against a worst case of 100, i.e. it
+# would have put the very overflow it exists to prevent back on the table:
+#
+#     \supplemental\                     14
+#     stem cap (MAX_STEM_BYTES, Windows) 80   ← already includes "supplemental--"
+#     extension (.docx is the longest)    5
+#     dedup suffix (_1 … _100)            4
+#                                       ----
+#                                       103
+#
+# 104 leaves the arithmetic exact with a character to spare. Everything else in
+# the paper directory (html\page_raw.html, paper.pdf, key_image.png, figures) is
+# shorter, so budgeting for this tail covers them all.
+#
+# ⚠️ MAX_STEM_BYTES in complete_paper_extraction.py is the other half of this
+# pair. Change one and you must redo this sum.
+WINDOWS_CHILD_RESERVE = 104
+
+# Cap on the directory name itself. On Linux this is the only limit that
+# applies; on Windows it is an upper bound that the path budget may lower.
+DIR_NAME_MAX = 150
+
+
+def _clean_title_for_directory(title: str, max_len: int = DIR_NAME_MAX) -> str:
+    """Clean title for use as directory name, handling formulas and HTML tags.
+
+    *max_len* caps the cleaned title. The caller lowers it on Windows so the
+    deepest file that will live inside still fits under MAX_PATH -- see
+    :func:`organize_paper_output`.
+    """
     if not title:
         return 'paper'
 
@@ -673,7 +709,7 @@ def _clean_title_for_directory(title: str) -> str:
     title = re.sub(r'\s+', ' ', title).strip()
 
     # Limit length but keep it readable
-    title = title[:150].strip()
+    title = title[:max(1, int(max_len))].strip()
 
     # If title becomes empty after cleaning, use placeholder
     if not title:
@@ -704,8 +740,30 @@ def organize_paper_output(output_dir: Path, metadata: dict, s2_data: dict) -> Pa
         if not isinstance(title, str):
             title = str(title) if title else 'paper'
 
+        # ⚠️ Budget the directory name against how deep the output root already
+        # is. Windows rejects any path over MAX_PATH with ENOENT -- "No such
+        # file or directory" for a directory that plainly exists, which is a
+        # thoroughly misleading way to be told the name is too long. Measured
+        # failure: a 156-char title under C:\Users\...\captured_data produced a
+        # 272-char supplemental path, 12 over the limit, so paper.pdf and the
+        # figures landed but every supplemental file failed.
+        #
+        # The per-component caps already in this tree (150 chars here, 200
+        # bytes on supplemental stems) do not help: they bound one component,
+        # and Windows bounds the whole path.
+        title_budget = DIR_NAME_MAX
+        if IS_WINDOWS:
+            room = (WINDOWS_MAX_PATH - 1          # MAX_PATH counts the NUL
+                    - len(str(Path(output_dir)))  # the root the user chose
+                    - 1                           # separator before our name
+                    - WINDOWS_CHILD_RESERVE)      # deepest child under it
+            title_budget = max(20, min(DIR_NAME_MAX, room - len(f"{year}--")))
+            if room - len(f"{year}--") < 20:
+                print(f"  ⚠️  输出根目录过深（{len(str(Path(output_dir)))} 字符），"
+                      f"文章目录名已压到下限；请把 --output 指向更短的路径")
+
         # Clean title: remove HTML tags and convert math symbols
-        title_clean = _clean_title_for_directory(title)
+        title_clean = _clean_title_for_directory(title, title_budget)
 
         # Create directory: {year}--{title}
         dir_name = f"{year}--{title_clean}"
