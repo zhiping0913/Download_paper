@@ -511,6 +511,34 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
   第一版把预留写成 96 而最坏尾部是 100 —— **差 4 个字符，等于把要修的 bug 放回去**，
   是逐项相加才发现的，不是看出来的
 
+### 反检测补丁 `_stealth_js`（`DP_STEALTH_JS`，默认开）
+
+注入 headed context 每个页面。**实测下来它基本无效，而真正生效的部分可能适得其反** ——
+下面每一条都是在真实 Chrome 二进制上量出来的，不是推断：
+
+| 分支 | 实测 |
+|---|---|
+| 伪造 `plugins` | **永不执行** —— 条件是 `.length === 0`，真实 Chrome 报 5 个 |
+| 伪造 `languages` | **永不执行** —— 同上，真实 Chrome 报 2 种（`en-US,en`） |
+| `delete window.cdc_…` | **空操作** —— `cdc_` 是 ChromeDriver 的痕迹，Playwright/CDP 不注入 |
+| 改写 `navigator.webdriver` | 生效，但造出真人**不可能**的状态 |
+| 改写 `permissions.query` | 生效，但同样留下痕迹 |
+
+- ⚠️ **它把「可疑」换成了「不可能」**。未注入时 `navigator.webdriver === true` —— 诚实、
+  常见的一个信号；注入后变成 `undefined`，而真实浏览器**只会是 `false`**。前者说明
+  「这是自动化」，后者说明「这是**在撒谎的**自动化」，后者罕见得多，因而更好认
+- ⚠️ **补丁本身比它掩盖的破绽更显眼**：真属性是 `Navigator.prototype` 上的**数据属性**，
+  补丁却在 `navigator` **实例**上新建了 **getter** —— 于是原型上有、实例上也有，
+  且实例那个是访问器，真人那里根本不存在这种组合。一行
+  `Object.getOwnPropertyDescriptor(navigator, 'webdriver')` 即可看出
+- ⚠️ `permissions.query.toString()` 从 `[native code]` 变成箭头函数源码，且从原型挪到
+  实例自有属性 —— 这是最经典的一条检测
+- **关掉不损失任何能力**：本程序不读 `navigator.webdriver` / `plugins` /
+  `permissions.query`。唯一可能沾边的「靠 PDF 插件决定内嵌还是下载」，我们是用
+  profile 的 `always_open_pdf_externally` 强制下载，不依赖插件存在
+- 默认仍为**开**（维持现状），`DP_STEALTH_JS=0` 关闭。**它是否真的影响拦截率尚无证据**，
+  开关就是为了做这个 A/B —— 有结论前不要改默认
+
 ### profile 生命周期（`chrome_session.prepare_profile_dir`）
 
 - **抓取 profile 永不复用**。每次开浏览器都是「先删再建」，两个实例（正文页的共享实例、
