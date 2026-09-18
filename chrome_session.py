@@ -133,6 +133,58 @@ PROFILE_SEED_FILES = (
 )
 PROFILE_SEED_ROOT_FILES = ('Local State',)
 
+# Bot-manager cookies to strip from the seeded copy.
+#
+# Seeding the real profile is what buys institutional entitlement, but the same
+# Cookies file also carries the bot manager's own reputation state -- so every
+# "fresh" throwaway Chrome went out wearing the identity that had just been
+# flagged. Measured: FRESH_PROFILE=1 (no cookies at all) downloads IOP and
+# ScienceDirect PDFs straight away, where the seeded profile got perfdrive.
+# Dropping just these rows is the attempt to keep the entitlement and lose the
+# record.
+#
+# ⚠️ GLOB, not LIKE. In SQL LIKE, '_' is a single-character wildcard, so
+# "name LIKE '__ss%'" also matches session, sessionid, passport_csrf_token …
+# -- on this machine that pattern swept in 15 unrelated cookies including the
+# user's own claude.ai session keys. GLOB treats '_' literally.
+_BOT_COOKIE_NAME_GLOBS = ('__uzm*', '__ss*', 'uzmx', 'uzmxj')
+_BOT_COOKIE_HOST_GLOBS = ('*perfdrive.com', '*distilnetworks*', '*distilidentify*')
+
+
+def _strip_bot_cookies(cookies_db: Path) -> int:
+    """Delete bot-manager rows from a *copied* cookie DB. Returns rows removed.
+
+    Only ever touches the throwaway profile's copy -- the real profile is
+    read-only to this program and must stay that way.
+
+    Failure is not fatal: a seeded profile that still carries the bot cookies
+    is exactly what we had before, so any error degrades to the old behaviour
+    rather than breaking the run.
+    """
+    if os.environ.get('DP_SEED_DROP_BOT_COOKIES', '1').strip().lower() in (
+            '0', 'false', 'no', 'off'):
+        return 0
+    import sqlite3          # stdlib, imported here because this is its only use
+    where = ' OR '.join(
+        ["name GLOB ?"] * len(_BOT_COOKIE_NAME_GLOBS)
+        + ["host_key GLOB ?"] * len(_BOT_COOKIE_HOST_GLOBS))
+    params = list(_BOT_COOKIE_NAME_GLOBS) + list(_BOT_COOKIE_HOST_GLOBS)
+    try:
+        with sqlite3.connect(str(cookies_db)) as con:
+            removed = con.execute(
+                f"DELETE FROM cookies WHERE {where}", params).rowcount
+            con.commit()
+        # A stale journal could roll the deletes back. It is normally empty,
+        # but "normally" is not a guarantee worth relying on here.
+        journal = cookies_db.with_name(cookies_db.name + '-journal')
+        if journal.exists():
+            journal.unlink()
+        return max(0, removed)
+    except Exception as exc:
+        print(f"  ⚠️  清理反爬 cookie 失败（{type(exc).__name__}: {str(exc)[:60]}），"
+              f"按原样播种")
+        return 0
+
 
 def seed_profile(target: Path, source: Path, profile_name: str = '') -> bool:
     """Copy the minimal working set from a real profile into *target*.
@@ -170,6 +222,15 @@ def seed_profile(target: Path, source: Path, profile_name: str = '') -> bool:
         print(f"  ⚠️  未能从 {source} 复制任何文件")
         return False
     print(f"  ✓ 已从真实 profile 播种: {', '.join(copied)}")
+
+    # Strip the bot manager's own state from the copy we just made, so the
+    # throwaway browser keeps the login cookies without inheriting whatever
+    # reputation the real profile accumulated. DP_SEED_DROP_BOT_COOKIES=0
+    # restores the previous all-or-nothing behaviour for A/B testing.
+    if 'Cookies' in copied:
+        dropped = _strip_bot_cookies(dst_inner / 'Cookies')
+        if dropped:
+            print(f"  ✂️  已剔除 {dropped} 条反爬 cookie（__uzm* / __ss* / perfdrive）")
     return True
 
 

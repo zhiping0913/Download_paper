@@ -490,11 +490,24 @@ Playwright 里这几个调用**都不接受 `timeout=`**，也不受 `set_defaul
 
   | 条件 | 结果 |
   |---|---|
-  | `FRESH_PROFILE=0` 且 `CHROME_PROFILE_SOURCE_DIR` 有效 | 从真实 profile 播种（Cookies + Local State + Preferences…） |
+  | `FRESH_PROFILE=0` 且 `CHROME_PROFILE_SOURCE_DIR` 有效 | 从真实 profile 播种（Cookies + Local State + Preferences…），**并剔除反爬 cookie** |
   | `FRESH_PROFILE=1`，或源目录无效 | 空 profile（零登录态） |
 
   「有效」= 目录存在**且**含 `CHROME_PROFILE` 那个子目录；路径写错当作没有，
   不会静默产出一个没 cookie 的 profile
+- ⚠️ **播种会连 bot manager 的案底一起带过去** —— 同一个 `Cookies` 文件里既有机构
+  订阅态，也有 ShieldSquare/Radware 自己的信誉状态（`__uzm*`、`__ss*`、
+  `.iop.org` 的 `uzmx`/`uzmxj`、以及 `validate.perfdrive.com` 整套）。于是每个
+  「全新」的一次性 Chrome 都戴着**刚被标记过的那张身份证**出门。实测：
+  `FRESH_PROFILE=1`（完全无 cookie）下 IOP 与 ScienceDirect 的 PDF 直接下得到，
+  而播种过的 profile 撞 perfdrive
+- 所以 `seed_profile()` 会在**副本**上删掉这些行（`_strip_bot_cookies`），
+  留下订阅态、丢掉案底。`DP_SEED_DROP_BOT_COOKIES=0` 恢复旧的全有或全无行为，便于 A/B
+- ⚠️ **匹配一定要用 `GLOB`，不能用 `LIKE`**：SQL 的 `LIKE` 里 `_` 是单字符通配符，
+  所以 `name LIKE '__ss%'` 会连 `session`、`sessionid`、`passport_csrf_token` 一起扫中 ——
+  本机实测会误删 15 条无关 cookie（含用户自己的 claude.ai 会话）。`GLOB` 把 `_` 当字面字符
+- ⚠️ 只动副本，**真实 profile 全程只读**。改这段时请连同「剪完后删掉副本的
+  `Cookies-journal`」一并保留：journal 若非空，删掉的行会被回滚回来，方案静默失效
 - ⚠️ **光复制 Cookies 文件没用，还要能解密**。Linux 上 cookie 的密钥在系统钥匙环里
   （`Local State` 里**没有** `os_crypt.encrypted_key`），Chrome 接不到钥匙环就退回
   basic 密钥，解不开的条目直接丢弃。实测：播种过去的 1712 条只剩 22 条可见，
