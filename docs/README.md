@@ -830,7 +830,9 @@ from complete_paper_extraction import complete_extraction_workflow
 md_path = asyncio.run(complete_extraction_workflow("10.1103/PhysRevLett.125.015001"))
 ```
 
-也支持 CLI：`python complete_paper_extraction.py "10.1103/PhysRevLett.125.015001"`
+也支持 CLI：`python complete_paper_extraction.py --doi "10.1103/PhysRevLett.125.015001"`
+（⚠️ DOI 必须走 `--doi`，位置参数不被接受 —— `--doi/--file/--json` 是 `required=True`
+的互斥组，漏掉就是 argparse 直接 exit 2）
 
 ### batch_process.py
 

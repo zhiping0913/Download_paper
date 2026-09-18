@@ -11,10 +11,10 @@
 source /home/zhiping/research-env/bin/activate
 
 # 2. 提取论文
-python complete_paper_extraction.py "10.1103/PhysRevLett.110.175001"
+python complete_paper_extraction.py --doi "10.1103/PhysRevLett.110.175001"
 
 # 3. 查看结果
-cd ~/Downloads/papers/
+cd ~/Projects/Download_paper/captured_data/
 ls -la "2013--Direct observation"*/
 ```
 
@@ -24,33 +24,37 @@ ls -la "2013--Direct observation"*/
 
 ### 基本用法
 ```bash
-# 默认输出到 ~/Downloads/papers/
-python complete_paper_extraction.py <DOI>
+# 默认输出到项目下的 captured_data/
+python complete_paper_extraction.py --doi <DOI>
 
-# 指定输出路径
-python complete_paper_extraction.py <DOI> ~/path/to/output.md
+# 指定输出目录（--output 收的是目录，不是 .md 文件路径）
+python complete_paper_extraction.py --doi <DOI> --output ~/path/to/dir
 ```
 
 ### 支持的DOI格式
 ```bash
 # 标准格式
-python complete_paper_extraction.py 10.1103/PhysRevLett.110.175001
+python complete_paper_extraction.py --doi 10.1103/PhysRevLett.110.175001
 
 # 包含 / 符号也可以
-python complete_paper_extraction.py 10.1103/PhysRevLett.124.185004
+python complete_paper_extraction.py --doi 10.1103/PhysRevLett.124.185004
 ```
 
 ---
 
 ## 📦 输出文件说明
 
+每篇论文一个目录，目录内文件名是**固定的**（不随标题变化）：
+
 | 文件 | 说明 |
 |------|------|
-| `*.md` | Markdown格式的完整论文（包含图片引用、公式、引用编号） |
-| `*.pdf` | 原始PDF论文 |
-| `*.json` | 元数据JSON（包含作者、期刊、PDF和补充材料列表） |
-| `figure_*.png` | 论文中的图片（高分辨率） |
-| `*--Supplemental--*` | 补充材料（PDFs、数据文件、电影等） |
+| `paper.md` | Markdown格式的完整论文（包含图片引用、公式、引用编号） |
+| `paper.pdf` | 原始PDF论文 |
+| `metadata.json` | 元数据（作者、期刊、PDF 链接、补充材料列表等） |
+| `crossref.json` | Crossref 原始响应 |
+| `html/` | 页面快照：`page.html`（渲染后）、`page_raw.html`（JS 前原始响应） |
+| 图片 | **沿用出版商的文件名**，例如 `ppcfadd59df1_hr.jpg`，不是 `figure_1.png` |
+| `supplemental--*` | 补充材料（PDF、数据文件、影片等），前缀在前不在后 |
 
 ---
 
@@ -99,28 +103,28 @@ python complete_paper_extraction.py 10.1103/PhysRevLett.124.185004
 ### 打开Markdown文件
 ```bash
 # 用你喜欢的编辑器打开
-code ~/Downloads/papers/2025--Title/2025--Title.md
+code ~/Projects/Download_paper/captured_data/2025--Title/paper.md
 
 # 或用less预览
-less ~/Downloads/papers/2025--Title/2025--Title.md
+less ~/Projects/Download_paper/captured_data/2025--Title/paper.md
 ```
 
 ### 查看元数据JSON
 ```bash
 # 格式化输出JSON
-cat ~/Downloads/papers/2025--Title/2025--Title.json | python -m json.tool
+cat ~/Projects/Download_paper/captured_data/2025--Title/metadata.json | python -m json.tool
 
 # 查看包含的文件
-cat ~/Downloads/papers/2025--Title/2025--Title.json | grep -E '"pdf"|"supplemental"'
+cat ~/Projects/Download_paper/captured_data/2025--Title/metadata.json | grep -E '"pdf"|"supplemental"'
 ```
 
 ### 列出所有文件
 ```bash
 # 查看提取的所有文件
-ls -lh ~/Downloads/papers/2025--Title/
+ls -lh ~/Projects/Download_paper/captured_data/2025--Title/
 
 # 统计数据
-du -sh ~/Downloads/papers/2025--Title/
+du -sh ~/Projects/Download_paper/captured_data/2025--Title/
 ```
 
 ---
@@ -134,7 +138,10 @@ A: 某些论文网站需要验证。使用已登录的Chrome避免验证码和�
 A: 已自动配置。脚本使用 `~/.config/google-chrome` 目录的现有登录状态。
 
 ### Q: 能否处理多篇论文？
-A: 当前支持单篇。可手动循环执行或创建batch脚本。
+A: 可以，有三种方式，不需要自己写循环：
+- `--file dois.txt`（每行一个 DOI）
+- `--json articles.json`（每篇可带 `link`、`pdf_link`、`referer` 等）
+- `python batch_process.py --file dois.txt`（另带防拉黑休眠）
 
 ### Q: 补充材料为什么有时下载失败？
 A: 网络问题或文件过大。脚本会在错误处继续，不会中断。
@@ -172,7 +179,7 @@ A: 确保你的Markdown查看器支持LaTeX（VSCode + markdown-preview-enhanced
 | 组件 | 位置 |
 |------|------|
 | 主程序 | `/home/zhiping/Projects/Download_paper/complete_paper_extraction.py` |
-| 输出 | `~/Downloads/papers/` |
+| 输出 | `~/Projects/Download_paper/captured_data/` |
 | 配置 | `/home/zhiping/Projects/Download_paper/config.py` |
 | 虚拟环境 | `/home/zhiping/research-env/` |
 
@@ -191,8 +198,8 @@ A: 确保你的Markdown查看器支持LaTeX（VSCode + markdown-preview-enhanced
 ### 场景1: 提取单篇论文
 ```bash
 source /home/zhiping/research-env/bin/activate
-python complete_paper_extraction.py "10.1103/PhysRevLett.110.175001"
-# 结果在 ~/Downloads/papers/2013--Direct observation.../
+python complete_paper_extraction.py --doi "10.1103/PhysRevLett.110.175001"
+# 结果在 ~/Projects/Download_paper/captured_data/2013--Direct observation.../
 ```
 
 ### 场景2: 批量提取多篇论文
@@ -200,14 +207,14 @@ python complete_paper_extraction.py "10.1103/PhysRevLett.110.175001"
 # 创建文件 dois.txt，每行一个DOI
 # 然后运行:
 while IFS= read -r doi; do
-    python complete_paper_extraction.py "$doi"
+    python complete_paper_extraction.py --doi "$doi"
 done < dois.txt
 ```
 
 ### 场景3: 整理提取的论文
 ```bash
 # 移动到研究目录
-mv ~/Downloads/papers/* ~/Research/Literature/
+mv ~/Projects/Download_paper/captured_data/* ~/Research/Literature/
 
 # 查看统计
 find ~/Research/Literature -name "*.md" | wc -l  # 论文数量
