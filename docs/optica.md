@@ -323,7 +323,7 @@ Example paper: **10.1364/OE.444043**
 - Expected: Full HTML extraction with formulas, figures, and supplemental link
 
 ```bash
-python complete_paper_extraction.py "10.1364/OE.444043" --force-headed
+python complete_paper_extraction.py --doi "10.1364/OE.444043" --force-headed
 ```
 
 Expected output:

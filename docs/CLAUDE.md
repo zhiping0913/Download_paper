@@ -21,12 +21,12 @@
 ```bash
 source /home/zhiping/research-env/bin/activate
 cd /home/zhiping/Projects/Download_paper
-python complete_paper_extraction.py "10.1103/PhysRevLett.109.245005"
+python complete_paper_extraction.py --doi "10.1103/PhysRevLett.109.245005"
 ```
 
 需要强制有头浏览器（某些 publisher 需要登录态才能获取补充材料）：
 ```bash
-python complete_paper_extraction.py "10.1088/1361-6463/ae36b8" --force-headed
+python complete_paper_extraction.py --doi "10.1088/1361-6463/ae36b8" --force-headed
 ```
 
 ### 批量处理

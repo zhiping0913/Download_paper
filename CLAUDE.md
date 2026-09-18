@@ -20,9 +20,11 @@
 ```bash
 source /home/zhiping/research-env/bin/activate
 cd /home/zhiping/Projects/Download_paper
-python complete_paper_extraction.py "<DOI>"
-python complete_paper_extraction.py "<DOI>" --force-headed  # 有头模式
-python complete_paper_extraction.py "<DOI>" --pdf-only      # 只下 PDF，不生成 md
+# ⚠️ DOI 必须用 --doi 传，不是位置参数：--doi/--file/--json 是一个
+#    required=True 的互斥组，少了就直接 argparse 报错退出（exit 2）
+python complete_paper_extraction.py --doi "<DOI>"
+python complete_paper_extraction.py --doi "<DOI>" --force-headed  # 有头模式
+python complete_paper_extraction.py --doi "<DOI>" --pdf-only      # 只下 PDF，不生成 md
 python batch_process.py --file dois.txt                     # 批量
 ```
 
