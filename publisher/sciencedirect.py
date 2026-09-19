@@ -2016,61 +2016,79 @@ class ScienceDirectHandler(PublisherHandler):
             return {}
 
         api_url = self._body_api_url(pii, token)
-        print(f"  ↪ 请求正文 API: /sdfe/arp/pii/{pii}/body")
 
-        # Issue the request from INSIDE the page via fetch(). Playwright's
-        # APIRequestContext shares cookies but not the page's JS/TLS
-        # fingerprint, and Elsevier answers it with 403. A same-origin
-        # in-page fetch inherits the exact session that just rendered the
-        # article, so it is accepted.
+        # The page fetched this itself while loading; reuse that response
+        # rather than asking for the identical resource a second time.
+        # Measured on 10.1016/j.cocom.2026.e01326: /sdfe/arp/pii/<PII>/body is
+        # among the page's own XHRs, and its body survives to harvest time.
+        # Falls through to the request below whenever nothing was captured --
+        # capture is an optimisation, never a dependency.
         payload = None
-        try:
-            payload = await evaluate_with_timeout(
-                page,
-                ("""async (url) => {""" + INPAGE_ABORT_JS + """
-                    try {
-                        const r = await fetch(url, {
-                            method: 'GET',
-                            credentials: 'include',
-                            signal: __dpAbort(__MS__),
-                            headers: {'Accept': 'application/json'},
-                        });
-                        if (!r.ok) return {__err: 'status ' + r.status};
-                        return await r.json();
-                    } catch (e) {
-                        return {__err: String(e)};
-                    }
-                }""").replace('__MS__', inpage_abort_ms()),
-                api_url,
-                what='ScienceDirect body API',
-            )
-        except Exception as exc:
-            print(f"  ⚠️  body API in-page fetch 异常: {type(exc).__name__}: {str(exc)[:120]}")
-            payload = None
-
-        if isinstance(payload, dict) and payload.get('__err'):
-            print(f"  ⚠️  body API in-page fetch 失败: {payload['__err']}")
-            payload = None
-
-        # Fall back to the out-of-page request context (works on some
-        # mirrors / when the page navigated away mid-flight).
-        if payload is None:
+        cached = self.captured_api(f'/sdfe/arp/pii/{pii}/body')
+        if cached:
             try:
-                resp = await page.context.request.get(
+                _parsed = json.loads(cached)
+            except (json.JSONDecodeError, TypeError):
+                _parsed = None
+            if isinstance(_parsed, dict) and _parsed:
+                print(f"  ♻️  正文 API 复用预载捕获（{len(cached):,} 字符，未重复请求）")
+                payload = _parsed
+            else:
+                print("  ⚠️  预载捕获的正文 API 不是合法 JSON，改为重新请求")
+
+        if payload is None:
+            print(f"  ↪ 请求正文 API: /sdfe/arp/pii/{pii}/body")
+
+            # Issue the request from INSIDE the page via fetch(). Playwright's
+            # APIRequestContext shares cookies but not the page's JS/TLS
+            # fingerprint, and Elsevier answers it with 403. A same-origin
+            # in-page fetch inherits the exact session that just rendered the
+            # article, so it is accepted.
+            try:
+                payload = await evaluate_with_timeout(
+                    page,
+                    ("""async (url) => {""" + INPAGE_ABORT_JS + """
+                        try {
+                            const r = await fetch(url, {
+                                method: 'GET',
+                                credentials: 'include',
+                                signal: __dpAbort(__MS__),
+                                headers: {'Accept': 'application/json'},
+                            });
+                            if (!r.ok) return {__err: 'status ' + r.status};
+                            return await r.json();
+                        } catch (e) {
+                            return {__err: String(e)};
+                        }
+                    }""").replace('__MS__', inpage_abort_ms()),
                     api_url,
-                    headers={
-                        'Accept': 'application/json',
-                        'Referer': page_url or f'https://www.sciencedirect.com/science/article/pii/{pii}',
-                    },
-                    timeout=60000,
+                    what='ScienceDirect body API',
                 )
-                if not resp.ok:
-                    print(f"  ⚠️  body API 返回 {resp.status}")
-                    return {}
-                payload = await resp.json()
             except Exception as exc:
-                print(f"  ⚠️  body API 请求失败: {type(exc).__name__}: {str(exc)[:120]}")
-                return {}
+                print(f"  ⚠️  body API in-page fetch 异常: {type(exc).__name__}: {str(exc)[:120]}")
+
+            if isinstance(payload, dict) and payload.get('__err'):
+                print(f"  ⚠️  body API in-page fetch 失败: {payload['__err']}")
+
+            # Fall back to the out-of-page request context (works on some
+            # mirrors / when the page navigated away mid-flight).
+            if payload is None:
+                try:
+                    resp = await page.context.request.get(
+                        api_url,
+                        headers={
+                            'Accept': 'application/json',
+                            'Referer': page_url or f'https://www.sciencedirect.com/science/article/pii/{pii}',
+                        },
+                        timeout=60000,
+                    )
+                    if not resp.ok:
+                        print(f"  ⚠️  body API 返回 {resp.status}")
+                        return {}
+                    payload = await resp.json()
+                except Exception as exc:
+                    print(f"  ⚠️  body API 请求失败: {type(exc).__name__}: {str(exc)[:120]}")
+                    return {}
 
         if not isinstance(payload, dict) or not payload.get('content'):
             print("  ⚠️  body API 响应缺少 content")

@@ -930,8 +930,30 @@ def _record_cdp_event(sink: dict, msg: dict) -> None:
 #: earlier in the page's life than the document, so eviction is likelier), and
 #: which round to keep when a publisher requests the same endpoint twice with
 #: different tokens.
+#: Harvested by default. These are the endpoints a publisher's own page
+#: fetches during load and that a handler would otherwise request a second
+#: time: ScienceDirect's body/references/metadata calls, IEEE's REST document
+#: calls. Measured: skipping the duplicate request is the whole point, and
+#: both were observed being issued by the page itself.
+#:
+#: ⚠️ SPIE is deliberately absent. Its fulltext POST is issued by *us* from
+#: inside the page, not by the landing page, so there is nothing to capture --
+#: adding /api/ here would harvest unrelated traffic for no benefit.
+_DEFAULT_API_HARVEST = ('/sdfe/arp/', '/rest/document/')
+
+
 def _api_harvest_patterns() -> list:
+    """URL substrings whose XHR/Fetch bodies are worth keeping.
+
+    On by default. ``DP_HARVEST_API`` overrides the list; setting it to ``0``,
+    ``off`` or ``none`` disables API harvesting entirely and leaves only
+    documents, which is the pre-2026-09 behaviour.
+    """
     raw = (os.environ.get('DP_HARVEST_API') or '').strip()
+    if not raw:
+        return list(_DEFAULT_API_HARVEST)
+    if raw.lower() in ('0', 'off', 'none', 'false', 'no'):
+        return []
     return [p.strip().lower() for p in raw.split(',') if p.strip()]
 
 
