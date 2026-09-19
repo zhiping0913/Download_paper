@@ -655,6 +655,31 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
   **键序**与一个脚本标签；`citation_` 364/364、`math/tex` 134/134、`supplDataLink` 1/1、
   `article-text` 16/16 完全一致。所以它是那个 hack 的**忠实替代**，不是近似品
 
+### 挑战页点到哪里（`_CHALLENGE_CLICK_TARGET_JS`）
+
+预载循环认出挑战页之后分两条路：`_find_turnstile_iframe_cdp()` 找到 Turnstile
+iframe 就点它，找不到才走兜底。
+
+- ⚠️ **「没有 iframe」不等于「没有 widget」**。实测 Wiley 的拦截页
+  （`cvId: '3'`、`cType: 'managed'`，`10.1002/lpor.200810005`）：
+  `document.querySelectorAll('iframe').length` 是 **0**，而 `body.innerText`
+  有 **271 字**的验证界面——widget 渲染出来了，主文档里却没有 iframe
+- ❌ 旧的兜底**两处都挡住了自己**：分支条件要求 `iframe_count == 0`（页面上有任何
+  无关 iframe 都会把这次尝试否掉），点击目标只有 `#captcha-box, .cf-turnstile`
+  ——这两个在 cvId 3 的页面上**都不存在**。于是 `found=False`，**一次点击都没发出**，
+  而且**一句话都不打印**，就这么空转到超时。现在两条都改了，且"找不到目标"会明确打印
+- 四级目标，证据从强到弱：① CF 用过的容器（`#captcha-box`/`.cf-turnstile`/
+  `[id^="cf-chl"]`/`#challenge-stage`/`#challenge-form`/`#turnstile-wrapper`）
+  → ② **open shadow root 里的 iframe**（`querySelectorAll` 不穿透 shadow DOM，
+  这正是"widget 存在而 iframes=0"的一种成因；closed root 任何脚本都够不到）
+  → ③ **形状像 widget 的元素**（约 300×65，纯几何，不依赖语言和类名）
+  → ④ 拦截页自己的 `.main-content`
+- 点击点固定取 `(left + 32, 垂直居中)`——CF 目前所有尺寸的 widget，复选框都在那里
+- ⚠️ 抓到的拦截页 HTML 多半是**服务器响应**，里面**看不到 widget**：widget 由
+  bootstrap 脚本 `head.appendChild()` 进来的 `/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1`
+  注入。判断手里那份是不是响应：看那个 `<script src=…orchestrate…>` 元素在不在，
+  不在就是响应。要看 widget 得在 DevTools Console 里取 `document.documentElement.outerHTML`
+
 ### 反检测补丁 `_stealth_js`（`DP_STEALTH_JS`，默认开）
 
 注入 headed context 每个页面。**实测下来它基本无效，而真正生效的部分可能适得其反** ——

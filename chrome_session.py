@@ -887,6 +887,67 @@ _CHALLENGE_DOM_JS = r"""(function () {
 })()"""
 
 
+# Where to click on a challenge page when no Turnstile iframe can be found.
+#
+# ⚠️ "No iframe" does not mean "no widget". Measured on Wiley's interstitial
+# (cvId 3, cType managed): document.querySelectorAll('iframe').length was 0
+# while document.body.innerText was 271 characters of challenge UI. The old
+# fallback aimed only at "#captcha-box, .cf-turnstile" -- neither is present on
+# that page -- so it found nothing and dispatched no click at all.
+#
+# Four steps, widest evidence first:
+#   1. the containers Cloudflare has used across versions
+#   2. an iframe inside an OPEN shadow root (querySelectorAll does not pierce
+#      shadow DOM, which is one way a widget can exist with iframes === 0)
+#   3. anything shaped like a Turnstile widget (~300x65) -- geometry, so it
+#      does not depend on the page's language or on class names surviving the
+#      next redesign
+#   4. the interstitial's own .main-content wrapper, which this page does have
+#
+# The click point is (left + 32, vertical centre): the checkbox sits there in
+# every widget size Cloudflare currently ships.
+_CHALLENGE_CLICK_TARGET_JS = r"""(function () {
+    function box(el, via) {
+        if (!el) return null;
+        try { el.scrollIntoView({behavior: 'instant', block: 'center'}); } catch (e) {}
+        var r = el.getBoundingClientRect();
+        if (!r || r.width < 20 || r.height < 10) return null;
+        return {found: true, via: via, x: r.x, y: r.y, w: r.width, h: r.height,
+                cx: r.x + 32, cy: r.y + r.height / 2};
+    }
+    var sels = ['#captcha-box', '.cf-turnstile', '[id^="cf-chl"]',
+                '#challenge-stage', '#challenge-form', '#turnstile-wrapper'];
+    for (var i = 0; i < sels.length; i++) {
+        var hit = box(document.querySelector(sels[i]), sels[i]);
+        if (hit) return hit;
+    }
+    var all = document.querySelectorAll('*');
+    for (var j = 0; j < all.length; j++) {
+        var sr = all[j].shadowRoot;          // open roots only; a closed one
+        if (!sr) continue;                   // is unreachable by any script
+        var f = sr.querySelector('iframe');
+        var hit2 = box(f, 'shadow iframe');
+        if (hit2) return hit2;
+    }
+    for (var k = 0; k < all.length; k++) {
+        var el = all[k];
+        if (!el.getBoundingClientRect) continue;
+        var r = el.getBoundingClientRect();
+        if (r.width >= 200 && r.width <= 520 && r.height >= 40 && r.height <= 120
+            && r.top >= 0 && r.top < window.innerHeight) {
+            // An empty <div> is page furniture; an <iframe> is a leaf by
+            // nature and is exactly what we are looking for.
+            if (el.tagName !== 'IFRAME' && el.querySelector
+                && el.querySelector('*') === null) continue;
+            var hit3 = box(el, 'widget-shaped');
+            if (hit3) return hit3;
+        }
+    }
+    return box(document.querySelector('.main-content, .main-wrapper'), 'main-content')
+           || {found: false};
+})()"""
+
+
 #: Where :func:`_send` files the CDP events it would otherwise discard.
 #:
 #: A ContextVar rather than a module global on purpose: the article preload
@@ -1598,31 +1659,40 @@ async def bypass_cloudflare_cdp(
                             print(f"  🎯  发现 Turnstile widget，尝试自动点击...")
                             turnstile_tried = True
                             await _auto_click_turnstile_cdp(ws, timeout_s=90.0)
-                        elif not turnstile_info.get("found") and iframe_count == 0:
-                            # interactive 模式：widget 延迟渲染（先转圈圈，再出框框）
-                            # 每隔几秒用 CDP 真实鼠标点击一次 captcha-box 区域，触发 render
-                            # 每 4 轮（8 秒）点一次，避免频繁点击
+                        elif not turnstile_info.get("found"):
+                            # No Turnstile iframe we recognise. That is not the
+                            # same as "no widget": measured on Wiley's
+                            # interstitial (cvId 3, cType managed), the poll
+                            # reported iframes=0 while body carried 271
+                            # characters of challenge UI -- the widget was
+                            # rendered and had no iframe in the main document
+                            # at all. The previous version only ran this branch
+                            # when iframe_count == 0 and only aimed at
+                            # "#captcha-box, .cf-turnstile", neither of which
+                            # exists on that page, so box_info came back
+                            # found=False and NOT ONE CLICK WAS DISPATCHED --
+                            # silently, for the whole timeout.
+                            #
+                            # So: drop the iframe_count gate (an unrelated
+                            # iframe must not veto the attempt), widen the
+                            # targets to what Cloudflare actually ships, and
+                            # say out loud when there is nothing to aim at.
+                            # Still every 4th round (~8s) so a widget that is
+                            # mid-render is not hammered.
                             if challenge_rounds % 4 == 2:  # 第2、6、10...轮点
                                 try:
                                     box_r = await _send(ws, "Runtime.evaluate", {
-                                        "expression": (
-                                            "(function(){"
-                                            "var b=document.querySelector('#captcha-box, .cf-turnstile');"
-                                            "if(!b)return {found:false};"
-                                            "b.scrollIntoView({behavior:'instant',block:'center'});"
-                                            "var r=b.getBoundingClientRect();"
-                                            "return {found:true,x:r.x,y:r.y,w:r.width,h:r.height,cx:r.x+32,cy:r.y+r.height/2};"
-                                            "})()"
-                                        ),
+                                        "expression": _CHALLENGE_CLICK_TARGET_JS,
                                         "returnByValue": True,
                                     })
                                     box_info = box_r.get("result", {}).get("value", {})
-                                    # 只在 captcha-box 可见（高度>0）时才点击
-                                    # interactive模式下widget先"转圈圈"再出框，高度为0说明还没渲染完
+                                    # 只在目标可见（高度>10）时才点击：interactive
+                                    # 模式下 widget 先"转圈圈"再出框，高度为 0 说明还没渲染完
                                     if box_info.get("found") and box_info.get("h", 0) > 10:
                                         cx = box_info["cx"]
                                         cy = box_info["cy"]
-                                        print(f"  🖱️  点击 Turnstile 区域 ({cx:.0f}, {cy:.0f})...")
+                                        print(f"  🖱️  点击挑战区域 ({cx:.0f}, {cy:.0f}) "
+                                              f"[{box_info.get('via', '?')}]...")
                                         # 移动 + 按下 + 弹起
                                         await _send(ws, "Input.dispatchMouseEvent", {
                                             "type": "mouseMoved", "x": cx, "y": cy, "button": "none"
@@ -1637,6 +1707,12 @@ async def bypass_cloudflare_cdp(
                                             "type": "mouseReleased", "x": cx, "y": cy,
                                             "button": "left", "clickCount": 1, "buttons": 0
                                         })
+                                    else:
+                                        # Never silent again: a challenge we can
+                                        # see but cannot aim at is the whole bug
+                                        # this branch was rewritten for.
+                                        print(f"  ⚠️  挑战页上找不到可点击目标"
+                                              f"（iframes={iframe_count}, body={len(body_text)}）")
                                 except Exception as e:
                                     print(f"     ⚠️  点击异常: {e}")
 
