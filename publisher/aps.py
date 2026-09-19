@@ -5,8 +5,10 @@ Handles extraction from American Physical Society journals (prl, pre, pra, etc.)
 
 import asyncio
 import re
+import os
 import json
 import requests
+from urllib.parse import urljoin
 from pathlib import Path
 from html import unescape
 
@@ -979,6 +981,81 @@ class APSHandler(PublisherHandler):
 
         return captured
 
+    def _url_doi(self, page, doi: str = '') -> str:
+        """The DOI spelled the way APS spells it in the URL (case matters)."""
+        url_doi = ''
+        try:
+            url_doi = self.doi_from_url(page.url or '') if page is not None else ''
+        except Exception:
+            url_doi = ''
+        url_doi = url_doi or self.doi_from_url(getattr(self, '_landing_url', '') or '')
+        return url_doi or doi or self.doi or ''
+
+    def _supplemental_from_capture(self, page, doi: str):
+        """Read the supplemental listing out of the preload capture.
+
+        The article page fetches ``/{prefix}/supplemental/{doi}`` itself while
+        loading, and the answer is a small, clean JSON::
+
+            {"description": "<p>The file SM.pdf ...</p>",
+             "components": [{"id": "video.mp4",
+                             "link": {"url": "/prx/supplemental/.../video.mp4",
+                                      "label": "video.mp4"}, ...}]}
+
+        Everything the markdown needs is in there: the prose block and one
+        entry per file. The old path instead navigated the article page away
+        to /supplemental/{doi} and scraped ``a[data-id]`` plus a regex over
+        innerText -- a page visit, a DOM walk and a 467-character prose block
+        reconstructed from rendered text, all to recover what the page had
+        already been handed as JSON.
+
+        Returns ``(links, descriptions, summary_md)``. ``descriptions`` stays
+        empty on purpose: the JSON has one prose block covering every file,
+        which is exactly what ``summary_md`` renders, and convert_to_markdown
+        prefers the summary whenever it has one.
+        """
+        target = self._url_doi(page, doi)
+        body = self.captured_api(f'/supplemental/{target}') if target else ''
+        if not body:
+            # Say it. A silent return here is indistinguishable in the log
+            # from "the supplemental step never ran", which is the one thing
+            # a reader needs to tell apart when a paper's files go missing.
+            print("  ℹ️  预载捕获里没有 supplemental 响应 —— 该文章没有补充材料"
+                  "（未访问 supplemental 页面）")
+            return [], {}, ''
+        try:
+            payload = json.loads(body)
+        except Exception:
+            print("  ⚠️  supplemental 捕获无法解析为 JSON，按无补充材料处理")
+            return [], {}, ''
+        if not isinstance(payload, dict):
+            return [], {}, ''
+
+        self._cache_json(payload, 'supplemental.json')
+
+        links = []
+        for comp in payload.get('components') or []:
+            if not isinstance(comp, dict):
+                continue
+            link = comp.get('link') or {}
+            href = (link.get('url') or '').strip()
+            name = (comp.get('id') or link.get('label') or '').strip()
+            if not href or not name:
+                continue
+            links.append({
+                'text': name,
+                'href': href,
+                'url': urljoin('https://journals.aps.org/', href),
+            })
+
+        summary_md = _supplemental_summary_md(payload.get('description') or '')
+        if links:
+            print(f"  ♻️  补充材料复用预载捕获：{len(links)} 个文件"
+                  f"（未访问 supplemental 页面）")
+        else:
+            print("  ℹ️  预载捕获里没有补充材料条目 —— 该文章没有补充材料")
+        return links, {}, summary_md
+
     def _cache_fulltext_json(self, payload: dict) -> None:
         """Land fulltext.json beside the other captures.
 
@@ -988,16 +1065,20 @@ class APSHandler(PublisherHandler):
         skipped the write would quietly make the capture directory
         unreproducible.
         """
+        self._cache_json(payload, 'fulltext.json')
+
+    def _cache_json(self, payload, name: str) -> None:
+        """Write *payload* as *name* in the capture directory."""
         if not payload or not self.captured_data_dir:
             return
         try:
-            out = Path(self.captured_data_dir) / 'fulltext.json'
+            out = Path(self.captured_data_dir) / name
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=1),
                 encoding='utf-8',
             )
-            print(f"  ✓ fulltext.json 已保存 ({out.stat().st_size:,} bytes)")
+            print(f"  ✓ {name} 已保存 ({out.stat().st_size:,} bytes)")
         except Exception:
             pass
 
@@ -1009,13 +1090,7 @@ class APSHandler(PublisherHandler):
         Returns {} on any miss -- the active fetch below stays as the answer
         for articles that land on /abstract/ and never XHR the body at all.
         """
-        url_doi = ''
-        try:
-            url_doi = self.doi_from_url(page.url or '') if page is not None else ''
-        except Exception:
-            url_doi = ''
-        url_doi = url_doi or self.doi_from_url(getattr(self, '_landing_url', '') or '')
-        target = url_doi or doi or self.doi or ''
+        target = self._url_doi(page, doi)
         if not target:
             return {}
         body = self.captured_api(f'/fulltext/{target}')
@@ -1314,9 +1389,26 @@ class APSHandler(PublisherHandler):
         actual_doi = self.doi or doi
         if actual_doi:
             try:
-                supp_links, supp_descriptions, supp_summary = await get_supplemental_links(
-                    page, actual_doi, self.journal_prefix, captured_data_dir=self.captured_data_dir
-                )
+                # The capture is the authority when there IS one: the article
+                # page fetches the supplemental listing itself, so "no such
+                # response" means the article has no supplemental material.
+                # Visiting /supplemental/{doi} to be told the same thing costs
+                # a navigation away from the article and a scrape of APS's
+                # "Not Found" page.
+                #
+                # ⚠️ "The capture says none" and "there is no capture" are not
+                # the same answer. Nothing is harvested on a headless run, or
+                # with DP_HARVEST_API=0, and concluding "no supplemental" from
+                # that would silently drop files from every paper. Only the
+                # first case skips the visit.
+                if getattr(self, '_captured_api', None):
+                    supp_links, supp_descriptions, supp_summary = \
+                        self._supplemental_from_capture(page, actual_doi)
+                else:
+                    supp_links, supp_descriptions, supp_summary = await get_supplemental_links(
+                        page, actual_doi, self.journal_prefix,
+                        captured_data_dir=self.captured_data_dir
+                    )
                 links['supplemental_urls'] = supp_links
                 links['supplemental_descriptions'] = supp_descriptions
                 if supp_summary:

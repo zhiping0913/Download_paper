@@ -779,6 +779,30 @@ iframe 就点它，找不到才走兜底。
   root 只清 `main_dir`/`aux_dir`（连同旧名 `pdf_dir`），root 本身保留（那是用户选的路径）；
   被活着的 Chrome 占用的目录跳过不动
 
+### APS (`10.1103`, journals.aps.org)
+
+正文页自己会取两个 JSON，**两个都在预载捕获里**，handler 直接读，不再重复请求：
+
+| 端点 | 用途 | 落盘 |
+|---|---|---|
+| `/{prefix}/fulltext/{doi}` | 正文组件树 | `fulltext.json` |
+| `/{prefix}/supplemental/{doi}` | 补充材料清单 | `supplemental.json` |
+
+- ⚠️ **有头运行时 `setup_network_capture()` 那个 Playwright 监听器看不到它们** ——
+  它是在 CDP 预载把页面加载完**之后**才连上的。所以 `captured['fulltext_data']`
+  一直是空的，handler 每篇都要在页面内再 fetch 一次
+- 补充材料的 JSON 很干净：`description`（一段 HTML 散文）+ `components[]`
+  （每个文件一条 `id` / `link.url`）。**够用**，所以不再导航到 `/supplemental/{doi}`
+  去爬 `a[data-id]` 和 innerText 正则。实测 `10.1103/PhysRevX.7.041003`：
+  改用 JSON 后 `paper.md` **逐字节相同**（含那段 467 字符的说明）
+- ⚠️ **「捕获里说没有」和「根本没有捕获」是两个答案**。前者（有捕获、其中没有
+  supplemental 响应）判定该文章没有补充材料，**不再访问那个页面**；后者（无头运行、
+  `DP_HARVEST_API=0`）必须照旧走页面。把两者混为一谈会让整批文章静默丢掉补充材料
+- ⚠️ 两条路都要**照常落盘**（`_cache_json`）。复用捕获时若跳过写文件，产出目录就
+  悄悄变得不可离线重建 —— 落盘文件是交接接口，不是缓存
+- 落在 `/abstract/{doi}` 的文章**不会 XHR 正文**，那时捕获理应为空，
+  `_fetch_fulltext_json()` 的页面内请求仍然是答案，不能删
+
 ### IEEE (`10.1109`, ieeexplore.ieee.org)
 
 - 页面是 Angular 客户端渲染，**正文不在 DOM 里**。全部内容走 REST 接口，键是数字
