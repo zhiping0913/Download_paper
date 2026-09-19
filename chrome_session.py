@@ -509,8 +509,25 @@ def sweep_stale_profiles(quiet: bool = False) -> int:
     accumulated automation fingerprint. Sweeping at startup keeps that from
     happening.
 
-    Only directories no live Chrome has open are removed, so a concurrent run
-    (a second batch, the user's own session) is never touched.
+    ⚠️ **This does NOT reliably spare a concurrent run.** The docstring used to
+    claim "only directories no live Chrome has open are removed, so a
+    concurrent run is never touched". That is false, and believing it nearly
+    destroyed a 41-hour batch.
+
+    ``_profile_dirs_in_use()`` collects the ``--user-data-dir`` values Chrome
+    was launched with, and those are **child** paths
+    (``/tmp/dp_profiles_ab12cd/main_dir``). The glob below yields the **root**
+    (``/tmp/dp_profiles_ab12cd``). ``path in in_use`` compares a root against a
+    set of children, so it never matches and the root is removed -- even while
+    a Chrome is holding a directory inside it. The prefix list includes
+    ``dp_profiles_``, so every run's profile root is a target.
+
+    Isolated debug ports do not help: the decision is made on directory names,
+    not ports. To run alongside a live batch, point ``TMPDIR`` at a short
+    private directory first -- the glob is rooted at ``tempfile.gettempdir()``,
+    so the other run's ``/tmp/dp_profiles_*`` falls outside its view entirely.
+    Short matters: Chrome builds ``$TMPDIR/com.google.Chrome.XXXXXX/
+    SingletonSocket`` and aborts when that path passes ~108 bytes.
     """
     in_use = _profile_dirs_in_use()
     removed = 0

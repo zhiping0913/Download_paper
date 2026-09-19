@@ -2092,10 +2092,31 @@ class ScienceDirectHandler(PublisherHandler):
         return payload
 
     async def extract_metadata(self, page) -> dict:
+        # Prefer the raw server response over the rendered DOM. Everything this
+        # method reads is server-sent: the citation_* <meta> tags and
+        # window.__PRELOADED_STATE__, which is where the authors, abstract and
+        # PDF URL actually come from.
+        #
+        # Measured on 10.1016/j.rinp.2021.104097 by running these same parsers
+        # over both captures of the one article: title, doi, journal, authors
+        # (3), abstract (1382 chars), pdf_url_from_state and the 46-key state
+        # blob come out identical, and keywords are absent from both, so
+        # nothing is traded away.
+        #
+        # ⚠️ Only extract_metadata moves. The fulltext_html read further down
+        # stays on page.content(), because extract_figures_from_html and
+        # extract_graphical_abstract_url walk <figure class="figure"> elements
+        # that ScienceDirect renders client-side -- 0 of them in the raw body
+        # against 11 in the rendered DOM. Switching those would lose the
+        # graphical abstract and gut the figure fallback, and today's runs
+        # could not even see it, since figures normally come from the body API.
+        #
+        # get_page_html() falls back to page.content() when no raw body was
+        # captured, so the worst case here is exactly the previous behaviour.
         html_content = ''
         if page is not None:
             try:
-                html_content = await page.content()
+                html_content = await self.get_page_html(page)
             except Exception:
                 html_content = ''
 
