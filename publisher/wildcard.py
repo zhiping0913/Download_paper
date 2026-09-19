@@ -19,7 +19,7 @@ from html_to_md_converter import (
     mathml_to_latex_pandoc,
     remove_newlines_in_paragraph,
 )
-from core.utilities import block_mathjax
+from core.utilities import block_mathjax, pick_raw_article_html
 
 
 # ------------------------------------------------------------------
@@ -516,8 +516,11 @@ async def init_extract_all_page(handler, page=None, doi: str = None, handler_nam
 
         page.on('response', _on_response)
         await page.goto(f"https://doi.org/{doi}", wait_until='domcontentloaded', timeout=60000)
-        if _raw_html:
-            handler._raw_server_html = _raw_html[-1]
+        # Not [-1]: the listener also records the doi.org redirect hop and any
+        # interstitial, so "last document seen" is not necessarily the article.
+        _picked = pick_raw_article_html(_raw_html, doi)
+        if _picked:
+            handler._raw_server_html = _picked
         try:
             await page.wait_for_load_state('networkidle', timeout=15000)
         except Exception:

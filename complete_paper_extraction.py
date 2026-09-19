@@ -75,6 +75,7 @@ from core.utilities import (
     http_asset_headers,
     inpage_abort_ms,
     read_body_with_timeout,
+    pick_raw_article_html,
     url_looks_like_bot_challenge,
     DP_HTTP_TOTAL_TIMEOUT,
     INPAGE_ABORT_JS,
@@ -3485,7 +3486,7 @@ async def complete_extraction_workflow(
                     # 保存无头浏览器访问结果
                     # page_raw.html / headless_initial.html = 原始HTTP响应（JS运行前）
                     # page.html = 渲染后DOM（handler稍后通过process_with_handler覆盖写入）
-                    headless_raw_html = _headless_raw_html[-1] if _headless_raw_html else None
+                    headless_raw_html = pick_raw_article_html(_headless_raw_html, doi) or None
                     headless_rendered_html = await headless_page.content()
                     headless_html = headless_rendered_html  # used for bot-detection below
 
@@ -3744,7 +3745,8 @@ async def complete_extraction_workflow(
             # 如果预载阶段（Playwright 连接前）已经成功过了挑战，直接复用页面。
             # 否则用 Playwright 连接后的 CDP 再试一次（作为 fallback）。
             _cf_loaded = False  # 纯CDP是否已成功加载页面
-            _cf_raw_html = None  # 纯CDP获取的原始HTML
+            # (_cf_raw_html removed: the CDP-bypass paths no longer push
+            # page.content() into _headed_raw_html, so nothing holds it.)
 
             if _cf_preloaded:
                 # 预载已成功：在 Playwright pages 中找到对应页面复用
@@ -3787,12 +3789,15 @@ async def complete_extraction_workflow(
                     except Exception:
                         pass
                     page = _cf_page_obj
-                    try:
-                        _cf_raw_html = await page.content()
-                        _headed_raw_html.append(_cf_raw_html)
-                        print(f"  ✓ 已捕获原始 HTML ({len(_cf_raw_html)} bytes)")
-                    except Exception as _e2:
-                        print(f"  ⚠️  获取 raw HTML 失败: {_e2}")
+                    # ⚠️ Deliberately NOT appending page.content() into
+                    # _headed_raw_html. That list is consumed as
+                    # _raw_server_html, which handlers treat as the pre-JS
+                    # server body -- Optica and Cambridge read it precisely to
+                    # get TeX that MathJax would have destroyed. Feeding it the
+                    # rendered DOM makes the two indistinguishable and defeats
+                    # get_page_html()'s own fallback, which already calls
+                    # page.content() when no raw body was captured. Leaving it
+                    # empty loses nothing and keeps the provenance honest.
                     _cf_loaded = True
                 else:
                     print(f"  ⚠️  未找到预载页面，将重新尝试")
@@ -3834,13 +3839,11 @@ async def complete_extraction_workflow(
                             except Exception:
                                 pass
                             page = _cf_page_obj
-                            # 用 CDP 获取原始 HTML（作为 _headed_raw_html 的替代）
-                            try:
-                                _cf_raw_html = await page.content()
-                                _headed_raw_html.append(_cf_raw_html)
-                                print(f"  ✓ 已捕获原始 HTML ({len(_cf_raw_html)} bytes)")
-                            except Exception as _e2:
-                                print(f"  ⚠️  获取 raw HTML 失败: {_e2}")
+                            # Same as above: page.content() is the rendered DOM
+                            # and must not masquerade as the raw server body in
+                            # _headed_raw_html. get_page_html() falls back to
+                            # page.content() on its own when nothing was
+                            # captured, so nothing is lost by not faking it.
                             _cf_loaded = True
                         else:
                             print(f"  ⚠️  未找到对应 page，将用 Playwright 重新导航")
@@ -3902,7 +3905,10 @@ async def complete_extraction_workflow(
 
             # Store the raw server HTML on the handler so it can use it instead
             # of page.content() (which returns the post-JS-rendered DOM).
-            _headed_raw = _headed_raw_html[-1] if _headed_raw_html else None
+            # Pick the document that is actually the article, not merely the
+            # last one seen -- the listener also records the doi.org redirect
+            # hop and any interstitial. See pick_raw_article_html.
+            _headed_raw = pick_raw_article_html(_headed_raw_html, doi) or None
 
             final_url = page.url
             print(f"✓ 最终 URL: {final_url}")

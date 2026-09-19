@@ -842,10 +842,14 @@ class IOPHandler(PublisherHandler):
 
     async def extract_metadata(self, page) -> dict:
         """Return metadata from HTML meta tags and DOM."""
+        # Prefer the raw server body over the live DOM: everything this parser
+        # needs (citation_* meta, abstract) is in the pre-JS response, so there
+        # is no reason to read the rendered page. get_page_html falls back to
+        # page.content() when no raw body was captured.
         html_content = ''
         if page is not None:
             try:
-                html_content = await page.content()
+                html_content = await self.get_page_html(page)
             except Exception:
                 html_content = ''
 
@@ -923,8 +927,11 @@ class IOPHandler(PublisherHandler):
             pdf_url = metadata.pop('_pdf_url', None)
             keywords = metadata.pop('_keywords', [])
 
+            # Same here: body, figures, tables, references and footnotes are
+            # all present in the raw response (verified offline against the
+            # captured page_raw.html), so the live DOM is never needed.
             try:
-                fulltext_html = await page.content()
+                fulltext_html = await self.get_page_html(page)
             except Exception:
                 fulltext_html = ''
 
