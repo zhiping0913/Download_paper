@@ -169,7 +169,73 @@ def _extract_abstract_from_abstract_html(html_content: str) -> str:
     return None
 
 
-async def extract_metadata_from_page(page) -> dict:
+_EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
+
+
+def _aps_page_data_from_html(html: str) -> dict:
+    """The meta tags and corresponding-author email, read off the HTML.
+
+    Same answers the in-page JS used to collect, from the captured server
+    response instead of the live DOM. Everything it looks at is server
+    rendered -- measured on 10.1103/PhysRevX.7.041003's page_raw.html:
+    citation_doi 1, citation_title 1, mailto: 2, a.sm-primary-button 10.
+    Reading them here means the article page is only navigated to and
+    listened to, never scripted.
+
+    Email order is kept identical to the JS: contrib notes, then mailto:
+    links, then any href containing '@', then the page text.
+    """
+    result = {'metas': [], 'email': None, 'abstract': None, 'allEmails': []}
+    if not html:
+        return result
+    soup = BeautifulSoup(html, 'html.parser')
+
+    for meta in soup.find_all('meta'):
+        name = meta.get('name') or meta.get('property')
+        content = meta.get('content')
+        if name and content and name.startswith('citation_'):
+            result['metas'].append({'name': name, 'content': content})
+
+    desc = (soup.select_one('meta[name="description"]')
+            or soup.select_one('meta[property="og:description"]'))
+    if desc:
+        result['abstract'] = desc.get('content')
+
+    emails = []
+
+    def take(text):
+        m = _EMAIL_RE.search(text or '')
+        if m:
+            emails.append(m.group(0))
+
+    for note in soup.select('li[id^="n"], .contrib-notes li'):
+        take(note.get_text(' ', strip=True))
+    if not emails:
+        for a in soup.select('a[href^="mailto:"]'):
+            take(a.get('href'))
+    if not emails:
+        for a in soup.select('a[href*="@"]'):
+            take(a.get('href'))
+    if not emails:
+        # ⚠️ Drop <script>/<style> first. innerText never saw them; get_text()
+        # does, and an address inside an analytics blob would outrank the
+        # author's.
+        body = soup.body or soup
+        for tag in body.find_all(['script', 'style', 'noscript']):
+            tag.decompose()
+        seen = set()
+        for m in _EMAIL_RE.findall(body.get_text(' ', strip=True)):
+            if m not in seen:
+                seen.add(m)
+                emails.append(m)
+
+    if emails:
+        result['email'] = emails[0]
+    result['allEmails'] = emails
+    return result
+
+
+async def extract_metadata_from_page(page=None, html: str = '') -> dict:
     """从页面meta标签提取完整元数据（作者、单位、摘要等）
 
     注意：meta标签中作者和机构是交错的，一个作者可能有多个机构
@@ -193,91 +259,39 @@ async def extract_metadata_from_page(page) -> dict:
     }
 
     try:
-        # 使用JavaScript提取所有meta标签和邮箱信息
-        page_data = await page.evaluate(r"""() => {
-            const result = {
-                metas: [],
-                email: null,
-                abstract: null
-            };
-
-            // 提取所有citation_开头的meta标签
-            document.querySelectorAll('meta').forEach(meta => {
-                const name = meta.getAttribute('name') || meta.getAttribute('property');
-                const content = meta.getAttribute('content');
-                if (name && content && name.startsWith('citation_')) {
-                    result.metas.push({name: name, content: content});
-                }
-            });
-
-            // 提取摘要（从description或og:description）
-            const descriptionMeta = document.querySelector('meta[name="description"], meta[property="og:description"]');
-            if (descriptionMeta) {
-                result.abstract = descriptionMeta.getAttribute('content');
-            }
-
-            // 查找邮箱 - 多种方法
-            let email = null;
-            let allEmails = [];
-
-            // 方法0：在contrib-notes中查找（对应作者邮箱）
-            const contribNotes = document.querySelectorAll('li[id^="n"], .contrib-notes li');
-            if (contribNotes.length > 0) {
-                for (let note of contribNotes) {
-                    const text = note.innerText || note.textContent;
-                    const emailMatch = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-                    if (emailMatch) {
-                        allEmails.push(emailMatch[0]);
-                        if (!email) email = emailMatch[0];
+        # Prefer the captured server response; only script the live page when
+        # a caller passed no HTML (standalone use outside the workflow).
+        if html:
+            page_data = _aps_page_data_from_html(html)
+        elif page is not None:
+            page_data = await page.evaluate(r"""() => {
+                const result = {metas: [], email: null, abstract: null, allEmails: []};
+                document.querySelectorAll('meta').forEach(meta => {
+                    const name = meta.getAttribute('name') || meta.getAttribute('property');
+                    const content = meta.getAttribute('content');
+                    if (name && content && name.startsWith('citation_')) {
+                        result.metas.push({name: name, content: content});
                     }
+                });
+                const d = document.querySelector('meta[name="description"], meta[property="og:description"]');
+                if (d) result.abstract = d.getAttribute('content');
+                const re = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
+                const push = (t) => { const m = (t || '').match(re); if (m) result.allEmails.push(m[0]); };
+                document.querySelectorAll('li[id^="n"], .contrib-notes li')
+                        .forEach(n => push(n.innerText || n.textContent));
+                if (!result.allEmails.length)
+                    document.querySelectorAll('a[href^="mailto:"]').forEach(a => push(a.getAttribute('href')));
+                if (!result.allEmails.length)
+                    document.querySelectorAll('a[href*="@"]').forEach(a => push(a.getAttribute('href')));
+                if (!result.allEmails.length) {
+                    const all = (document.body.innerText || '').match(new RegExp(re.source, 'g'));
+                    if (all) result.allEmails = [...new Set(all)];
                 }
-            }
-
-            // 方法1：在所有links中查找mailto:
-            if (!email) {
-                const mailtoLinks = document.querySelectorAll('a[href^="mailto:"]');
-                if (mailtoLinks.length > 0) {
-                    for (let link of mailtoLinks) {
-                        const href = link.getAttribute('href');
-                        const emailMatch = href.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-                        if (emailMatch) {
-                            allEmails.push(emailMatch[0]);
-                            if (!email) email = emailMatch[0];
-                        }
-                    }
-                }
-            }
-
-            // 方法2：在所有href中查找email
-            if (!email) {
-                const allLinks = document.querySelectorAll('a[href*="@"]');
-                for (let link of allLinks) {
-                    const href = link.getAttribute('href');
-                    const emailMatch = href.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-                    if (emailMatch) {
-                        allEmails.push(emailMatch[0]);
-                        if (!email) email = emailMatch[0];
-                    }
-                }
-            }
-
-            // 方法3：在page text中查找所有email
-            if (!email) {
-                const bodyText = document.body.innerText;
-                const emailMatches = bodyText.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g);
-                if (emailMatches) {
-                    allEmails = [...new Set(emailMatches)];  // 去重
-                    if (!email && allEmails.length > 0) email = allEmails[0];
-                }
-            }
-
-            if (email) {
-                result.email = email;
-            }
-            result.allEmails = allEmails;
-
-            return result;
-        }""")
+                if (result.allEmails.length) result.email = result.allEmails[0];
+                return result;
+            }""")
+        else:
+            page_data = {'metas': [], 'email': None, 'abstract': None, 'allEmails': []}
 
         meta_data = page_data['metas']
 
@@ -787,8 +801,14 @@ class APSHandler(PublisherHandler):
         return True
 
     async def extract_metadata(self, page) -> dict:
-        """Extract metadata from APS abstract page"""
-        return await extract_metadata_from_page(page)
+        """Extract metadata from APS abstract page.
+
+        Reads the captured server response rather than the live DOM: every
+        field here (citation_* metas, the description, the corresponding
+        author's address) is server rendered, so scripting the article page
+        for them buys nothing and shows up in the page's own event log.
+        """
+        return await extract_metadata_from_page(page, await self.get_page_html(page))
 
     async def get_fulltext_url(self, doi: str) -> str:
         """Get URL for full article text API endpoint"""
@@ -796,12 +816,24 @@ class APSHandler(PublisherHandler):
         return f"{self.base_url}/fulltext/{doi}"
 
     async def get_pdf_url(self, page) -> str:
-        """Get PDF download URL"""
-        # For APS, we use the standard pattern
-        doi = await page.evaluate("() => document.querySelector('meta[name=\"citation_doi\"]')?.getAttribute('content')")
-        if doi:
-            return f"{self.base_url}/pdf/{doi}"
-        return None
+        """Get PDF download URL.
+
+        Not used by the workflow -- extract_all reads the PDF button out of
+        the same captured HTML -- but kept for the abstract interface and for
+        standalone callers. Reads the capture rather than scripting the page,
+        for the reason given in extract_metadata.
+        """
+        html = await self.get_page_html(page)
+        direct = self._pdf_url_from_html(html)
+        if direct:
+            return direct
+        doi = ''
+        if html:
+            soup = BeautifulSoup(html, 'html.parser')
+            tag = soup.select_one('meta[name="citation_doi"]')
+            doi = (tag.get('content') or '').strip() if tag else ''
+        doi = doi or self.doi or ''
+        return f"{self.base_url}/pdf/{doi}" if doi else None
 
     async def get_supplemental_url(self, doi: str) -> str:
         """Construct supplemental materials URL"""
@@ -980,6 +1012,19 @@ class APSHandler(PublisherHandler):
                 pass
 
         return captured
+
+    @staticmethod
+    def _pdf_url_from_html(html: str) -> str:
+        """The PDF link the article page offers, or ''."""
+        if not html:
+            return ''
+        soup = BeautifulSoup(html, 'html.parser')
+        for a in soup.select('a.sm-primary-button[href]'):
+            href = (a.get('href') or '').strip()
+            if '/pdf/' in href:
+                return href if href.startswith('http') else urljoin(
+                    'https://journals.aps.org/', href)
+        return ''
 
     def _url_doi(self, page, doi: str = '') -> str:
         """The DOI spelled the way APS spells it in the URL (case matters)."""
@@ -1363,17 +1408,10 @@ class APSHandler(PublisherHandler):
         # 6. Extract PDF URL from <a class="sm-primary-button">, fallback to journal pattern
         pdf_url = None
         try:
-            pdf_url = await page.evaluate("""
-                () => {
-                    const btn = document.querySelector('a.sm-primary-button[href*="/pdf/"]');
-                    if (!btn) return null;
-                    const href = btn.getAttribute('href');
-                    if (!href) return null;
-                    if (href.startsWith('http')) return href;
-                    return new URL(href, window.location.origin).href;
-                }
-            """)
-        except:
+            # Server rendered -- 10 sm-primary-button anchors in the captured
+            # response for 10.1103/PhysRevX.7.041003, one of them the PDF.
+            pdf_url = self._pdf_url_from_html(await self.get_page_html(page))
+        except Exception:
             pass
 
         if not pdf_url:

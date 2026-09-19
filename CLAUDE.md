@@ -802,6 +802,14 @@ iframe 就点它，找不到才走兜底。
   悄悄变得不可离线重建 —— 落盘文件是交接接口，不是缓存
 - 落在 `/abstract/{doi}` 的文章**不会 XHR 正文**，那时捕获理应为空，
   `_fetch_fulltext_json()` 的页面内请求仍然是答案，不能删
+- **正文页上已没有 `page.evaluate`**：元数据（`citation_*`、description、
+  通讯作者邮箱）和 PDF 按钮都改从 `get_page_html()` 解析 —— 这些全是服务端渲染的
+  （实测 `page_raw.html`：`citation_doi` 1、`mailto:` 2、`a.sm-primary-button` 10）。
+  `extract_metadata_from_page(page, html)` 不给 html 时仍走原来的 JS，供脱离主流程的调用
+- ⚠️ 用 `get_text()` 兜邮箱时**必须先删 `<script>/<style>`**：`innerText` 从来看不到它们，
+  而 `get_text()` 看得到，统计脚本里的地址会盖过作者的
+- ⚠️ APS 的 `fulltext_data` 是 dict 不是 str，所以主流程**不写 `page.html`**，
+  目录里只有 `page_raw.html`
 
 ### IEEE (`10.1109`, ieeexplore.ieee.org)
 
