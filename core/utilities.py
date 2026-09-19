@@ -220,6 +220,45 @@ BOT_CHALLENGE_HOSTS = (
 BOT_CHALLENGE_HINTS = ('captcha', 'challenge', 'accessdenied', 'blocked')
 
 
+def captured_api_body(captured: dict, path_suffix: str) -> str:
+    """Return a captured response body whose URL *path* ends with *path_suffix*.
+
+    ⚠️ Matches on the path only, never the full URL. A publisher signs these
+    endpoints per session: ScienceDirect's body call arrives as
+    ``/sdfe/arp/pii/<PII>/body?entitledToken=EF8C3B04…`` while the handler
+    would build the same path with a token it resolved separately. Comparing
+    full URLs would miss every time, and comparing hosts is not enough either.
+
+    *path_suffix* is matched against the URL path with any query string
+    dropped, e.g. ``/sdfe/arp/pii/S2352214326001231/body`` or
+    ``/rest/document/9084126/references``.
+
+    Returns '' when nothing matches or the entry has no body -- the caller
+    then requests it as before. A miss must stay cheap and silent: capture is
+    an optimisation, not a dependency.
+    """
+    if not captured or not path_suffix:
+        return ''
+    want = path_suffix.rstrip('/').lower()
+    best = ''
+    for entry in captured.values():
+        if not isinstance(entry, dict):
+            continue
+        body = entry.get('body')
+        if not body:
+            continue
+        url = (entry.get('url') or '')
+        if not url:
+            continue
+        path = urlsplit(url).path.rstrip('/').lower()
+        if path == want or path.endswith(want):
+            # Prefer the largest when a page requests the same endpoint more
+            # than once -- a short answer is usually the pre-entitlement one.
+            if len(body) > len(best):
+                best = body
+    return best
+
+
 def pick_raw_article_html(candidates, doi: str = '') -> str:
     """Choose the document response that is actually the article.
 

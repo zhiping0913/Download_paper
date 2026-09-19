@@ -91,6 +91,29 @@ class PublisherHandler(ABC):
             pass
         return ''
 
+    def captured_api(self, path_suffix: str) -> str:
+        """A response body the *page itself* already fetched, or ''.
+
+        The preload records what the article page requests while it loads, so
+        an endpoint the page has already called does not need calling again.
+        Measured on ScienceDirect 10.1016/j.cocom.2026.e01326: the page issues
+        its own /sdfe/arp/pii/<PII>/body, and the handler was re-requesting the
+        identical resource afterwards.
+
+        ⚠️ Match on the path, not the URL -- these endpoints are signed per
+        session, so the captured URL carries a different entitledToken than the
+        one a handler would build. See core.utilities.captured_api_body.
+
+        Returns '' whenever nothing was captured, so every caller must keep its
+        own request as the fallback: capture is an optimisation and must never
+        become a dependency.
+        """
+        captured = getattr(self, '_captured_api', None)
+        if not captured:
+            return ''
+        from core.utilities import captured_api_body
+        return captured_api_body(captured, path_suffix)
+
     def is_headed_run(self) -> bool:
         """Whether the page this handler was given belongs to a headed browser.
 

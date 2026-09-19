@@ -48,6 +48,7 @@ import re
 import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 
@@ -255,6 +256,21 @@ class IEEEHandler(PublisherHandler):
         entitlement to the rendering session, and the out-of-page request
         comes back as an unauthenticated stub even though cookies are shared.
         """
+        # The article page issues some of these itself while loading. Measured
+        # on 10.1109/ACCESS.2020.2991812, the page's own XHRs include
+        # /rest/document/<aid>/?logAccess=true (the body) along with toc and
+        # similar; references, multimedia and footnotes never appear, so those
+        # still take the request below. Path-matched, because the captured URL
+        # carries the page's query string rather than ours.
+        _path = urlsplit(url).path
+        cached = self.captured_api(_path)
+        if cached:
+            print(f"  ♻️  复用预载捕获 {url.replace(self.IEEE_BASE, '')}"
+                  f"（{len(cached):,} 字符，未重复请求）")
+            if cache_name:
+                self._cache_write(cache_name, cached)
+            return cached
+
         print(f"  ↪ 请求 {url.replace(self.IEEE_BASE, '')}")
         try:
             result = await evaluate_with_timeout(

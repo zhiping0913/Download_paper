@@ -3758,6 +3758,7 @@ async def complete_extraction_workflow(
             # Intercept the main-document HTTP response to capture the raw server
             # HTML *before* JavaScript (e.g. MathJax) rewrites the DOM.
             _headed_raw_html: list = []
+            _headed_api: dict = {}
 
             # ⚠️ The listener below cannot see the article on a headed run.
             # The preload fetches the page over raw CDP *before* Playwright is
@@ -3777,6 +3778,16 @@ async def complete_extraction_workflow(
                         _body = _entry.get('body')
                         if _body and 'html' in (_entry.get('mimeType') or '').lower():
                             _headed_raw_html.append(_body)
+                    # Non-document bodies the page fetched for itself. Handed
+                    # to the handler the same way _raw_server_html is, so a
+                    # handler can read a response the page already made instead
+                    # of issuing the identical request a second time.
+                    _headed_api = {k: v for k, v in _pre.items()
+                                   if v.get('body')
+                                   and (v.get('type') or '') != 'Document'}
+                    if _headed_api:
+                        print(f"  ✓ 预载捕获 API 响应 {len(_headed_api)} 条"
+                              f"（最大 {max(len(v['body']) for v in _headed_api.values()):,} 字符）")
                     if _headed_raw_html:
                         print(f"  ✓ 预载捕获文档响应 {len(_headed_raw_html)} 份"
                               f"（最大 {max(len(h) for h in _headed_raw_html):,} 字符）")
@@ -4113,6 +4124,10 @@ async def complete_extraction_workflow(
 
             if _headed_raw:
                 handler._raw_server_html = _headed_raw
+            if _headed_api:
+                # Same convention as _raw_server_html: pinned before
+                # extract_all runs, read through the base class.
+                handler._captured_api = _headed_api
 
             print(f"✓ 检测出版商: {publisher.upper()}\n")
 
