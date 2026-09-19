@@ -229,22 +229,38 @@ def pick_raw_article_html(candidates, doi: str = '') -> str:
     is not guaranteed -- and when it is wrong the caller silently parses a
     challenge page and reports "0 figures" rather than failing.
 
-    Prefers the last candidate that carries article markers (the DOI itself,
-    or a ``citation_*`` meta tag, the same test APS's capture callback uses).
-    Falls back to the last candidate overall, so this can never do worse than
-    the ``[-1]`` it replaces.
+    Among the candidates carrying article markers (the DOI itself, or a
+    ``citation_*`` meta tag -- the same test APS's capture callback uses), the
+    one with the **most content** wins; with no marked candidate, the longest
+    overall does.
+
+    ⚠️ Size, not position, and not "first marked wins". A protected publisher
+    answers the *same* URL twice: once before the bot check and once after.
+    Measured on ScienceDirect, an article URL (``…/pii/S221137972100245X?via=ihub``)
+    produces two document responses, and only the second carries the metadata --
+    yet both can carry ``citation_*``, so picking by marker alone can return the
+    pre-challenge shell and report an article with no authors and no figures.
+    The shell is short and the real page is not, which is what makes length the
+    usable signal.
+
+    This replaces an earlier "last marked candidate, else ``[-1]``" rule that
+    promised never to do worse than ``[-1]``; that promise is gone on purpose,
+    since ``[-1]`` is exactly what loses the ScienceDirect case when the shell
+    happens to arrive last.
     """
     items = [c for c in (candidates or []) if c]
     if not items:
         return ''
     doi_l = (doi or '').lower()
-    for html in reversed(items):
+
+    def _is_article(html: str) -> bool:
         low = html.lower()
-        if 'citation_doi' in low or 'citation_title' in low:
-            return html
-        if doi_l and doi_l in low:
-            return html
-    return items[-1]
+        return ('citation_doi' in low
+                or 'citation_title' in low
+                or (bool(doi_l) and doi_l in low))
+
+    marked = [h for h in items if _is_article(h)]
+    return max(marked or items, key=len)
 
 
 def url_looks_like_bot_challenge(url: str) -> bool:

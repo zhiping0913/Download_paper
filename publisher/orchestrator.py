@@ -57,6 +57,13 @@ def detect_publisher_from_url(url: str) -> str:
         return 'iop'
     elif '10.1088' in url_lower:
         return 'iop'
+    # EPL (Europhysics Letters) is published by IOP and resolves to
+    # iopscience.iop.org, so the handler was already right -- but only *after*
+    # navigation, because the prefix is not 10.1088. Decisions taken before the
+    # first goto() see the bare DOI and answered 'unknown', which is how an EPL
+    # paper kept the MathJax interception IOP no longer needs.
+    elif '10.1209' in url_lower:
+        return 'iop'
 
     # Optica Publishing detection
     elif 'opg.optica.org' in url_lower or 'opticapublishing' in url_lower:
