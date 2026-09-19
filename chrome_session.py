@@ -1255,6 +1255,12 @@ async def bypass_cloudflare_cdp(
     # 找一个可复用的 tab（优先 about:blank，其次任意 page）
     ws_url = None
     created_at_target = already_open
+    # True only for an about:blank tab this function created itself.
+    # 📌 Measured: assigning location.href on such a tab does nothing --
+    # instrumenting the wait showed 10.0s of polling with zero Document
+    # responses, and Page.navigate did the whole job afterwards. Trying JS
+    # first there bought nothing and cost ~10s an article.
+    blank_tab_we_opened = False
     try:
         if already_open:
             # Chrome was launched with this URL on its command line, so the
@@ -1337,6 +1343,7 @@ async def bypass_cloudflare_cdp(
             ws_url = await _create_new_tab(debug_port, "about:blank")
             if ws_url:
                 created_at_target = False
+                blank_tab_we_opened = True
                 print(f"  📄 已新建空白 tab")
                 await asyncio.sleep(0.5)
         
@@ -1388,6 +1395,12 @@ async def bypass_cloudflare_cdp(
                 # Chrome opened it at startup, or the tab was created there.
                 print(f"  🚀  tab 已在目标页面，无需导航")
                 await asyncio.sleep(2)
+            elif blank_tab_we_opened:
+                # Straight to the command that works; see blank_tab_we_opened.
+                print(f"  🚀  导航到目标页面 (Page.navigate，空白 tab)...")
+                await _send(ws, "Page.navigate", {"url": url})
+                await asyncio.sleep(3)
+                created_at_target = True   # navigation issued; skip the retry
             else:
                 # 用 JS location.href 导航（比 Page.navigate 指纹更自然）
                 print(f"  🚀  导航到目标页面 (JS location.href)...")
@@ -1413,26 +1426,23 @@ async def bypass_cloudflare_cdp(
             # much a reason to force the navigation as a chrome:// one.
             if not created_at_target:
                 _nav_t0 = time.monotonic()
-                # 📌 Measured: on a freshly created about:blank tab, assigning
-                # location.href via Runtime.evaluate does nothing at all.
-                # Instrumenting the wait shows "导航判定耗时 10.0s，已捕获
-                # Document 0 条" -- a full ten seconds of polling with not one
-                # Document response. The page is always loaded by the
-                # Page.navigate below; the JS attempt is dead weight.
+                # This path is for a *reused* tab. Tabs we open ourselves at
+                # about:blank skip it entirely -- see blank_tab_we_opened.
                 #
-                # ⚠️ This corrects three earlier readings of mine. I claimed the
-                # JS navigation *did* work and that the check merely could not
-                # see it (execution context destroyed mid-navigation, then host
-                # comparison against the redirecting doi.org). Both were wrong,
-                # and both were argued from a log with no timestamps: adjacent
-                # lines looked instantaneous when one sat behind a sleep(3).
-                # The four Document responses are one load, not two --
-                # doi.org -> linkinghub -> sciencedirect plus ScienceDirect's
-                # own ?via=ihub hop. There is no duplicate page load.
+                # 📌 On such a blank tab the JS assignment produced no Document
+                # response for a full 10s of polling, yet it was not inert: it
+                # stayed queued and ran anyway, so Page.navigate made the page
+                # load a *second* time. Measured on
+                # 10.1016/j.cocom.2026.e01326 -- skipping the JS attempt took
+                # Document responses from 4 to 2 and the page's own API calls
+                # from 20 to 10, one round per endpoint, matching what DevTools
+                # shows for a human visit.
                 #
-                # The poll is kept because it is honest about what it can see:
-                # a committed Document from any host other than the starting
-                # one proves the renderer left the blank tab.
+                # The poll waits on a signal it can observe: a committed
+                # Document from any host other than the starting one proves the
+                # renderer left. Do not test against urlparse(url).netloc --
+                # url is a doi.org link that redirects away, so that comparison
+                # is false by construction.
                 start_host = urllib.parse.urlparse(url).netloc.lower()
                 arrived = False
                 current = ""
