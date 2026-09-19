@@ -9,6 +9,16 @@ from pathlib import Path
 class PublisherHandler(ABC):
     """Abstract base class for publisher-specific paper extraction"""
 
+    #: Publisher token this handler serves, in the vocabulary
+    #: ``orchestrator.detect_publisher_from_url`` returns ('iop', 'aps', ...).
+    #:
+    #: It exists for callers that hold a handler but cannot ask the
+    #: orchestrator who it is -- ``wildcard`` is imported *by* the handlers,
+    #: so importing the orchestrator back would close the tree's first import
+    #: cycle. Empty by default, which keeps every handler that does not set it
+    #: behaving exactly as before.
+    PUBLISHER: str = ''
+
     def __init__(self, page=None, captured_data_dir=None, doi: str = None):
         """Store shared workflow context for publisher-specific handlers.
 
@@ -45,16 +55,40 @@ class PublisherHandler(ABC):
         ``_raw_server_html`` is set by the navigation helpers in
         ``wildcard.init_extract_all_page`` and by the headed-browser path in
         ``complete_paper_extraction.py`` before each main-page navigation.
+
+        ⚠️ The fallback is not equally safe for everyone. A handler listed in
+        ``RAW_HTML_PUBLISHERS`` has MathJax interception *skipped* precisely
+        because it reads raw HTML -- so for it, dropping to ``page.content()``
+        means reading a DOM where MathJax has already replaced the TeX with
+        SVG whose only text is the a11y speech string. Those handlers re-fetch
+        the source first, and the degradation is announced rather than silent.
         """
         raw = getattr(self, '_raw_server_html', None)
         if raw:
             return raw
         p = page or self.page
-        if p is not None:
+        if p is None:
+            return ''
+
+        # Imported here rather than at module scope: this is the rare path,
+        # and base.py is imported by every handler in the tree.
+        from core.utilities import RAW_HTML_PUBLISHERS, fetch_view_source_html
+
+        if (self.PUBLISHER or '').lower() in RAW_HTML_PUBLISHERS:
+            print("  ⚠️  未捕获到原始响应，改用 view-source 重取")
             try:
-                return await p.content()
+                source = await fetch_view_source_html(p)
             except Exception:
-                pass
+                source = ''
+            if source:
+                return source
+            print("  ⚠️  view-source 也失败，回落渲染后 DOM"
+                  "（该出版商未拦 MathJax，公式可能已被替换）")
+
+        try:
+            return await p.content()
+        except Exception:
+            pass
         return ''
 
     def is_headed_run(self) -> bool:

@@ -281,7 +281,7 @@ PDF、图片、补充材料、API/页面（如 IOP 的 `/data`）走的是**同�
 | 层 | 做什么 |
 |---|---|
 | `request` | 裸 HTTP，带上**正文页会话的 cookies**（按目标 host 作用域过滤） |
-| `tab` | 在已打开论文的浏览器里开新标签页 |
+| `tab` | 在已打开论文的浏览器里**新开一个标签页**，用完即关 |
 | `fresh` | 全新播种 profile 的一次性 Chrome（辅助实例，`aux_dir`） |
 | `referer` | 一次性 Chrome **先打开来路页**，再从它**点击跳转**到目标（仅下载类） |
 
@@ -534,6 +534,33 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
 - ⚠️ 但**离线化不等于不被打分**：ShieldSquare 的 profiler 在页面加载时就已同页运行
   （`perfdrive`/`__uzm` 在抓到的 HTML 里都在），而被动捕获本身也要求页面真的加载过。
   省掉的是「加载之后还在页面里动手」，不是「这次访问有没有被评分」
+- ⚠️ **老存档里的 `page_raw.html` 不都是原始响应**。`9149ab4` 之前，CF 旁路路径会把
+  `page.content()` 塞进 `_headed_raw_html`，于是渲染后 DOM 会冒充原始响应落盘。
+  实测 12 份 IOP 存档里有 2 份带**真实的** `<mjx-container>` 元素（剔除
+  `<style>`/`<script>` 后仍在），两份的写入时间都早于该提交。拿老存档做离线回归时
+  要先看时间戳。⚠️ 反过来，**光用子串 `mjx-container` 判定是错的** —— MathJax 的
+  `<style id="MJX-CHTML-styles">` 里全是同名 CSS 选择器，按子串数会得到「29 处」
+  而元素其实只有 1 处；这个误判本仓踩过一次
+
+### 谁还需要 `block_mathjax`（`RAW_HTML_PUBLISHERS`）
+
+`block_mathjax` 用 `page.route` + `route.abort()` 掐掉 MathJax 脚本请求，是**页面内干预**：
+被中止的子资源请求在页面里看得见。读原始响应的 handler 不需要它——它们的公式源从来
+就没进过 DOM。目标是逐步摘干净，而不是全局开关一刀切。
+
+- 判据只有一处：`core/utilities.RAW_HTML_PUBLISHERS`（当前只有 `'iop'`）+
+  `should_block_mathjax(publisher)`。**未知/空一律照旧拦截** —— 错误的跳过会静默丢掉
+  LaTeX 源，错误的拦截只多一次被中止的请求，两种代价不对称
+- token 来自两处，但决策点仍是同一个：主流程用它已导入的
+  `orchestrator.detect_publisher_from_url`（**不是** `core.utilities` 里那个同名的旧副本
+  —— 后者只认 7 家，大多数会答 `unknown`）；`wildcard` 不能 import orchestrator
+  （handler 反过来 import 它，会成环），所以改由 handler 自报 `PublisherHandler.PUBLISHER`
+- ⚠️ **摘掉拦截会连带削弱一条回落路径**：原始响应没捕到时 `get_page_html()` 会退到
+  `page.content()`，而那份 DOM 现在**没有保护**。所以 `RAW_HTML_PUBLISHERS` 的 handler
+  在回落前先走 `fetch_view_source_html()` 重取，并把这次降级**打印出来**——
+  静默劣化比失败更难查
+- 实测 12 份 IOP 存档的原始响应捕获**无一失败**，所以这条回落很罕见；但它静默，
+  所以仍要堵
 
 ### 反检测补丁 `_stealth_js`（`DP_STEALTH_JS`，默认开）
 

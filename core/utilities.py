@@ -425,6 +425,122 @@ def _html_is_acceptable(html: str, expect) -> bool:
     return str(expect) in html
 
 
+def capture_document_html(page) -> list:
+    """Record main-document response bodies on *page* as they arrive.
+
+    Returns the list the listener appends to, so the caller reads it after
+    navigating. Register this **before** ``goto()`` -- a listener attached
+    afterwards misses the document that is already on the wire.
+
+    What comes back is the body exactly as the server sent it, before any
+    script rewrites the DOM. That is the same passive mechanism the article
+    page uses (``_raw_server_html``): no extra request, nothing executed
+    inside the page, so it adds no automation surface of its own.
+    """
+    bodies: list = []
+
+    async def _on_response(response):
+        try:
+            if (response.request.resource_type == 'document'
+                    and response.ok
+                    and 'text/html' in response.headers.get('content-type', '')):
+                bodies.append(await response.text())
+        except Exception:
+            pass
+
+    page.on('response', _on_response)
+    return bodies
+
+
+async def _fetch_html_in_new_tab(ctx, url: str, *, expect, timeout_s: float) -> str:
+    """Fetch *url* in a throwaway tab. Returns '' when it isn't the page we want.
+
+    A separate tab rather than the caller's own: driving the article tab to
+    another URL and back is something a person never does, and on a publisher
+    that scores behaviour (IOP's Radware profiler) it happens at exactly the
+    moment the article has just been read. The download rungs already work
+    this way -- see the ``context.new_page()`` in the PDF, figure and
+    supplement paths -- so this only brings the HTML rung in line with them.
+
+    No Referer header is set on the tab. A CDP-injected Referer arrives
+    without ``Sec-Fetch-User``, a combination a real click never produces;
+    that is the same reason the download ladder's referer rung clicks instead
+    of setting headers.
+    """
+    tab = None
+    try:
+        tab = await ctx.new_page()
+    except Exception as exc:
+        print(f"    ↪ 无法新建标签页（{type(exc).__name__}），下一层")
+        return ''
+    try:
+        # Registered before goto(): the raw response is the whole point, and a
+        # listener attached after navigation would only ever see nothing.
+        raw_docs = capture_document_html(tab)
+        try:
+            await tab.goto(url, wait_until='networkidle',
+                           timeout=int(timeout_s * 1000))
+        except Exception:
+            await tab.goto(url, wait_until='domcontentloaded',
+                           timeout=int(timeout_s * 1000))
+
+        # Prefer the raw body, newest first (the listener also records
+        # redirect hops), but fall back to the rendered DOM: a client-rendered
+        # listing would be empty in the response and complete only after JS.
+        for html in reversed(raw_docs):
+            if _html_is_acceptable(html, expect):
+                print(f"    ✓ 取得页面 [新标签页·原始响应] {len(html):,} 字符")
+                return html
+        rendered = await tab.content()
+        if _html_is_acceptable(rendered, expect):
+            print(f"    ✓ 取得页面 [新标签页·渲染后] {len(rendered):,} 字符")
+            return rendered
+        print("    ↪ 标签页拿到的不是目标页面，下一层")
+    except Exception as exc:
+        print(f"    ↪ 标签页访问失败（{type(exc).__name__}），下一层")
+    finally:
+        try:
+            await tab.close()
+        except Exception:
+            pass
+    return ''
+
+
+async def _fetch_html_in_place(page, url: str, *, expect, timeout_s: float,
+                               restore_url: str) -> str:
+    """Degenerate fallback: drive the caller's own page, then put it back.
+
+    Only reached when there is no context to open a tab in. It is the older,
+    more conspicuous shape -- the article tab visibly leaves and returns --
+    and *restore_url* matters here and only here: leaving the shared tab
+    parked on a supplemental listing is how metadata ends up recording the
+    wrong URL.
+    """
+    back_to = restore_url or getattr(page, 'url', '') or ''
+    try:
+        try:
+            await page.goto(url, wait_until='networkidle',
+                            timeout=int(timeout_s * 1000))
+        except Exception:
+            await page.goto(url, wait_until='domcontentloaded',
+                            timeout=int(timeout_s * 1000))
+        html = await page.content()
+        if _html_is_acceptable(html, expect):
+            print(f"    ✓ 取得页面 [浏览器标签页] {len(html):,} 字符")
+            return html
+        print("    ↪ 标签页拿到的不是目标页面，下一层")
+    except Exception as exc:
+        print(f"    ↪ 标签页访问失败（{type(exc).__name__}），下一层")
+    finally:
+        if back_to:
+            try:
+                await page.goto(back_to, wait_until='domcontentloaded',
+                                timeout=15000)
+            except Exception:
+                pass
+    return ''
+
+
 async def fetch_html_via_ladder(url: str, *, kind: str = 'api', page=None,
                                 context=None, referer: str = None,
                                 expect=None, timeout_s: float = 30.0,
@@ -437,9 +553,12 @@ async def fetch_html_via_ladder(url: str, *, kind: str = 'api', page=None,
     failed, so the caller can report honestly rather than parse a challenge
     page.
 
-    *restore_url* is navigated back to after the 'tab' rung, because that rung
-    drives the caller's own page: leaving the shared article tab parked on a
-    supplemental listing is how metadata ends up recording the wrong URL.
+    *restore_url* applies to the degenerate in-place fallback only. The 'tab'
+    rung normally opens a throwaway tab, so the caller's page never moves and
+    there is nothing to restore; only when no context is available does that
+    rung drive the caller's own page and navigate back here -- leaving the
+    shared article tab parked on a supplemental listing is how metadata ends
+    up recording the wrong URL.
 
     ⚠️ *headless* must be given the mode the run is actually in, which comes
     from the state of the page the handler was started on --
@@ -475,31 +594,20 @@ async def fetch_html_via_ladder(url: str, *, kind: str = 'api', page=None,
                 print(f"    ↪ 直接请求失败（{type(exc).__name__}），下一层")
 
         elif tier == 'tab':
-            if page is None:
-                continue
-            back_to = restore_url or getattr(page, 'url', '') or ''
-            try:
-                try:
-                    await page.goto(url, wait_until='networkidle',
-                                    timeout=int(timeout_s * 1000))
-                except Exception:
-                    await page.goto(url, wait_until='domcontentloaded',
-                                    timeout=int(timeout_s * 1000))
-                html = await page.content()
-                if _html_is_acceptable(html, expect):
-                    print(f"    ✓ 取得页面 [浏览器标签页] {len(html):,} 字符")
+            # A tab of its own whenever there is a context to open one in --
+            # which is every real call site, since a page carries its context.
+            ctx = context or getattr(page, 'context', None)
+            if ctx is not None:
+                html = await _fetch_html_in_new_tab(
+                    ctx, url, expect=expect, timeout_s=timeout_s)
+                if html:
                     return html
-                print("    ↪ 标签页拿到的不是目标页面，下一层")
-            except Exception as exc:
-                print(f"    ↪ 标签页访问失败（{type(exc).__name__}），下一层")
-            finally:
-                if back_to:
-                    try:
-                        await page.goto(back_to,
-                                        wait_until='domcontentloaded',
-                                        timeout=15000)
-                    except Exception:
-                        pass
+            elif page is not None:
+                html = await _fetch_html_in_place(
+                    page, url, expect=expect, timeout_s=timeout_s,
+                    restore_url=restore_url)
+                if html:
+                    return html
 
         elif tier == 'fresh':
             session = None
@@ -948,6 +1056,33 @@ async def block_mathjax(page) -> None:
     except Exception as e:
         # Don't let a broken interceptor block extraction — log and continue.
         print(f"  ⚠️  无法注册 MathJax 拦截器: {e}")
+
+
+#: Publishers whose handlers parse the raw server response instead of the
+#: rendered DOM, so blocking MathJax buys them nothing. Route interception is
+#: an intervention the page can notice -- a subresource request that is
+#: aborted rather than answered -- and the aim is to keep shrinking this kind
+#: of in-page meddling, so a publisher belongs here as soon as its handler
+#: stops reading ``page.content()``.
+#:
+#: ⚠️ Adding one is only safe once *every* path that handler feeds reads raw
+#: HTML. Tokens use ``orchestrator.detect_publisher_from_url``'s vocabulary.
+RAW_HTML_PUBLISHERS = frozenset({'iop'})
+
+
+def should_block_mathjax(publisher: str) -> bool:
+    """Whether MathJax still has to be intercepted for *publisher*.
+
+    Takes a token rather than a URL on purpose: the two detectors in this repo
+    disagree (``core.utilities.detect_publisher_from_url`` is an older, much
+    narrower copy of the orchestrator's), so the caller picks which one it
+    trusts and this stays a single, dumb decision point.
+
+    Unknown or empty answers block, which is what every publisher did before
+    this switch existed -- the safe direction, since a wrong skip silently
+    costs the LaTeX source while a wrong block only costs an aborted request.
+    """
+    return (publisher or '').lower() not in RAW_HTML_PUBLISHERS
 
 
 async def fetch_view_source_html(page, url: str = None, timeout_ms: int = 30000) -> str:

@@ -76,6 +76,7 @@ from core.utilities import (
     inpage_abort_ms,
     read_body_with_timeout,
     pick_raw_article_html,
+    should_block_mathjax,
     url_looks_like_bot_challenge,
     DP_HTTP_TOTAL_TIMEOUT,
     INPAGE_ABORT_JS,
@@ -1047,6 +1048,25 @@ def detect_publisher(url: str) -> str:
     for backward compatibility. New code should use the orchestrator module.
     """
     return detect_publisher_from_url(url)
+
+
+def _publisher_for_page(url: str = '', doi: str = '') -> str:
+    """Best guess at the publisher *before* the page has been navigated to.
+
+    Used only to decide whether an interception still has to be installed, so
+    it runs ahead of the handler existing. The URL is tried first (a --json
+    ``link`` names the publisher outright); the DOI is the fallback, which is
+    what the plain flow has at that point, since ``https://doi.org/{doi}``
+    carries the prefix the detector matches on.
+
+    Uses the orchestrator's detector, not ``core.utilities``' same-named but
+    much older copy -- that one knows seven publishers and would answer
+    'unknown' for most of the tree.
+    """
+    pub = detect_publisher_from_url(url or '')
+    if pub in ('', 'unknown'):
+        pub = detect_publisher_from_url(doi or '')
+    return pub
 
 
 def get_publisher_handler_factory(publisher: str, **kwargs):
@@ -3437,7 +3457,14 @@ async def complete_extraction_workflow(
 
                 # Stop MathJax from running so we keep original \(...\) / <math>
                 # markup in the DOM. Must be registered before the first goto().
-                await block_mathjax(headless_page)
+                # Publishers whose handlers read the raw server response don't
+                # need it, and route interception is an in-page intervention
+                # we'd rather not perform at all -- see RAW_HTML_PUBLISHERS.
+                _pub_pre = _publisher_for_page(doi=doi)
+                if should_block_mathjax(_pub_pre):
+                    await block_mathjax(headless_page)
+                else:
+                    print(f"  ⏭  {_pub_pre.upper()} 读原始响应，不拦 MathJax")
 
                 # Attach any JSON-supplied headers (e.g. Referer). Cookies
                 # continue to be carried by the shared context.
@@ -3724,7 +3751,15 @@ async def complete_extraction_workflow(
             # Stop MathJax from running so the rendered DOM (page.content())
             # also keeps original \(...\) / <math> markup. Must be registered
             # before the first goto().
-            await block_mathjax(page)
+            # Skipped for publishers whose handlers parse the raw server
+            # response: nothing downstream reads the rendered math, so the
+            # interception would only add an aborted subresource request for
+            # the page to notice -- see RAW_HTML_PUBLISHERS.
+            _pub_pre = _publisher_for_page(url=url, doi=doi)
+            if should_block_mathjax(_pub_pre):
+                await block_mathjax(page)
+            else:
+                print(f"  ⏭  {_pub_pre.upper()} 读原始响应，不拦 MathJax")
 
             # Intercept the main-document HTTP response to capture the raw server
             # HTML *before* JavaScript (e.g. MathJax) rewrites the DOM.
