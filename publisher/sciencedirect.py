@@ -2294,10 +2294,28 @@ class ScienceDirectHandler(PublisherHandler):
             except Exception:
                 pass
 
+            # Two captures with different jobs.
+            #
+            # fulltext_html drives extraction and comes from the raw server
+            # response: the graphical abstract resolves to the same
+            # ga1_lrg.jpg URL from either capture, the PII and entitledToken
+            # the body API needs are both server-rendered, and the references
+            # container is absent from both, so nothing is lost by reading the
+            # pre-JS body -- and MathJax cannot have touched it.
+            #
+            # rendered_html is archived as page.html and used for nothing else.
+            # Keeping it preserves the repo-wide convention (page.html = the
+            # post-JS DOM, page_raw.html = the raw response) and leaves a
+            # second view to diagnose from when a body extraction comes back
+            # empty.
             try:
-                fulltext_html = await page.content()
+                fulltext_html = await self.get_page_html(page)
             except Exception:
                 fulltext_html = ''
+            try:
+                rendered_html = await page.content()
+            except Exception:
+                rendered_html = fulltext_html
 
             metadata = await self.extract_metadata(page)
             metadata['doi'] = doi or metadata.get('doi') or self.doi
@@ -2335,13 +2353,23 @@ class ScienceDirectHandler(PublisherHandler):
                         f"{n_fn} 脚注"
                     )
 
-            # ---- FALLBACK: legacy DOM walk -----------------------------
-            if not metadata.get('_body_md') and fulltext_html:
-                print("  ↪ 回退到 DOM 提取路径")
-                figure_urls = self.extract_figures_from_html(fulltext_html)
-                supp_urls, supp_descriptions = self._extract_supplemental_from_html(
-                    fulltext_html
-                )
+            # ---- No DOM-walk fallback, on purpose ----------------------
+            #
+            # The body API is not merely preferred, it is the only acceptable
+            # source: its payload still carries source MathML, while the
+            # rendered page (MathJax 3 CHTML since ~2023) has every LaTeX and
+            # MathML annotation stripped. A DOM walk therefore cannot produce
+            # a correct body -- only one that looks correct.
+            #
+            # So when the API fails, this returns an empty body rather than a
+            # plausible-looking wrong one. An empty "Article Text" section is
+            # visible on inspection and traceable back to the API call; a body
+            # silently rebuilt from stripped markup is neither. figure_urls,
+            # supp_urls and supp_descriptions stay at the empty values set
+            # above, which is what makes that outcome legible.
+            if not metadata.get('_body_md'):
+                print("  ⚠️  body API 未取到正文 —— 保留空正文以便溯源，"
+                      "不从渲染后 DOM 重建")
 
             if fulltext_html:
                 # Graphical abstract (e.g. ga1_lrg.jpg) is downloaded as key_image
@@ -2358,7 +2386,10 @@ class ScienceDirectHandler(PublisherHandler):
                     'supplemental_urls': supp_urls,
                     'supplemental_descriptions': supp_descriptions,
                 },
-                'fulltext_data': fulltext_html,
+                # The rendered DOM, not the raw body extraction reads: this is
+                # archived as page.html, and a second view of the page is
+                # exactly what an empty body needs to be diagnosable.
+                'fulltext_data': rendered_html,
                 'journal_name': 'sciencedirect',
                 # No 'access' key unless DP_SD_ACCESS_CHECK asks for one: the
                 # detector has a known false-negative mode and a wrong False
