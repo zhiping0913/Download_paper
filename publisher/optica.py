@@ -1087,36 +1087,46 @@ class OpticaHandler(PublisherHandler):
         except Exception as e:
             print(f"  ⚠️  Optica fulltext 切换失败: {e}")
 
-        # ── view-source fallback ────────────────────────────────────────────
+        # ── view-source rescue（仅在没有可用原始响应时） ──────────────────
         # Optica loads MathJax 4 (tex-mml-svg), which replaces the ``$$...$$``
         # TeX in the HTML source with SVG whose only text is the a11y speech
         # string — that is how equations came out as
         #   "P sub 0 equals E sub 0 divided by tau sub eff"
         # instead of "{P_0} = {E_0}/{\tau _{\rm{eff}}}".
         #
-        # Two upstream mechanisms are supposed to prevent this: block_mathjax()
-        # route interception, and the main-document response listener. Neither
-        # is guaranteed here — the interceptor only helps if it was registered
-        # before the script request, and the listener misses the fulltext.cfm
-        # navigation this handler performs itself. So re-fetch the document
-        # source unconditionally (the equivalent of view-source:) and prefer it
-        # whenever it actually carries the TeX the rendered DOM has lost.
-        try:
-            source_html = await fetch_view_source_html(page)
-            if source_html:
-                self._save_view_source(source_html)
-                current = getattr(self, '_raw_server_html', None) or ''
-                src_n = self._count_math_source(source_html)
-                cur_n = self._count_math_source(current)
-                if src_n > cur_n:
+        # This used to re-fetch the source on every run, because neither
+        # upstream mechanism was trusted: block_mathjax only helps when the
+        # interceptor was registered before the script request, and the
+        # main-document listener was said to miss the fulltext.cfm navigation
+        # this handler performs itself. The second half of that was already
+        # wrong when it was written — _capture_fulltext above registers its
+        # own listener *before* the goto — and the first no longer decides
+        # anything either, now that the headed preload records the document
+        # response itself.
+        #
+        # Measured on three articles (10.1364/OE.444043, OPTICA.420520,
+        # OL.35.002314): the captured raw response already carried 117 / 91 /
+        # 82 formula sources, and the re-fetch found exactly 117 / 91 / 82.
+        # It never once won, and it is an in-page fetch() on the article page
+        # — the one kind of action this pipeline is trying to stop taking.
+        #
+        # So it is now a rescue, not a routine step: it runs only when nothing
+        # was captured at all. A captured raw response with no math in it is
+        # not a reason to re-fetch — MathJax cannot have touched it, so that
+        # article simply has no formulas.
+        current = getattr(self, '_raw_server_html', None) or ''
+        if not current:
+            print("  ⚠️  Optica: 未捕获到原始响应，改用 view-source 重取")
+            try:
+                source_html = await fetch_view_source_html(page)
+                if source_html:
+                    self._save_view_source(source_html)
+                    self._raw_server_html = source_html
                     print(f"  ↪ Optica: 使用 view-source 原始 HTML "
-                          f"({len(source_html):,} 字符, {src_n} 个公式源 "
-                          f"→ 原有 {cur_n} 个)")
-                    self._raw_server_html = source_html
-                elif not current:
-                    self._raw_server_html = source_html
-        except Exception as e:
-            print(f"  ⚠️  Optica view-source 回退失败: {e}")
+                          f"({len(source_html):,} 字符, "
+                          f"{self._count_math_source(source_html)} 个公式源)")
+            except Exception as e:
+                print(f"  ⚠️  Optica view-source 回退失败: {e}")
 
         set_actual_base_url(self, page)
 
