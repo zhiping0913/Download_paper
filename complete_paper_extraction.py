@@ -3744,33 +3744,16 @@ async def complete_extraction_workflow(
             if browser_session is not None:
                 await browser_session.sync_headless_to_headed(context)
 
-            page = await context.new_page()
-
-            # Attach any JSON-supplied headers (e.g. Referer) to the headed
-            # page BEFORE we register the response listener + navigate.
-            # Only applied to this page — the shared context's own headers
-            # / cookies are untouched.
-            if extra_headers:
-                try:
-                    await page.set_extra_http_headers(
-                        {str(k): str(v) for k, v in extra_headers.items()}
-                    )
-                    print(f"  ↪ 附加 header(s): {list(extra_headers.keys())}")
-                except Exception as e:
-                    print(f"  ⚠️  set_extra_http_headers 失败: {e}")
-
-            # Stop MathJax from running so the rendered DOM (page.content())
-            # also keeps original \(...\) / <math> markup. Must be registered
-            # before the first goto().
-            # Skipped for publishers whose handlers parse the raw server
-            # response: nothing downstream reads the rendered math, so the
-            # interception would only add an aborted subresource request for
-            # the page to notice -- see RAW_HTML_PUBLISHERS.
-            _pub_pre = _publisher_for_page(url=url, doi=doi)
-            if should_block_mathjax(_pub_pre):
-                await block_mathjax(page)
-            else:
-                print(f"  ⏭  {_pub_pre.upper()} 读原始响应，不拦 MathJax")
+            # ⚠️ The page is NOT created here. When the preload succeeded it
+            # already has the article open in its own tab, and creating one
+            # now only to close it moments later is a tab that visibly flashes
+            # open and shut on the user's screen -- plus a wasted about:blank.
+            # Decide first, create only if nothing usable came back, and hang
+            # the headers / MathJax route / response listener on whichever
+            # page we end up with. All of that still happens before the
+            # page.goto() further down, which is the ordering those three
+            # actually require.
+            page = None
 
             # Intercept the main-document HTTP response to capture the raw server
             # HTML *before* JavaScript (e.g. MathJax) rewrites the DOM.
@@ -3810,8 +3793,6 @@ async def complete_extraction_workflow(
                         _headed_raw_html.append(await response.text())
                 except Exception:
                     pass
-
-            page.on('response', _headed_on_response)
 
             # ── 纯 CDP 过 Cloudflare 挑战 + 预加载页面 ──
             # 如果预载阶段（Playwright 连接前）已经成功过了挑战，直接复用页面。
@@ -3856,10 +3837,8 @@ async def complete_extraction_workflow(
                     _cf_page_obj = None
                 if _cf_page_obj is not None:
                     print(f"  ✓ 找到预载页面，直接复用")
-                    try:
-                        await page.close()
-                    except Exception:
-                        pass
+                    # Nothing to close: the page is created below only when
+                    # this branch does not supply one.
                     page = _cf_page_obj
                     # ⚠️ Deliberately NOT appending page.content() into
                     # _headed_raw_html. That list is consumed as
@@ -3905,11 +3884,7 @@ async def complete_extraction_workflow(
                         
                         if _cf_page_obj is not None:
                             print(f"  ✓ 找到对应 Playwright page，将直接复用")
-                            # 关闭原来的 page（纯CDP开了新tab，原page没用了）
-                            try:
-                                await page.close()
-                            except Exception:
-                                pass
+                            # 同上：page 尚未创建，没有要关的东西
                             page = _cf_page_obj
                             # Same as above: page.content() is the rendered DOM
                             # and must not masquerade as the raw server body in
@@ -3925,6 +3900,42 @@ async def complete_extraction_workflow(
                     print(f"  ⚠️  纯CDP挑战模块异常: {_e}")
             else:
                 print("  ℹ️  chrome_session 模块不可用，跳过纯CDP预检查")
+
+            # Neither CDP path produced a usable page, so make one now and let
+            # the ordinary Playwright navigation below drive it.
+            if page is None:
+                page = await context.new_page()
+
+            # Now that the final page is known, attach everything that has to
+            # be in place before it navigates.
+            #
+            # On the preload path the page has already loaded, so these three
+            # do nothing for *that* load -- the raw body comes from the
+            # preload's own capture instead. They still matter whenever this
+            # flow navigates itself, which is exactly the page just created.
+            if extra_headers:
+                try:
+                    await page.set_extra_http_headers(
+                        {str(k): str(v) for k, v in extra_headers.items()}
+                    )
+                    print(f"  ↪ 附加 header(s): {list(extra_headers.keys())}")
+                except Exception as e:
+                    print(f"  ⚠️  set_extra_http_headers 失败: {e}")
+
+            # Stop MathJax from running so the rendered DOM (page.content())
+            # also keeps original \(...\) / <math> markup. Must be registered
+            # before the first goto().
+            # Skipped for publishers whose handlers parse the raw server
+            # response: nothing downstream reads the rendered math, so the
+            # interception would only add an aborted subresource request for
+            # the page to notice -- see RAW_HTML_PUBLISHERS.
+            _pub_pre = _publisher_for_page(url=url, doi=doi)
+            if should_block_mathjax(_pub_pre):
+                await block_mathjax(page)
+            else:
+                print(f"  ⏭  {_pub_pre.upper()} 读原始响应，不拦 MathJax")
+
+            page.on('response', _headed_on_response)
 
             # Step 1: Navigate and detect publisher
             print("Step 1️⃣  导航到DOI并检测出版商...")

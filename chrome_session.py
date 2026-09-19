@@ -1264,24 +1264,38 @@ async def bypass_cloudflare_cdp(
         # 注意：绝不复用 about:blank tab——它很可能是 Playwright 创建的，
         # 带有自动化指纹，会导致 Cloudflare 直接 403
         if not ws_url:
-            # Create the tab *at the target URL*.
+            # Create the tab at about:blank and navigate *after* attaching.
             #
-            # It used to be created at chrome://newtab and then navigated with
-            # JS, which cannot work: a WebUI target refuses JS navigation to
-            # the open web, and this CDP session cannot even Runtime.evaluate
-            # against it -- so the poll loop below saw title='New Tab' body=0
-            # forever. Letting Chrome open the URL itself avoids both problems
-            # and is an ordinary browser navigation, not an automated one.
+            # ⚠️ This reverses a deliberate earlier choice, so the reasoning
+            # matters. The tab used to be created at the target URL, because
+            # "letting Chrome open the URL itself is an ordinary browser
+            # navigation, not an automated one". True -- but it also means
+            # Chrome starts fetching the main document before this function
+            # has a WebSocket, let alone Network.enable, and the document's
+            # Network.responseReceived can fire before we can hear it. Then
+            # result["responses"] has every subresource and no document.
+            # Measured on ScienceDirect 10.1016/j.rinp.2021.104097: 110
+            # response events, zero documents, so page_raw.html was not
+            # written. EPL happened to win the race; that is all it proved.
             #
-            # about:blank is still avoided as a *reuse* target (it is usually
-            # a Playwright-created tab carrying an automation fingerprint), but
-            # that concern does not apply to a tab we open ourselves.
-            print(f"  🔧  新建 tab 并直接打开目标 URL")
-            ws_url = await _create_new_tab(debug_port, url)
+            # Navigating after enabling costs a JS-initiated navigation
+            # instead of a browser-initiated one. The else-branch below
+            # already prefers ``location.href`` over Page.navigate for
+            # exactly that reason, and already verifies arrival and falls
+            # back, so this reuses a hardened path rather than adding one.
+            #
+            # ⚠️ Do NOT "fix" this by creating at chrome://newtab: a WebUI
+            # target refuses JS navigation to the open web *silently*, and the
+            # poll loop then spins on title='New Tab' body=0 until timeout.
+            # about:blank is not a WebUI page. Avoiding about:blank applies to
+            # *reusing* someone else's blank tab (usually Playwright's, which
+            # carries an automation fingerprint) -- not to one we open.
+            print(f"  🔧  新建空白 tab（附着并启用 Network 后再导航）")
+            ws_url = await _create_new_tab(debug_port, "about:blank")
             if ws_url:
-                created_at_target = True
-                print(f"  📄 已新建 tab")
-                await asyncio.sleep(1)
+                created_at_target = False
+                print(f"  📄 已新建空白 tab")
+                await asyncio.sleep(0.5)
         
         # 最后 fallback：任意 page（排除 about:blank）
         if not ws_url:
