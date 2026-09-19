@@ -220,6 +220,33 @@ BOT_CHALLENGE_HOSTS = (
 BOT_CHALLENGE_HINTS = ('captcha', 'challenge', 'accessdenied', 'blocked')
 
 
+def pick_raw_article_html(candidates, doi: str = '') -> str:
+    """Choose the document response that is actually the article.
+
+    The response listeners append EVERY ok HTML document they see: the
+    doi.org redirect hop, a Cloudflare interstitial, an iframe document, and
+    finally the article. Taking ``[-1]`` assumes the article came last, which
+    is not guaranteed -- and when it is wrong the caller silently parses a
+    challenge page and reports "0 figures" rather than failing.
+
+    Prefers the last candidate that carries article markers (the DOI itself,
+    or a ``citation_*`` meta tag, the same test APS's capture callback uses).
+    Falls back to the last candidate overall, so this can never do worse than
+    the ``[-1]`` it replaces.
+    """
+    items = [c for c in (candidates or []) if c]
+    if not items:
+        return ''
+    doi_l = (doi or '').lower()
+    for html in reversed(items):
+        low = html.lower()
+        if 'citation_doi' in low or 'citation_title' in low:
+            return html
+        if doi_l and doi_l in low:
+            return html
+    return items[-1]
+
+
 def url_looks_like_bot_challenge(url: str) -> bool:
     """True when *url* is a bot-manager interstitial rather than the real page.
 
