@@ -3782,6 +3782,62 @@ async def complete_extraction_workflow(
                               f"（最大 {max(len(h) for h in _headed_raw_html):,} 字符）")
                     else:
                         print(f"  ⚠️  预载未捕到文档响应（共 {len(_pre)} 条记录）")
+
+                    # Opt-in diagnostic: what did the page fetch on its own?
+                    #
+                    # The sink records every response's metadata but only
+                    # Document bodies are harvested, and none of the metadata
+                    # is persisted -- so an ordinary run cannot answer "does
+                    # this publisher's page issue its own API calls?". That
+                    # question decides whether a handler can read a response
+                    # the page already made instead of running fetch() inside
+                    # it. Off by default; it prints nothing and costs nothing.
+                    if (os.environ.get('DP_DUMP_RESPONSES') or '').strip().lower() \
+                            in ('1', 'true', 'yes', 'on'):
+                        _by_type: dict = {}
+                        for _e in _pre.values():
+                            _by_type[_e.get('type') or '?'] = \
+                                _by_type.get(_e.get('type') or '?', 0) + 1
+                        print(f"  🔍 预载响应 {len(_pre)} 条，按类型: "
+                              + ", ".join(f"{k}={v}" for k, v in
+                                          sorted(_by_type.items())))
+
+                        # Targeted count over the WHOLE sink, not just the
+                        # lines printed below.
+                        #
+                        # ⚠️ The listing is capped, so "I did not see it" is
+                        # not evidence of absence -- on an IEEE probe the cap
+                        # hid 6 of the 9 dynamic requests, which is more than
+                        # enough room for the four REST calls the question was
+                        # about. Counting every entry is what makes a negative
+                        # result mean something.
+                        _pat = (os.environ.get('DP_DUMP_RESPONSES_MATCH')
+                                or '/rest/,/api/,/sdfe/,/ajax/')
+                        _needles = [p.strip().lower()
+                                    for p in _pat.split(',') if p.strip()]
+                        _hits = [_e for _e in _pre.values()
+                                 if any(nd in (_e.get('url') or '').lower()
+                                        for nd in _needles)]
+                        print(f"  🔍 匹配 {_pat!r} 的响应: {len(_hits)} 条"
+                              + ("（页面自己发起的 API 调用）" if _hits
+                                 else "（页面加载期间没有自己发起这些调用）"))
+                        for _e in _hits:
+                            print(f"     ★ [{_e.get('type') or '?':9s}] "
+                                  f"{_e.get('status')} "
+                                  f"{(_e.get('url') or '')[:120]}")
+                        _shown = 0
+                        for _e in _pre.values():
+                            if (_e.get('type') or '') in ('Image', 'Stylesheet',
+                                                          'Font', 'Media'):
+                                continue
+                            if _shown >= 60:
+                                print("  🔍 …（其余从略）")
+                                break
+                            print(f"     [{_e.get('type') or '?':9s}] "
+                                  f"{_e.get('status')} "
+                                  f"{(_e.get('mimeType') or '')[:28]:28s} "
+                                  f"{(_e.get('url') or '')[:110]}")
+                            _shown += 1
                 except Exception as _e:
                     print(f"  ⚠️  预载响应合并失败: {_e}")
 
