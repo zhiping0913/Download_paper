@@ -3776,6 +3776,32 @@ async def complete_extraction_workflow(
             # HTML *before* JavaScript (e.g. MathJax) rewrites the DOM.
             _headed_raw_html: list = []
 
+            # ⚠️ The listener below cannot see the article on a headed run.
+            # The preload fetches the page over raw CDP *before* Playwright is
+            # attached, so by the time this handler exists the main document
+            # has already been and gone. That is why IOP fell back to an
+            # in-page view-source fetch on every single run, why APS silently
+            # lost abstract_html (see the comment in aps.py), and why
+            # page_raw.html stopped being written. The preload now records
+            # what it sees, so feed its documents into the same list and let
+            # pick_raw_article_html decide which one is the article -- it
+            # takes the largest marked candidate, which is exactly how the two
+            # responses a protected publisher sends for one URL get resolved.
+            if _cf_preloaded:
+                try:
+                    _pre = (_cf_pre_result.get('responses') or {})
+                    for _entry in _pre.values():
+                        _body = _entry.get('body')
+                        if _body and 'html' in (_entry.get('mimeType') or '').lower():
+                            _headed_raw_html.append(_body)
+                    if _headed_raw_html:
+                        print(f"  ✓ 预载捕获文档响应 {len(_headed_raw_html)} 份"
+                              f"（最大 {max(len(h) for h in _headed_raw_html):,} 字符）")
+                    else:
+                        print(f"  ⚠️  预载未捕到文档响应（共 {len(_pre)} 条记录）")
+                except Exception as _e:
+                    print(f"  ⚠️  预载响应合并失败: {_e}")
+
             async def _headed_on_response(response):
                 try:
                     if (response.request.resource_type == 'document'

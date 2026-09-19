@@ -577,17 +577,49 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
   `page.content()`，而那份 DOM 现在**没有保护**。所以 `RAW_HTML_PUBLISHERS` 的 handler
   在回落前先走 `fetch_view_source_html()` 重取，并把这次降级**打印出来**——
   静默劣化比失败更难查
-- ❌ **「这条回落很罕见」是错的，已被两次独立运行证伪**。我原先按 12 份存档推断
-  「原始响应捕获无一失败」，但那批存档取样有偏。真实情况是：**只要 CF 预载成功，
-  它就必然触发** —— 页面在 Playwright 连接**之前**就由纯 CDP 加载完了
-  （日志里那句「复用预载页面」），`page.on('response')` 根本没机会见到主文档响应，
-  于是 `_raw_server_html` 必为空。所以这条回落是**常规路径，不是安全网**，
-  对 `RAW_HTML_PUBLISHERS` 里的出版商更是承重的：拦截已摘，全靠它保住公式
-- ⚠️ 连带后果：这条路径下**不生成 `page_raw.html`**（`get_page_html()` 拿到 view-source
-  源码后直接 return，没写回 `_raw_server_html`，主流程那句 `if raw_server_html:`
-  就跳过落盘）。实测 13 篇 IOP 存档 12 篇有该文件，走预载的那次没有。
-  内容本身没丢（`page.html` 装的就是那份源码），丢的是「原始响应」这个约定名字 ——
-  Optica 早有现成做法可抄（`_save_view_source()` 写 `source.html`）
+- 📌 **预载阶段现在自己捕获响应，所以这条回落基本不再触发**。见下面「预载期间的
+  响应捕获」。它仍然留着，作为捕获落空时的保险
+
+### 预载期间的响应捕获（`bypass_cloudflare_cdp` → `result["responses"]`）
+
+有头运行时，正文页是**纯 CDP 预载**打开的——在 Playwright 连接**之前**。于是
+`page.on('response')` 那个监听器**永远看不到主文档**：它诞生时页面早已加载完毕。
+后果曾经是三处彼此看似无关的毛病，其实同一个病根：
+
+| 症状 | 原来的绕法 |
+|---|---|
+| IOP 每次都打印「未捕获到原始响应，改用 view-source 重取」 | 页面内再 `fetch()` 一次（两次 `page.evaluate`） |
+| APS 的 `abstract_html` 被静默跳过 | 退回读实时页面（`aps.py` 注释里有记载） |
+| `page_raw.html` 不落盘 | 无 |
+
+现在预载自己把响应记下来，交回 `result["responses"]`，主流程并入 `_headed_raw_html`，
+由 `pick_raw_article_html()` 选出正文那一份。**实测 EPL `10.1209/0295-5075/122/14004`：
+「未捕获到原始响应」一行消失，`page_raw.html` 正常落盘 217,068 字节**，正文页只剩
+导航与被动监听。
+
+- **事件只能在 `_send` 里收**：它是本模块唯一读 socket 的地方（`if "id" not in resp`
+  那一行原本直接丢弃事件），所以捕获挂在那里，35 个调用点一个都不用改
+- ⚠️ **用 `contextvars.ContextVar` 而不是模块全局**：正文预载与 PDF 一次性 Chrome 都
+  会进 `bypass_cloudflare_cdp`，asyncio 下可能同时在飞。全局会把一个页面的响应混进
+  另一个的字典里 —— 那比捕获不到更糟，因为混出来的东西**看着像一份有效捕获**
+- ⚠️ **`result["responses"]` 必须在字典构造那一处就种好**。该函数有 5 个成功出口、
+  外加超时、最外层 except 和「拿不到 ws_url」的提前返回。只在成功路径上加键，
+  其余路径的调用方 `.get("responses")` 会**静默拿到空**
+- ⚠️ **`Network.enable` 不再是可有可无的**。它旁边那句注释曾说 `Page.enable`/
+  `Network.enable` 是多余的、可以考虑删掉 —— 现在删了就会悄无声息地清空所有捕获
+- ⚠️ **取 body 必须在 socket 关闭前**：Chrome 把响应体放在渲染进程的缓冲里并会**驱逐**，
+  `async with` 一退出就再也取不到。所以每个出口在 `return` 前都调
+  `_harvest_document_bodies()`；超时路径也调 —— 没通过判定的页面照样可能已经
+  交付了一份完好的文档
+- **只取 `type == 'Document'`**。图片、CSS、字体也各有 requestId，逐个 `getResponseBody`
+  会让每篇论文多出几十次往返，而没有任何东西会读它们
+- 📌 **按 requestId 存，不是按 URL**。设防的出版商对**同一个 URL** 会答两次（过检前、
+  过检后），按 URL 存后者会覆盖前者、或前者挡住后者；按 requestId 两份都在，
+  再交给 `pick_raw_article_html` 挑体量大的那份
+- ✅ **与旧路子逐字比对过**：同一篇文章，CDP 捕获得到 217,068 字节，页面内
+  view-source 得到 217,074 字节，**整份文档只差 4 行**，且差异是服务端 JSON 配置的
+  **键序**与一个脚本标签；`citation_` 364/364、`math/tex` 134/134、`supplDataLink` 1/1、
+  `article-text` 16/16 完全一致。所以它是那个 hack 的**忠实替代**，不是近似品
 
 ### 反检测补丁 `_stealth_js`（`DP_STEALTH_JS`，默认开）
 
