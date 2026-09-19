@@ -36,6 +36,12 @@ from publisher.wildcard import (
 class IOPHandler(PublisherHandler):
     """Handler for IOP Publishing articles (iopscience.iop.org)."""
 
+    # Both extract_metadata and extract_all read get_page_html() (the raw
+    # server response), so nothing here looks at a MathJax-rendered DOM --
+    # which is what lets core.utilities.should_block_mathjax skip the route
+    # interception for IOP. See RAW_HTML_PUBLISHERS.
+    PUBLISHER = 'iop'
+
     def __init__(self, page=None, captured_data_dir=None, doi: str = None):
         super().__init__(page=page, captured_data_dir=captured_data_dir, doi=doi)
 

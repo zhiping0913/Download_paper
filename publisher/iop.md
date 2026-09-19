@@ -140,9 +140,20 @@ article HTML came back empty, it falls through and tries anyway — silently
 dropping supplements for every article whose DOM read hiccuped would be a far
 worse failure than one wasted fetch.
 
-**How the links are obtained**: `_extract_supplementary_from_data_page` navigates to
-`https://iopscience.iop.org/article/{doi}/data` and parses the returned markup with
-BeautifulSoup (`_parse_supplementary_links`), returning resolved URLs and link text.
+**How the links are obtained**: `_extract_supplementary_from_data_page` fetches
+`https://iopscience.iop.org/article/{doi}/data` through the shared fetch ladder,
+saves it as `supp.html`, and parses that **string** with BeautifulSoup
+(`_parse_supplementary_links`), returning resolved URLs and link text. No live DOM is
+queried — the ladder's other rungs never have one.
+
+⚠️ The `tab` rung opens a **throwaway tab** and prefers the raw HTTP response; it does
+not steer the article page to `/data` and back. That older shape was the most
+human-implausible step left in the IOP flow — a reader never sends their own article
+tab away and brings it back — and it happened at exactly the moment IOP's Radware
+profiler had just scored the article load. It falls back to the rendered DOM when the
+response itself does not satisfy the predicate (a client-rendered listing), and only
+when there is no browser context to open a tab in does it drive the caller's page and
+restore it afterwards.
 
 ⚠️ That is IOP's **only** strategy. `_extract_supplemental_links_from_html` — live
 in aip.py, mdpi.py and cambridge.py — used to exist here too, unwired and uncalled,
@@ -174,8 +185,18 @@ The main entry point called by the publisher orchestrator:
 
 1. If no page is provided, launches its own headless Chromium session.
 2. Extracts metadata via `extract_metadata()`.
-3. Captures full page HTML.
+3. Reads the article HTML via `get_page_html()` — the **raw server response**,
+   captured passively while the page loaded, not `page.content()`.
+
+   ⚠️ Because nothing in this handler reads a rendered DOM, IOP is listed in
+   `core.utilities.RAW_HTML_PUBLISHERS`, so **`block_mathjax` is not registered for
+   it**: the route interception (`page.route` + `route.abort()`) would buy nothing
+   here, and an aborted subresource request is something the page can notice. The
+   cost of dropping it is that the fallback is no longer protected — if the raw
+   capture ever fails, `get_page_html()` re-fetches the source via
+   `fetch_view_source_html()` first, and says so out loud if even that fails, rather
+   than quietly handing back math that MathJax has already replaced with SVG.
 4. Extracts references, raw references, and footnotes from HTML.
 5. Extracts figures and tables from HTML.
-6. Navigates to `/data` endpoint for supplementary material links — **only if** the article page carries the `supplDataLink` anchor (see §8).
+6. Fetches the `/data` endpoint for supplementary material links **in a throwaway tab** — **only if** the article page carries the `supplDataLink` anchor (see §8).
 7. Returns unified dict `{metadata, links, fulltext_data, journal_name}`.
