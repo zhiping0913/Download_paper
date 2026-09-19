@@ -557,6 +557,13 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
   MathJax 尚未破坏的 TeX，喂给它们渲染后的 DOM 等于**悄悄取消了这项保护**，而且让
   `get_page_html()` 自己的回落机制失效（它本来就会在没有原始响应时调 `page.content()`）。
   什么都不放，反而让来源诚实
+- ⚠️ **`fulltext_data` 会绕过你在 `extract_all` 里做的选择**：主流程把它原样传回
+  `convert_to_markdown`，所以 handler 即使自己读了原始响应，落到 md 的那一步仍可能
+  在解析渲染后 DOM。ScienceDirect 就这样漏了 2 个公式 —— MathJax 3 的 CHTML 不带任何
+  annotation，剩下的只有无障碍朗读串，于是摘要里出现
+  `$\text{[math: 10 to the 17th power times watts divided by centimeters squared]}$`，
+  而**同一份原始响应里就有源 MathML**。SD 现在把原始 HTML 钉在 `self._extraction_html`
+  上，`convert_to_markdown` 优先读它；`page.html` 仍存渲染后 DOM，只作诊断用
 - 📌 **IOP 已不再读实时 DOM**：`extract_metadata` 与 `extract_all` 都改用
   `self.get_page_html(page)`。实测 13 篇 IOP 产物，仅凭 `page_raw.html` 提取出的图数与
   磁盘落盘图数 **13/13 一致**，正文/参考文献数也与改前逐项相同 —— 所以正文页上只剩
