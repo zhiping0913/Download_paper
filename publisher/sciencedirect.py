@@ -2321,15 +2321,26 @@ class ScienceDirectHandler(PublisherHandler):
             # container is absent from both, so nothing is lost by reading the
             # pre-JS body -- and MathJax cannot have touched it.
             #
-            # rendered_html is archived as page.html and used for nothing else.
+            # rendered_html is archived as page.html and read by nothing.
             # Keeping it preserves the repo-wide convention (page.html = the
             # post-JS DOM, page_raw.html = the raw response) and leaves a
             # second view to diagnose from when a body extraction comes back
             # empty.
+            #
+            # ⚠️ The workflow hands `fulltext_data` (i.e. rendered_html)
+            # back to convert_to_markdown, so the abstract would be read off
+            # the post-JS DOM unless we say otherwise. On that DOM MathJax 3
+            # has already replaced every <math> with CHTML carrying no
+            # annotation, and the only text left is the a11y speech string --
+            # measured on 10.1016/j.rinp.2021.104097, whose abstract came out
+            # as "$\\text{[math: 10 to the 17th power times watts divided by
+            # centimeters squared]}$" while the raw response held the source
+            # MathML right there. So pin the raw HTML for that step.
             try:
                 fulltext_html = await self.get_page_html(page)
             except Exception:
                 fulltext_html = ''
+            self._extraction_html = fulltext_html
             try:
                 rendered_html = await page.content()
             except Exception:
@@ -2474,6 +2485,12 @@ class ScienceDirectHandler(PublisherHandler):
         # it carries source MathML, so equations are real LaTeX. The HTML
         # walk below only runs when the API path was unavailable.
         api_body = (metadata.get('_body_md') or '').strip()
+        # Prefer the raw server response over whatever the workflow passed in:
+        # `article_text` is the rendered DOM, where MathJax has destroyed every
+        # formula in the abstract. See the note in extract_all.
+        source_html = (getattr(self, '_extraction_html', '') or '').strip()
+        if source_html:
+            article_text = source_html
         if isinstance(article_text, str) and article_text.strip():
             if article_text.lstrip().startswith('<'):
                 abstract_md, html_body_md = self.extract_article_text_from_html(article_text)
