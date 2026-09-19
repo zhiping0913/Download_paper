@@ -994,7 +994,12 @@ def _record_cdp_event(sink: dict, msg: dict) -> None:
 #: ⚠️ SPIE is deliberately absent. Its fulltext POST is issued by *us* from
 #: inside the page, not by the landing page, so there is nothing to capture --
 #: adding /api/ here would harvest unrelated traffic for no benefit.
-_DEFAULT_API_HARVEST = ('/sdfe/arp/', '/rest/document/')
+_DEFAULT_API_HARVEST = (
+    '/sdfe/arp/',            # ScienceDirect: body, references, metadata
+    '/rest/document/',       # IEEE: the REST article endpoints
+    '/fulltext/10.',         # APS: the reading view's own JSON
+    '/supplemental/10.',     # APS: the supplemental listing
+)
 
 
 def _api_harvest_patterns() -> list:

@@ -979,6 +979,58 @@ class APSHandler(PublisherHandler):
 
         return captured
 
+    def _cache_fulltext_json(self, payload: dict) -> None:
+        """Land fulltext.json beside the other captures.
+
+        Both paths that produce the payload call this. Reusing the preload's
+        copy must leave the same file behind as fetching it: the landed
+        responses are what a later offline render reads, so a reuse that
+        skipped the write would quietly make the capture directory
+        unreproducible.
+        """
+        if not payload or not self.captured_data_dir:
+            return
+        try:
+            out = Path(self.captured_data_dir) / 'fulltext.json'
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=1),
+                encoding='utf-8',
+            )
+            print(f"  ✓ fulltext.json 已保存 ({out.stat().st_size:,} bytes)")
+        except Exception:
+            pass
+
+    def _fulltext_from_capture(self, page, doi: str) -> dict:
+        """The fulltext JSON the page already fetched, or ``{}``.
+
+        Matched on the URL path, so the journal prefix and the DOI's letter
+        case do not have to agree with what this handler would have built.
+        Returns {} on any miss -- the active fetch below stays as the answer
+        for articles that land on /abstract/ and never XHR the body at all.
+        """
+        url_doi = ''
+        try:
+            url_doi = self.doi_from_url(page.url or '') if page is not None else ''
+        except Exception:
+            url_doi = ''
+        url_doi = url_doi or self.doi_from_url(getattr(self, '_landing_url', '') or '')
+        target = url_doi or doi or self.doi or ''
+        if not target:
+            return {}
+        body = self.captured_api(f'/fulltext/{target}')
+        if not body:
+            return {}
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return {}
+        if not isinstance(payload, dict) or not payload:
+            return {}
+        print(f"  ♻️  fulltext 复用预载捕获（{len(body):,} 字符，未重复请求）")
+        self._cache_fulltext_json(payload)
+        return payload
+
     async def _fetch_fulltext_json(self, page, doi: str) -> dict:
         """Actively fetch the APS fulltext JSON for *doi*.
 
@@ -1080,19 +1132,7 @@ class APSHandler(PublisherHandler):
             print("  ⚠️  fulltext 响应为空")
             return {}
 
-        # Cache alongside the other captures so it can be re-inspected offline.
-        try:
-            if self.captured_data_dir:
-                out = Path(self.captured_data_dir) / 'fulltext.json'
-                out.parent.mkdir(parents=True, exist_ok=True)
-                out.write_text(
-                    json.dumps(payload, ensure_ascii=False, indent=1),
-                    encoding='utf-8',
-                )
-                print(f"  ✓ fulltext.json 已保存 ({out.stat().st_size:,} bytes)")
-        except Exception:
-            pass
-
+        self._cache_fulltext_json(payload)
         return payload
 
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
@@ -1234,6 +1274,14 @@ class APSHandler(PublisherHandler):
         # figure extraction below, which reads fulltext_data. Uses an in-page
         # fetch so the current page — still the abstract view — stays put for
         # the PDF-button lookup and supplemental flow that follow.
+        if not fulltext_data:
+            # The page often fetches this itself while loading -- measured on
+            # 10.1103/PhysRevX.7.041003, where the preload recorded
+            # /prx/fulltext/<doi> as a Fetch with application/json and the
+            # handler then asked for the identical resource a second time.
+            # The passive Playwright listener cannot see it on a headed run:
+            # it is attached after the CDP preload has already loaded the page.
+            fulltext_data = self._fulltext_from_capture(page, doi)
         if not fulltext_data:
             fulltext_data = await self._fetch_fulltext_json(page, self.doi or doi)
 

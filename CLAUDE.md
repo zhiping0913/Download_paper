@@ -645,8 +645,14 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
   `async with` 一退出就再也取不到。所以每个出口在 `return` 前都调
   `_harvest_document_bodies()`；超时路径也调 —— 没通过判定的页面照样可能已经
   交付了一份完好的文档
-- **只取 `type == 'Document'`**。图片、CSS、字体也各有 requestId，逐个 `getResponseBody`
+- **Document 全取，XHR/Fetch 只取名单上的**（`_DEFAULT_API_HARVEST`：ScienceDirect
+  的 `/sdfe/arp/`、IEEE 的 `/rest/document/`、APS 的 `/fulltext/10.` 与
+  `/supplemental/10.`）。图片、CSS、字体也各有 requestId，逐个 `getResponseBody`
   会让每篇论文多出几十次往返，而没有任何东西会读它们
+- ⚠️ **APS 那两条带着 DOI 的 `10.`**：裸的 `/fulltext/` 会命中别家出版商的阅读视图，
+  每篇白付一次往返。`DP_HARVEST_API=0` 整体关掉，给逗号分隔的列表则整体覆盖
+- ⚠️ **复用捕获的一方也必须照常落盘**。APS 复用 fulltext 时若跳过写 `fulltext.json`，
+  产出目录就悄悄变得不可离线重建了——落盘文件是交接接口，不是缓存
 - 📌 **按 requestId 存，不是按 URL**。设防的出版商对**同一个 URL** 会答两次（过检前、
   过检后），按 URL 存后者会覆盖前者、或前者挡住后者；按 requestId 两份都在，
   再交给 `pick_raw_article_html` 挑体量大的那份
