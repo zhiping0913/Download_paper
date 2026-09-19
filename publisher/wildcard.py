@@ -188,6 +188,46 @@ def convert_html_fragment_to_markdown(html_fragment: str, placeholder_prefix: st
     return md
 
 
+def _strip_decorative_svg(fragment: str) -> str:
+    """Drop icon ``<svg>`` elements from a heading fragment before conversion.
+
+    Publishers wrap section titles in UI chrome. IOP's is::
+
+        <h2><button class="reveal-trigger">
+              <span class="reveal-trigger-label">Introduction</span>
+              <svg aria-hidden="true" class="fa-icon">…</svg>
+            </button></h2>
+
+    and pandoc inlines any surviving ``<svg>`` as a base64 ``data:`` image, so
+    the heading comes out as ``### ![](data:image/svg+xml;base64,…)Introduction``.
+    Measured on 8 of 11 archived IOP papers; the defect predates the raw-HTML
+    switch, so it is not specific to how the page was read.
+
+    ``aria-hidden="true"`` is the page author's own statement that the element
+    is decoration rather than content, which makes it the right predicate --
+    and it generalises past IOP's FontAwesome class to any publisher's icons.
+
+    ⚠️ Safe for math, and that was measured rather than assumed: the worry is
+    that MathJax's SVG output *also* carries ``aria-hidden="true"``. It does,
+    but :func:`prepare_mathjax_html_fragment` collapses MathJax to a
+    placeholder **before** pandoc, taking the LaTeX from
+    ``<mjx-assistive-mml>`` / ``<script type="math/tex">`` and never from the
+    rendered ``<svg>``. Feeding a MathJax-SVG heading through the pipeline with
+    and without this strip yields ``$\\tau$`` either way.
+    """
+    if not fragment or '<svg' not in fragment.lower():
+        return fragment
+    try:
+        soup = BeautifulSoup(fragment, 'html.parser')
+    except Exception:
+        return fragment
+    for svg in soup.find_all('svg'):
+        classes = ' '.join(svg.get('class') or [])
+        if (svg.get('aria-hidden') or '').lower() == 'true' or 'fa-icon' in classes:
+            svg.decompose()
+    return str(soup)
+
+
 def render_heading_md(heading_el, level_hashes: str,
                       converter=None,
                       placeholder_prefix: str = "MATH") -> str:
@@ -225,6 +265,11 @@ def render_heading_md(heading_el, level_hashes: str,
         inner = heading_el.decode_contents().strip()
     except Exception:
         inner = ''
+
+    # Works on the serialised fragment, not the live element, so the caller's
+    # soup is never mutated -- later passes (figure scans, body walks) read the
+    # same tree and must still see it intact.
+    inner = _strip_decorative_svg(inner)
 
     rendered = ''
     if inner:

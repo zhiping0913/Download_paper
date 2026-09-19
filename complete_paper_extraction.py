@@ -1606,17 +1606,28 @@ async def download_pdf(
         # fetch the PDF -- and launching a windowed Chrome for every paper
         # would defeat the point of running headless. The throwaway browser
         # stays available as the fallback for when that fails.
-        # 取数阶梯。pdf 这一类的**默认**顺序仍随有头/无头而定，理由见上面那段
-        # 注释：有头时先起一次性 Chrome 是有实测支撑的。显式设了 DP_FETCH_PDF
-        # 或 DP_FETCH_ORDER 就完全以它为准。
+        # ⚠️ 上面那两段是**改前**的理由，现已被实测推翻，保留是为了说明为什么
+        # 不再那样排。`tab` 现在对有头/无头都排第一。
+        #
+        # The throwaway Chrome carries no automation fingerprint at all --
+        # Chrome's own startup navigation fetches the page and _stealth_js is
+        # only ever injected into the Playwright context -- and it is still the
+        # rung that gets refused. Measured end to end on EPL
+        # 10.1209/0295-5075/122/14004: every one of the four attempts saw the
+        # fresh rung land on validate.perfdrive.com, while the *shared*
+        # Playwright browser -- the most automated one in the run -- took the
+        # PDF with no challenge at all, because it was the browser that had
+        # just read the article. What the bot manager gates here is session
+        # continuity, not fingerprint: a brand-new browser asking for
+        # /article/{doi}/pdf with no history and no referer is the shape it
+        # refuses. Putting `fresh` first cost three failed attempts and ~4.5
+        # minutes of retry pacing before `tab` was even reached.
+        #
         # 'referer' sits last: it costs an extra page load, so it is only
         # worth reaching for once the cheaper rungs have failed. It is also
         # the only rung that needs something the others do not -- a page to
         # click from -- so it stays inert when no referer is known.
-        ladder = _fetch_ladder(
-            'pdf',
-            default=('fresh', 'tab', 'referer') if force_headed
-            else ('tab', 'fresh', 'referer'))
+        ladder = _fetch_ladder('pdf', default=('tab', 'fresh', 'referer'))
 
         try:
             pdf_referer = page.url if page is not None else None
