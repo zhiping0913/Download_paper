@@ -276,6 +276,45 @@ HEADLESS_ACCESSIBLE_PUBLISHERS = [
     ]
 
 
+def save_html_snapshot(path, content: str, label: str = "HTML") -> bool:
+    """Write *content* to *path*, unless the file already holds exactly that.
+
+    Several places land the same snapshot: the preload writes page_raw.html as
+    soon as it has the body, the headless precheck writes page.html and
+    page_raw.html, and process_with_handler writes both again once extraction
+    finishes. The later write is not simply redundant -- the response listener
+    keeps appending during the handler's own navigations, so the final pick can
+    legitimately differ -- but when it does not, rewriting identical bytes only
+    produces a second "已保存" line that reads like two different snapshots.
+
+    ⚠️ Compare bytes, never ``read_text()``. Text mode applies universal
+    newlines, so a page served with CRLF comes back \n-normalised and never
+    equals the string in hand -- measured on IEEE 10.1109/ACCESS.2020.2991812,
+    where 12 CRLFs made a byte-identical snapshot look like a 64,131 → 64,143
+    change and the skip never fired.
+
+    Returns True when the file was actually written.
+    """
+    if not content:
+        return False
+    path = Path(path)
+    payload = content.encode('utf-8')
+    try:
+        if path.exists() and path.read_bytes() == payload:
+            print(f"  ↪ {label} 未变，跳过重写: {path.name} ({len(content):,} 字符)")
+            return False
+    except Exception:
+        pass
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    except Exception as e:
+        print(f"  ⚠️  {label} 保存失败: {type(e).__name__}: {str(e)[:80]}")
+        return False
+    print(f"  ✓ {label}已保存: {path.name} ({len(content):,} 字符)")
+    return True
+
+
 def _crossref_headless_publisher(crossref_data: dict):
     """Return the HEADLESS_ACCESSIBLE_PUBLISHERS entry Crossref's publisher matches.
 
@@ -2940,17 +2979,12 @@ async def complete_extraction_workflow(
         # page.html     = post-JS rendered DOM (fulltext_data from handler)
         # page_raw.html = raw server HTTP response (pre-JS, captured by interceptor)
         if isinstance(fulltext_data, str) and fulltext_data:
-            html_file = captured_data_dir / "page.html"
-            with open(html_file, 'w', encoding='utf-8') as f:
-                f.write(fulltext_data)
-            print(f"  ✓ HTML已保存: {html_file}")
+            save_html_snapshot(captured_data_dir / "page.html", fulltext_data, "HTML")
 
         raw_server_html = getattr(handler, '_raw_server_html', None)
         if raw_server_html:
-            raw_html_file = captured_data_dir / "page_raw.html"
-            with open(raw_html_file, 'w', encoding='utf-8') as f:
-                f.write(raw_server_html)
-            print(f"  ✓ 原始HTML已保存: {raw_html_file}")
+            save_html_snapshot(captured_data_dir / "page_raw.html",
+                               raw_server_html, "原始HTML")
 
         # Merge with Crossref data (fill in missing fields)
         if crossref_data:
@@ -3531,20 +3565,14 @@ async def complete_extraction_workflow(
                     headless_html_file = captured_data_dir / "headless_initial.html"
                     page_html_file = captured_data_dir / "page.html"
                     # Always write the rendered DOM to page.html (consistent with headed path)
-                    with open(page_html_file, 'w', encoding='utf-8') as f:
-                        f.write(headless_rendered_html)
+                    save_html_snapshot(page_html_file, headless_rendered_html, "HTML")
                     # Write raw server response separately when available
                     if headless_raw_html:
-                        with open(headless_html_file, 'w', encoding='utf-8') as f:
-                            f.write(headless_raw_html)
-                        raw_html_file = captured_data_dir / "page_raw.html"
-                        with open(raw_html_file, 'w', encoding='utf-8') as f:
-                            f.write(headless_raw_html)
-                        print(f"  ✓ 原始HTML已保存: {headless_html_file.name} ({len(headless_raw_html)} 字节)")
+                        save_html_snapshot(headless_html_file, headless_raw_html, "原始HTML")
+                        save_html_snapshot(captured_data_dir / "page_raw.html",
+                                           headless_raw_html, "原始HTML")
                     else:
-                        with open(headless_html_file, 'w', encoding='utf-8') as f:
-                            f.write(headless_rendered_html)
-                        print(f"  ✓ 页面已保存: {headless_html_file.name} ({len(headless_rendered_html)} 字节)")
+                        save_html_snapshot(headless_html_file, headless_rendered_html, "页面")
 
                     # 检测最终URL
                     final_headless_url = headless_page.url
@@ -3806,10 +3834,8 @@ async def complete_extraction_workflow(
                             _early_raw = pick_raw_article_html(_headed_raw_html, doi)
                             if _early_raw and captured_data_dir:
                                 captured_data_dir.mkdir(parents=True, exist_ok=True)
-                                _early_path = captured_data_dir / "page_raw.html"
-                                _early_path.write_text(_early_raw, encoding='utf-8')
-                                print(f"  ✓ 原始HTML已落盘: {_early_path.name}"
-                                      f" ({len(_early_raw):,} 字符)")
+                                save_html_snapshot(captured_data_dir / "page_raw.html",
+                                                   _early_raw, "原始HTML")
                         except Exception as _e:
                             print(f"  ⚠️  原始HTML提前落盘失败: {_e}")
                     else:
