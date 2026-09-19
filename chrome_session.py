@@ -923,16 +923,10 @@ def _record_cdp_event(sink: dict, msg: dict) -> None:
     }
 
 
-#: URL substrings whose XHR/Fetch bodies are worth harvesting alongside the
-#: documents. Empty by default -- set DP_HARVEST_API to a comma-separated list
-#: to switch it on. Kept opt-in until two things are measured rather than
-#: assumed: whether an XHR body still exists by harvest time (they complete
-#: earlier in the page's life than the document, so eviction is likelier), and
-#: which round to keep when a publisher requests the same endpoint twice with
-#: different tokens.
-#: Harvested by default. These are the endpoints a publisher's own page
-#: fetches during load and that a handler would otherwise request a second
-#: time: ScienceDirect's body/references/metadata calls, IEEE's REST document
+#: URL substrings whose XHR/Fetch bodies are harvested alongside the
+#: documents. Harvested by default. These are the endpoints a publisher's
+#: own page fetches during load and that a handler would otherwise request a
+#: second time: ScienceDirect's body/references/metadata calls, IEEE's REST document
 #: calls. Measured: skipping the duplicate request is the whole point, and
 #: both were observed being issued by the page itself.
 #:
