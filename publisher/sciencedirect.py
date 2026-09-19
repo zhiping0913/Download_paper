@@ -2175,8 +2175,38 @@ class ScienceDirectHandler(PublisherHandler):
         return {}
 
     @staticmethod
+    def _access_opinion(html: str) -> dict:
+        """``{'access': bool}`` only when the check is switched on, else ``{}``.
+
+        ⚠️ **Off by default.** :meth:`detect_access_from_html` produced a false
+        negative on 10.1016/j.rinp.2021.104097 -- a article the user does have
+        access to -- because ScienceDirect put the label somewhere the selector
+        does not look. The workflow acts on ``access: False`` by skipping the
+        PDF, figures, supplements *and* markdown, so a wrong False silently
+        loses a paper that was there for the taking, and the log shows nothing
+        unusual. The extraction contract already names the safe default:
+        "看不出来就别返回这个键" -- a handler with no reliable opinion omits the
+        key, and the workflow reads a missing key as True.
+
+        The detection is kept rather than deleted so it can be repaired later;
+        ``DP_SD_ACCESS_CHECK=1`` turns it back on for that work.
+        """
+        import os
+        flag = (os.environ.get('DP_SD_ACCESS_CHECK') or '').strip().lower()
+        if flag not in ('1', 'true', 'yes', 'on'):
+            return {}
+        return {'access': ScienceDirectHandler.detect_access_from_html(html)}
+
+    @staticmethod
     def detect_access_from_html(html: str) -> bool:
         """False when the article's own access label says it is not readable.
+
+        ⚠️ **Currently unwired** -- see :meth:`_access_opinion`. Kept for
+        repair, not called unless ``DP_SD_ACCESS_CHECK`` is set. The branch
+        that broke it is the ``element is None`` one below: a label that lives
+        outside ``.content-meta-labels`` (or a page that has not finished
+        rendering) reads as gated, which is how an accessible article got
+        skipped.
 
         ⚠️ The label must come from the article's own ``<div>``, not from any
         ``.content-meta-access-label`` on the page. The "recommended articles"
@@ -2299,7 +2329,10 @@ class ScienceDirectHandler(PublisherHandler):
                 },
                 'fulltext_data': fulltext_html,
                 'journal_name': 'sciencedirect',
-                'access': self.detect_access_from_html(fulltext_html),
+                # No 'access' key unless DP_SD_ACCESS_CHECK asks for one: the
+                # detector has a known false-negative mode and a wrong False
+                # silently drops a readable paper. See _access_opinion.
+                **self._access_opinion(fulltext_html),
             }
         finally:
             if managed_context is not None:

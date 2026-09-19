@@ -107,8 +107,15 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
 - **Science**：读 `data-article-access`。**只在等于 `"no"` 时判无权限**（否定式，
   不是白名单）—— 实测取值还有 `"free"`、`"full"`，而 2017 年那篇存档**根本没有这个
   属性**。写成白名单的话，Science 日后新增一个取值就会让整批文章被静默跳过
-- **ScienceDirect**：读 `div.content-meta-access-label` 的文本；`Abstract only`、
-  `No access`、**或该元素不存在**都判无权限
+- ❌ **ScienceDirect 的判定已默认停用**（`DP_SD_ACCESS_CHECK=1` 才开）。原判据是读
+  `div.content-meta-access-label`，`Abstract only`、`No access`、**或该元素不存在**
+  都判无权限 —— 坏就坏在最后那一条：实测 `10.1016/j.rinp.2021.104097`（用户确有
+  访问权限）被判成无权限，因为 ScienceDirect 把标签放在了选择器够不到的地方。
+  而 `access: False` 会连 PDF、图片、补充材料、Markdown 一起跳过，**日志里看不出
+  异常**，等于静默丢掉一篇本来拿得到的文章
+- 📌 处理方式是**不返回这个键**，而不是返回 True：契约里「看不出来就别返回」正是
+  为此而设，主流程 `extraction_result.get('access', True)` 读到缺键即当作有权限。
+  检测代码保留在 `_access_opinion` / `detect_access_from_html` 里，将来修好再开
 - ⚠️ **ScienceDirect 必须限定标签名和容器**，不能用裸的 `.content-meta-access-label`：
   「推荐文章」侧栏里每条推荐都带一个**同类名的 `<span>`**，显示的是**别人文章**的权限。
   实测一份存档页有 5 处命中 —— 本文 1 个 `<div>`、邻居 4 个 `<span>`，其中两个写着
@@ -596,6 +603,21 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
 由 `pick_raw_article_html()` 选出正文那一份。**实测 EPL `10.1209/0295-5075/122/14004`：
 「未捕获到原始响应」一行消失，`page_raw.html` 正常落盘 217,068 字节**，正文页只剩
 导航与被动监听。
+
+- ⚠️ **但这个捕获是有竞态的，会漏掉主文档，别当成必然成立**。tab 是用
+  `_create_new_tab(debug_port, url)` **直接开在目标 URL 上**的，Chrome 立刻开始取主
+  文档，而我们要等连上 WebSocket、发完 `Network.enable` 之后才收得到事件 —— 主文档
+  的 `Network.responseReceived` 如果赶在 enable 之前发生，就再也补不回来。
+  实测 ScienceDirect `10.1016/j.rinp.2021.104097`：**收到 110 条响应事件，
+  Document 0 份**，于是 `page_raw.html` 没有生成（该篇 body 稳定耗时 14 秒，
+  比 EPL 那篇的 6 秒慢，主文档反而更早就到齐了）
+- 📌 这对 ScienceDirect 暂时无害 —— 它的正文走 `/sdfe/arp/pii/{pii}/body` API，
+  本就不依赖主文档响应。但「同一 URL 会答两次、要挑过检后那一份」这件事，
+  在捕获落空时**根本轮不到 `pick_raw_article_html` 去挑**
+- 🔧 要根治就得把顺序倒过来：先建空白 tab → 附着并 `Network.enable` → 再
+  `Page.navigate` 到目标。⚠️ 注意不能退回「开在 `chrome://newtab` 再用 JS 导航」那
+  条老路——本仓记过，WebUI 页面会**静默拒绝**跳转到公网，轮询会一直看到
+  `title='New Tab' body=0`
 
 - **事件只能在 `_send` 里收**：它是本模块唯一读 socket 的地方（`if "id" not in resp`
   那一行原本直接丢弃事件），所以捕获挂在那里，35 个调用点一个都不用改
