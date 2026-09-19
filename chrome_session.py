@@ -62,6 +62,8 @@ Environment
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextvars
 import glob
 import json
 import os
@@ -868,6 +870,77 @@ _CHALLENGE_DOM_JS = r"""(function () {
 })()"""
 
 
+#: Where :func:`_send` files the CDP events it would otherwise discard.
+#:
+#: A ContextVar rather than a module global on purpose: the article preload
+#: and a PDF download both run through :func:`bypass_cloudflare_cdp`, and under
+#: asyncio they can be separate tasks in flight at once. A global would mix one
+#: page's responses into the other's dict, which is worse than capturing
+#: nothing because the mixture still looks like a valid capture.
+_CDP_EVENT_SINK: contextvars.ContextVar = contextvars.ContextVar(
+    '_cdp_event_sink', default=None)
+
+
+def _record_cdp_event(sink: dict, msg: dict) -> None:
+    """Note one ``Network.responseReceived`` event, keyed by requestId.
+
+    Only the metadata is available here -- the body has to be asked for
+    separately, which is what :func:`_harvest_document_bodies` does once the
+    page has settled. Keying by requestId is what keeps the *two* responses a
+    protected publisher sends for the same URL (one before its bot check, one
+    after) as two distinct entries instead of one overwriting the other.
+    """
+    if (msg.get("method") or "") != "Network.responseReceived":
+        return
+    params = msg.get("params") or {}
+    rid = params.get("requestId")
+    if not rid:
+        return
+    resp = params.get("response") or {}
+    sink[rid] = {
+        "url": resp.get("url") or "",
+        "type": params.get("type") or "",
+        "status": resp.get("status"),
+        "mimeType": resp.get("mimeType") or "",
+        "body": None,
+    }
+
+
+async def _harvest_document_bodies(ws, sink: dict, limit: int = 12) -> int:
+    """Fill in the bodies of the document responses recorded in *sink*.
+
+    ⚠️ Must run while the socket is still open and soon after the page
+    settles: Chrome keeps response bodies in a per-renderer buffer and evicts
+    them, so a body asked for after the ``async with`` has closed is simply
+    gone. That is why every exit of :func:`bypass_cloudflare_cdp` calls this
+    before returning rather than leaving it to the caller.
+
+    Only ``Document`` responses are fetched. Asking for every image, stylesheet
+    and font would add dozens of round trips per paper for bytes nothing reads.
+    """
+    fetched = 0
+    for rid, entry in list(sink.items()):
+        if entry.get("body") is not None or entry.get("type") != "Document":
+            continue
+        if fetched >= limit:
+            break
+        try:
+            got = await _send(ws, "Network.getResponseBody", {"requestId": rid})
+        except Exception:
+            continue  # evicted, or the request never completed
+        body = got.get("body")
+        if body is None:
+            continue
+        if got.get("base64Encoded"):
+            try:
+                body = base64.b64decode(body).decode("utf-8", "replace")
+            except Exception:
+                continue
+        entry["body"] = body
+        fetched += 1
+    return fetched
+
+
 async def _send(ws, method: str, params: dict = None) -> dict:
     """发送 CDP 命令并等待结果。跳过事件消息（无 id）。"""
     msg_id = id(object()) % 1000000
@@ -882,7 +955,16 @@ async def _send(ws, method: str, params: dict = None) -> dict:
         except json.JSONDecodeError:
             continue
         if "id" not in resp:
-            continue  # 事件消息，跳过
+            # 事件消息。此前直接丢弃 —— 而这里正是整个模块唯一能看到 CDP 事件
+            # 的地方（_send 就是消息泵，没有另一个读 socket 的地方），所以
+            # 「预载期间记录响应」只能挂在这一行上。
+            _sink = _CDP_EVENT_SINK.get()
+            if _sink is not None:
+                try:
+                    _record_cdp_event(_sink, resp)
+                except Exception:
+                    pass
+            continue
         if resp["id"] == msg_id:
             if "error" in resp:
                 raise RuntimeError(f"CDP error: {resp['error']}")
@@ -1116,7 +1198,14 @@ async def bypass_cloudflare_cdp(
             "ws_url": str|None,
         }
     """
-    result = {"success": False, "target_id": None, "ws_url": None}
+    # "responses" is seeded here, at the one place the dict is built, so that
+    # every one of this function's exits -- the early "no ws_url" return, the
+    # five success paths, the timeout and the outer except -- hands back a dict
+    # that has the key. Adding it only on the happy path would leave callers
+    # doing .get("responses") silently empty on the others, which is the
+    # failure shape this repo keeps getting caught by.
+    result = {"success": False, "target_id": None, "ws_url": None,
+              "responses": {}}
 
     print(f"\n  🛡️  [纯CDP模式] 打开 {url[:80]}...")
 
@@ -1227,6 +1316,15 @@ async def bypass_cloudflare_cdp(
             # 要不要一并清掉另行决定。
             await _send(ws, "Page.enable")
             await _send(ws, "Network.enable")
+
+            # ⚠️ Network.enable is no longer optional. The comment above used to
+            # call it redundant and float removing it; it is now what makes the
+            # response capture below possible, so deleting it would silently
+            # empty every capture.
+            #
+            # The sink IS result["responses"], so the events recorded here and
+            # the bodies filled in later land in one dict with no syncing step.
+            _CDP_EVENT_SINK.set(result["responses"])
 
             if created_at_target:
                 # The tab is already on (or loading) the target URL: either
@@ -1467,6 +1565,7 @@ async def bypass_cloudflare_cdp(
                         result["success"] = True
                         result["target_id"] = target_id
                         result["ws_url"] = _current_ws_url
+                        await _harvest_document_bodies(ws, result["responses"])
                         return result
 
                     # ── PDF 模式通过判定 ──
@@ -1503,6 +1602,7 @@ async def bypass_cloudflare_cdp(
                             result["target_id"] = target_id
                             result["ws_url"] = _current_ws_url
                             result["downloaded_file"] = os.path.join(download_dir, _new_dl) if download_dir else _new_dl
+                            await _harvest_document_bodies(ws, result["responses"])
                             return result
                         # 未检测到下载文件：即使 cookie 在也不判成功（避免误判），继续等
                         if not has_cf and not is_challenge:
@@ -1515,6 +1615,7 @@ async def bypass_cloudflare_cdp(
                             result["success"] = True
                             result["target_id"] = target_id
                             result["ws_url"] = _current_ws_url
+                            await _harvest_document_bodies(ws, result["responses"])
                             return result
 
                     # 回退判定：body > 5000 字且标题无挑战关键词
@@ -1584,6 +1685,7 @@ async def bypass_cloudflare_cdp(
                         result["success"] = True
                         result["target_id"] = target_id
                         result["ws_url"] = _current_ws_url
+                        await _harvest_document_bodies(ws, result["responses"])
                         return result
 
                     # 条件2：cf_clearance + verification successful 但标题还是挑战页
@@ -1660,6 +1762,7 @@ async def bypass_cloudflare_cdp(
                         result["success"] = True
                         result["target_id"] = target_id
                         result["ws_url"] = _current_ws_url
+                        await _harvest_document_bodies(ws, result["responses"])
                         return result
 
                 except Exception as e:
@@ -1691,6 +1794,10 @@ async def bypass_cloudflare_cdp(
                 print(f"      → 不是挑战未通过；通常是该文章没有访问权限/需订阅")
             else:
                 print(f"  ⏰  Cloudflare 挑战未在 {timeout_s}s 内通过")
+            # Harvest even on timeout: a page that never satisfied the pass
+            # test can still have delivered a perfectly good document, and the
+            # caller may prefer it to nothing.
+            await _harvest_document_bodies(ws, result["responses"])
             return result
 
     except Exception as e:
