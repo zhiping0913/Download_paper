@@ -2104,12 +2104,22 @@ class ScienceDirectHandler(PublisherHandler):
         # nothing is traded away.
         #
         # ⚠️ Only extract_metadata moves. The fulltext_html read further down
-        # stays on page.content(), because extract_figures_from_html and
-        # extract_graphical_abstract_url walk <figure class="figure"> elements
-        # that ScienceDirect renders client-side -- 0 of them in the raw body
-        # against 11 in the rendered DOM. Switching those would lose the
-        # graphical abstract and gut the figure fallback, and today's runs
-        # could not even see it, since figures normally come from the body API.
+        # stays on page.content(), because extract_figures_from_html walks
+        # <figure class="figure"> elements ScienceDirect renders client-side:
+        # measured on 10.1016/j.cocom.2026.e01326, the raw body carries 1 of
+        # them against 16 in the rendered DOM. That fallback only runs when the
+        # body API fails, so a normal run would never reveal the loss.
+        #
+        # ❌ An earlier version of this comment also claimed the graphical
+        # abstract would be lost. That was wrong, and wrong in an avoidable
+        # way: the "0 in raw vs 11 rendered" figure it cited came from
+        # 10.1016/j.rinp.2021.104097, an article with no graphical abstract at
+        # all, so it measured ordinary figures and said nothing about the GA.
+        # extract_graphical_abstract_url returns the *same* ga1_lrg.jpg URL
+        # from either capture, and __PRELOADED_STATE__ in the raw body carries
+        # the graphical abstract outright (ga1 appears 16 times, with both the
+        # HIGHRES and DOWNSAMPLED paths). Reading the GA from the state would
+        # be strictly better than walking the DOM for it.
         #
         # get_page_html() falls back to page.content() when no raw body was
         # captured, so the worst case here is exactly the previous behaviour.
