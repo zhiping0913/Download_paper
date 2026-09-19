@@ -7,10 +7,18 @@ dropped into a capture directory by hand. This script turns that offline
 capture into the same paper.md the live pipeline would have produced —
 without touching the network.
 
+⚠️ Hand the raw response over, not the rendered DOM. In DevTools that is
+the Network entry's *Response* tab (or "Copy > Copy response"), saved as
+page_raw.html -- "Copy outerHTML" gives the post-JS DOM, where MathJax has
+already replaced every formula with markup whose only text is the a11y
+speech string, and the abstract then reads "[math: 10 to the 17th power
+times watts divided by centimeters squared]".
+
 Expected layout (only html/ is required; the rest is used if present)::
 
     <paper_dir>/
-        html/page.html        the article page as served
+        html/page_raw.html    the article page's RAW response (preferred)
+        html/page.html        the article page as served (used if no raw one)
         html/body.json        https://www.sciencedirect.com/sdfe/arp/pii/<PII>/body?...
         metadata.json         optional; existing fields are preserved
         *_lrg.jpg             figure images, named as on ars.els-cdn.com
@@ -74,12 +82,17 @@ def main() -> int:
 
     paper_dir = Path(args.paper_dir).expanduser().resolve()
     html_dir = paper_dir / 'html'
-    page_html_path = html_dir / 'page.html'
+    # Prefer the raw response: the live pipeline reads it too, because the
+    # rendered DOM has no recoverable formulas left in it.
+    page_html_path = html_dir / 'page_raw.html'
+    if not page_html_path.is_file():
+        page_html_path = html_dir / 'page.html'
     body_json_path = html_dir / 'body.json'
 
     if not page_html_path.is_file():
-        print(f"✗ 缺少 {page_html_path}")
+        print(f"✗ 缺少 {html_dir / 'page_raw.html'}（或 page.html）")
         return 1
+    print(f"  ✓ 页面: {page_html_path.name}")
 
     metadata_path = paper_dir / 'metadata.json'
     metadata = {}
@@ -119,7 +132,8 @@ def main() -> int:
         print(f"  ✓ 正文: {len(rendered.get('body_md') or ''):,} 字符, "
               f"{len(figure_urls)} 图")
     else:
-        print("  ⚠️  没有 body.json，正文将从 page.html 提取（公式可能已被渲染）")
+        print("  ⚠️  没有 body.json，正文只能从页面 HTML 提取 —— 原始响应里"
+              "通常没有正文容器，多半会得到空正文（这是有意的，便于溯源）")
 
     # References live in the page DOM, not in the body JSON.
     if not metadata.get('references'):
