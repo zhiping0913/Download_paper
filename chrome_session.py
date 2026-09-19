@@ -923,8 +923,20 @@ def _record_cdp_event(sink: dict, msg: dict) -> None:
     }
 
 
-async def _harvest_document_bodies(ws, sink: dict, limit: int = 12) -> int:
-    """Fill in the bodies of the document responses recorded in *sink*.
+#: URL substrings whose XHR/Fetch bodies are worth harvesting alongside the
+#: documents. Empty by default -- set DP_HARVEST_API to a comma-separated list
+#: to switch it on. Kept opt-in until two things are measured rather than
+#: assumed: whether an XHR body still exists by harvest time (they complete
+#: earlier in the page's life than the document, so eviction is likelier), and
+#: which round to keep when a publisher requests the same endpoint twice with
+#: different tokens.
+def _api_harvest_patterns() -> list:
+    raw = (os.environ.get('DP_HARVEST_API') or '').strip()
+    return [p.strip().lower() for p in raw.split(',') if p.strip()]
+
+
+async def _harvest_document_bodies(ws, sink: dict, limit: int = 48) -> int:
+    """Fill in the bodies of the responses worth keeping from *sink*.
 
     ⚠️ Must run while the socket is still open and soon after the page
     settles: Chrome keeps response bodies in a per-renderer buffer and evicts
@@ -932,12 +944,26 @@ async def _harvest_document_bodies(ws, sink: dict, limit: int = 12) -> int:
     gone. That is why every exit of :func:`bypass_cloudflare_cdp` calls this
     before returning rather than leaving it to the caller.
 
-    Only ``Document`` responses are fetched. Asking for every image, stylesheet
-    and font would add dozens of round trips per paper for bytes nothing reads.
+    ``Document`` responses are always fetched. XHR/Fetch bodies are fetched
+    only when their URL matches :func:`_api_harvest_patterns`, which is empty
+    unless ``DP_HARVEST_API`` is set -- asking for every image, stylesheet and
+    font would add dozens of round trips per paper for bytes nothing reads.
+
+    ⚠️ The cap is 48, not the 12 that sufficed for documents alone: measured on
+    ScienceDirect 10.1016/j.cocom.2026.e01326, one article issues 20 matching
+    API calls (each endpoint twice, with different entitledTokens). A cap sized
+    for documents would have silently dropped the tail.
     """
     fetched = 0
     for rid, entry in list(sink.items()):
-        if entry.get("body") is not None or entry.get("type") != "Document":
+        if entry.get("body") is not None:
+            continue
+        _type_ok = entry.get("type") == "Document"
+        if not _type_ok:
+            _pats = _api_harvest_patterns()
+            _url = (entry.get("url") or "").lower()
+            _type_ok = bool(_pats) and any(p in _url for p in _pats)
+        if not _type_ok:
             continue
         if fetched >= limit:
             break
