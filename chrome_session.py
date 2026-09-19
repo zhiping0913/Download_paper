@@ -85,7 +85,11 @@ import websockets
 # Safe at module level despite core.utilities also reaching for this module:
 # its two references to chrome_session are lazy, inside functions, precisely so
 # the dependency runs one way. Verified by import, not by reasoning.
-from core.utilities import url_looks_like_bot_challenge
+from core.utilities import (
+    DEFAULT_API_HARVEST,
+    api_harvest_patterns,
+    url_looks_like_bot_challenge,
+)
 
 try:
     from config import (
@@ -984,37 +988,13 @@ def _record_cdp_event(sink: dict, msg: dict) -> None:
     }
 
 
-#: URL substrings whose XHR/Fetch bodies are harvested alongside the
-#: documents. Harvested by default. These are the endpoints a publisher's
-#: own page fetches during load and that a handler would otherwise request a
-#: second time: ScienceDirect's body/references/metadata calls, IEEE's REST document
-#: calls. Measured: skipping the duplicate request is the whole point, and
-#: both were observed being issued by the page itself.
-#:
-#: ⚠️ SPIE is deliberately absent. Its fulltext POST is issued by *us* from
-#: inside the page, not by the landing page, so there is nothing to capture --
-#: adding /api/ here would harvest unrelated traffic for no benefit.
-_DEFAULT_API_HARVEST = (
-    '/sdfe/arp/',            # ScienceDirect: body, references, metadata
-    '/rest/document/',       # IEEE: the REST article endpoints
-    '/fulltext/10.',         # APS: the reading view's own JSON
-    '/supplemental/10.',     # APS: the supplemental listing
-)
-
-
-def _api_harvest_patterns() -> list:
-    """URL substrings whose XHR/Fetch bodies are worth keeping.
-
-    On by default. ``DP_HARVEST_API`` overrides the list; setting it to ``0``,
-    ``off`` or ``none`` disables API harvesting entirely and leaves only
-    documents, which is the pre-2026-09 behaviour.
-    """
-    raw = (os.environ.get('DP_HARVEST_API') or '').strip()
-    if not raw:
-        return list(_DEFAULT_API_HARVEST)
-    if raw.lower() in ('0', 'off', 'none', 'false', 'no'):
-        return []
-    return [p.strip().lower() for p in raw.split(',') if p.strip()]
+#: The harvest list now lives in core.utilities so both capture paths share
+#: one definition -- the CDP preload here and the Playwright response
+#: listener in complete_paper_extraction (which is the only capture a
+#: headless run has). Re-exported under the old private names so nothing
+#: that imports them from here has to change.
+_DEFAULT_API_HARVEST = DEFAULT_API_HARVEST
+_api_harvest_patterns = api_harvest_patterns
 
 
 async def _harvest_document_bodies(ws, sink: dict, limit: int = 48) -> int:

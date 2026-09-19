@@ -78,6 +78,7 @@ from core.utilities import (
     pick_raw_article_html,
     should_block_mathjax,
     url_looks_like_bot_challenge,
+    url_wants_api_harvest,
     DP_HTTP_TOTAL_TIMEOUT,
     INPAGE_ABORT_JS,
 )
@@ -274,6 +275,35 @@ HEADLESS_ACCESSIBLE_PUBLISHERS = [
     'pleiades',
     'acs'
     ]
+
+
+def pin_capture_on_handler(handler, raw_html: str = '', api_capture: dict = None,
+                           label: str = '') -> None:
+    """Hand a handler everything the page-loading phase captured.
+
+    ⚠️ Both branches of the workflow must call this. There are two of them --
+    the headless-direct path returns into process_with_handler without ever
+    reaching the headed block -- and every capability added to one of them
+    alone has silently existed in one browser mode only. That is how
+    ``_captured_api`` came to be headed-only: handlers' "reuse what the page
+    already fetched" path was dead code in headless, and the symptom was not
+    an error but a paper quietly missing its supplemental files.
+
+    Headed and headless are two modes of the same Chrome; the only thing that
+    may legitimately branch on the mode is how a browser is launched (see
+    PublisherHandler.is_headed_run).
+    """
+    if raw_html:
+        handler._raw_server_html = raw_html
+    if api_capture:
+        handler._captured_api = api_capture
+        # An empty label means the capture already announced itself where it
+        # happened (the preload prints its own tally); saying it twice would
+        # read like two different captures.
+        if label:
+            biggest = max(len(v.get('body') or '') for v in api_capture.values())
+            print(f"  ✓ {label} API 响应 {len(api_capture)} 条"
+                  f"（最大 {biggest:,} 字符）")
 
 
 def save_html_snapshot(path, content: str, label: str = "HTML") -> bool:
@@ -3524,6 +3554,17 @@ async def complete_extraction_workflow(
 
                 # Capture raw server HTML (pre-JavaScript) via response interception.
                 _headless_raw_html: list = []
+                # ...and the endpoints the page fetches for itself. This is
+                # the ONLY capture a headless run gets: the CDP preload that
+                # feeds _headed_api never runs here, and the headless-direct
+                # path below returns straight into process_with_handler
+                # without passing the headed listener. Without this, a
+                # handler's "reuse what the page already fetched" path is
+                # permanently dead in headless -- which is not a limitation
+                # of headless at all: this listener is registered before
+                # goto() and sees XHR/Fetch perfectly well. It simply used to
+                # throw everything but documents away.
+                _headless_api: dict = {}
 
                 async def _headless_on_response(response):
                     try:
@@ -3531,6 +3572,16 @@ async def complete_extraction_workflow(
                                 and response.ok
                                 and 'text/html' in response.headers.get('content-type', '')):
                             _headless_raw_html.append(await response.text())
+                            return
+                        if response.ok and url_wants_api_harvest(response.url):
+                            body = await response.text()
+                            if body:
+                                _headless_api[f"{response.url}#{len(_headless_api)}"] = {
+                                    'url': response.url,
+                                    'type': response.request.resource_type,
+                                    'status': response.status,
+                                    'body': body,
+                                }
                     except Exception:
                         pass
 
@@ -3609,8 +3660,8 @@ async def complete_extraction_workflow(
                             doi=doi,
                         )
                         handler.crossref_data = crossref_data
-                        if headless_raw_html:
-                            handler._raw_server_html = headless_raw_html
+                        pin_capture_on_handler(handler, headless_raw_html,
+                                               _headless_api, '预检捕获')
 
                         captured_data = None
                         if hasattr(handler, 'setup_network_capture'):
@@ -3787,6 +3838,12 @@ async def complete_extraction_workflow(
             # HTML *before* JavaScript (e.g. MathJax) rewrites the DOM.
             _headed_raw_html: list = []
             _headed_api: dict = {}
+            # What the Playwright listener manages to collect. On a headless
+            # run this is the ONLY capture there is: the CDP preload never
+            # runs, so _headed_api stays empty. The listener itself can see
+            # XHR/Fetch perfectly well -- it is registered before goto() --
+            # it simply used to throw everything but documents away.
+            _pw_api: dict = {}
 
             # ⚠️ The listener below cannot see the article on a headed run.
             # The preload fetches the page over raw CDP *before* Playwright is
@@ -3925,6 +3982,20 @@ async def complete_extraction_workflow(
                             and response.ok
                             and 'text/html' in response.headers.get('content-type', '')):
                         _headed_raw_html.append(await response.text())
+                        return
+                    # The endpoints a page fetches for itself. Keyed by URL
+                    # plus a counter so a publisher that answers the same URL
+                    # twice (before and after its bot check) keeps both, the
+                    # way the CDP sink keys by requestId.
+                    if response.ok and url_wants_api_harvest(response.url):
+                        body = await response.text()
+                        if body:
+                            _pw_api[f"{response.url}#{len(_pw_api)}"] = {
+                                'url': response.url,
+                                'type': response.request.resource_type,
+                                'status': response.status,
+                                'body': body,
+                            }
                 except Exception:
                     pass
 
@@ -4148,12 +4219,12 @@ async def complete_extraction_workflow(
             else:
                 handler.configure(page=page, captured_data_dir=captured_data_dir, doi=doi)
 
-            if _headed_raw:
-                handler._raw_server_html = _headed_raw
-            if _headed_api:
-                # Same convention as _raw_server_html: pinned before
-                # extract_all runs, read through the base class.
-                handler._captured_api = _headed_api
+            # The preload's capture wins when there is one -- it sees the
+            # page's own load, which is when these calls happen. The
+            # listener's is the fallback (and, on the headless branch above,
+            # the only capture there is).
+            pin_capture_on_handler(handler, _headed_raw, _headed_api or _pw_api,
+                                   '' if _headed_api else '监听捕获')
 
             print(f"✓ 检测出版商: {publisher.upper()}\n")
 

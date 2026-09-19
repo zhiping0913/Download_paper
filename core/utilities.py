@@ -220,6 +220,51 @@ BOT_CHALLENGE_HOSTS = (
 BOT_CHALLENGE_HINTS = ('captcha', 'challenge', 'accessdenied', 'blocked')
 
 
+#: URL substrings whose XHR/Fetch bodies are worth keeping alongside the
+#: documents. These are the endpoints a publisher's own page fetches during
+#: load and that a handler would otherwise request a second time.
+#:
+#: ⚠️ The APS entries carry the DOI's '10.' on purpose. A bare '/fulltext/'
+#: would match other publishers' reading views and cost a body fetch per
+#: article for bytes nothing reads.
+#:
+#: ⚠️ SPIE is deliberately absent: its fulltext POST is issued by *us* from
+#: inside the page, not by the landing page, so there is nothing to capture.
+#:
+#: Lives here rather than in chrome_session because both capture paths need
+#: it -- the CDP preload (headed) and the Playwright response listener
+#: (either mode) -- and two copies would drift the first time a publisher is
+#: added to one of them.
+DEFAULT_API_HARVEST = (
+    '/sdfe/arp/',            # ScienceDirect: body, references, metadata
+    '/rest/document/',       # IEEE: the REST article endpoints
+    '/fulltext/10.',         # APS: the reading view's own JSON
+    '/supplemental/10.',     # APS: the supplemental listing
+)
+
+
+def api_harvest_patterns() -> list:
+    """URL substrings whose XHR/Fetch bodies are worth keeping.
+
+    On by default. ``DP_HARVEST_API`` overrides the list; setting it to ``0``,
+    ``off`` or ``none`` disables API harvesting entirely and leaves only
+    documents, which is the pre-2026-09 behaviour.
+    """
+    raw = (os.environ.get('DP_HARVEST_API') or '').strip()
+    if not raw:
+        return list(DEFAULT_API_HARVEST)
+    if raw.lower() in ('0', 'off', 'none', 'false', 'no'):
+        return []
+    return [p.strip().lower() for p in raw.split(',') if p.strip()]
+
+
+def url_wants_api_harvest(url: str) -> bool:
+    """True when *url* matches one of :func:`api_harvest_patterns`."""
+    pats = api_harvest_patterns()
+    low = (url or '').lower()
+    return bool(pats) and any(p in low for p in pats)
+
+
 def captured_api_body(captured: dict, path_suffix: str) -> str:
     """Return a captured response body whose URL *path* ends with *path_suffix*.
 
