@@ -3780,6 +3780,27 @@ async def complete_extraction_workflow(
                     if _headed_raw_html:
                         print(f"  ✓ 预载捕获文档响应 {len(_headed_raw_html)} 份"
                               f"（最大 {max(len(h) for h in _headed_raw_html):,} 字符）")
+                        # Land it now, not after extract_all.
+                        #
+                        # The raw body is already in hand here; waiting for the
+                        # handler to return meant page_raw.html appeared only
+                        # once the whole extraction had run, and not at all if
+                        # anything in between raised. The headless path has
+                        # always written it at precheck time (see the
+                        # headless_initial.html block); this brings the headed
+                        # path in line. process_with_handler still writes it
+                        # too -- same bytes, and it stays correct for runs that
+                        # never went through a preload.
+                        try:
+                            _early_raw = pick_raw_article_html(_headed_raw_html, doi)
+                            if _early_raw and captured_data_dir:
+                                captured_data_dir.mkdir(parents=True, exist_ok=True)
+                                _early_path = captured_data_dir / "page_raw.html"
+                                _early_path.write_text(_early_raw, encoding='utf-8')
+                                print(f"  ✓ 原始HTML已落盘: {_early_path.name}"
+                                      f" ({len(_early_raw):,} 字符)")
+                        except Exception as _e:
+                            print(f"  ⚠️  原始HTML提前落盘失败: {_e}")
                     else:
                         print(f"  ⚠️  预载未捕到文档响应（共 {len(_pre)} 条记录）")
 
@@ -3818,9 +3839,19 @@ async def complete_extraction_workflow(
                         _hits = [_e for _e in _pre.values()
                                  if any(nd in (_e.get('url') or '').lower()
                                         for nd in _needles)]
+                        _with_body = [_e for _e in _hits if _e.get('body')]
                         print(f"  🔍 匹配 {_pat!r} 的响应: {len(_hits)} 条"
                               + ("（页面自己发起的 API 调用）" if _hits
                                  else "（页面加载期间没有自己发起这些调用）"))
+                        # The count that decides whether capture is usable:
+                        # recording a URL proves the page asked for it, but
+                        # only a body proves we can skip asking again. XHR
+                        # bodies complete earlier than the document, so
+                        # eviction is the thing to watch.
+                        print(f"  🔍 其中已取到 body 的: {len(_with_body)} 条"
+                              + (f"（最大 {max(len(_e['body']) for _e in _with_body):,} 字符）"
+                                 if _with_body else "（body 全部为空 —— 要么未开"
+                                 " DP_HARVEST_API，要么已被驱逐）"))
                         for _e in _hits:
                             print(f"     ★ [{_e.get('type') or '?':9s}] "
                                   f"{_e.get('status')} "
