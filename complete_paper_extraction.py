@@ -3856,10 +3856,20 @@ async def complete_extraction_workflow(
                             print(f"     ★ [{_e.get('type') or '?':9s}] "
                                   f"{_e.get('status')} "
                                   f"{(_e.get('url') or '')[:120]}")
+                        # Documents are never elided: their count is how you
+                        # tell one page load from two, and a capped list hid
+                        # exactly that once already.
+                        _docs = [_e for _e in _pre.values()
+                                 if (_e.get('type') or '') == 'Document']
+                        print(f"  🔍 Document 响应 {len(_docs)} 条（全部列出）:")
+                        for _e in _docs:
+                            print(f"     ▣ {_e.get('status')} "
+                                  f"{(_e.get('url') or '')[:110]}")
                         _shown = 0
                         for _e in _pre.values():
                             if (_e.get('type') or '') in ('Image', 'Stylesheet',
-                                                          'Font', 'Media'):
+                                                          'Font', 'Media',
+                                                          'Document'):
                                 continue
                             if _shown >= 60:
                                 print("  🔍 …（其余从略）")
