@@ -1412,19 +1412,55 @@ async def bypass_cloudflare_cdp(
             # back empty or as an error, and an unreadable location is just as
             # much a reason to force the navigation as a chrome:// one.
             if not created_at_target:
-                try:
-                    where = await _send(ws, "Runtime.evaluate", {
-                        "expression": "location.href", "returnByValue": True})
-                    current = (where.get("result", {})
-                                    .get("result", {})
-                                    .get("value") or "")
-                except Exception:
-                    current = ""
+                _nav_t0 = time.monotonic()
+                # 📌 Measured: on a freshly created about:blank tab, assigning
+                # location.href via Runtime.evaluate does nothing at all.
+                # Instrumenting the wait shows "导航判定耗时 10.0s，已捕获
+                # Document 0 条" -- a full ten seconds of polling with not one
+                # Document response. The page is always loaded by the
+                # Page.navigate below; the JS attempt is dead weight.
+                #
+                # ⚠️ This corrects three earlier readings of mine. I claimed the
+                # JS navigation *did* work and that the check merely could not
+                # see it (execution context destroyed mid-navigation, then host
+                # comparison against the redirecting doi.org). Both were wrong,
+                # and both were argued from a log with no timestamps: adjacent
+                # lines looked instantaneous when one sat behind a sleep(3).
+                # The four Document responses are one load, not two --
+                # doi.org -> linkinghub -> sciencedirect plus ScienceDirect's
+                # own ?via=ihub hop. There is no duplicate page load.
+                #
+                # The poll is kept because it is honest about what it can see:
+                # a committed Document from any host other than the starting
+                # one proves the renderer left the blank tab.
+                start_host = urllib.parse.urlparse(url).netloc.lower()
+                arrived = False
+                current = ""
+                for _ in range(20):          # up to ~10s, 0.5s apart
+                    for _e in result["responses"].values():
+                        if (_e.get("type") or "") != "Document":
+                            continue
+                        _u = (_e.get("url") or "")
+                        if not _u.startswith(("http://", "https://")):
+                            continue
+                        _h = urllib.parse.urlparse(_u).netloc.lower()
+                        if _h and _h != start_host:
+                            arrived = True
+                            current = _u
+                            break
+                    if arrived:
+                        break
+                    await asyncio.sleep(0.5)
+                # ⚠️ Timestamps, because three fixes in a row were argued from
+                # a log with none. Adjacent lines were read as "instant" when
+                # one of them sat behind a 3s sleep, which sent the diagnosis
+                # after the wrong cause twice.
+                print(f"  ⏱  导航判定耗时 {time.monotonic() - _nav_t0:.1f}s，"
+                      f"已捕获 Document {sum(1 for _e in result['responses'].values() if (_e.get('type') or '') == 'Document')} 条")
 
-                target_host = urllib.parse.urlparse(url).netloc.lower()
-                arrived = bool(current) and urllib.parse.urlparse(
-                    current).netloc.lower() == target_host
-                if not arrived:
+                if arrived:
+                    print(f"  ✓ JS 导航已到达目标页面（{current[:60]}）")
+                else:
                     print(f"  ↪ JS 导航未生效 (当前 {current or '未知'})，"
                           "改用 Page.navigate")
                     await _send(ws, "Page.navigate", {"url": url})
