@@ -874,6 +874,28 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
   原本只钉了 `_force_headed`，现在把章节页的原始响应也钉上
   （否则内层 handler 的 `get_page_html()` 会静默回落到渲染后 DOM）
 
+### 带 referer 的预载（`--json` 的 `referer`）
+
+凭空起一个浏览器、直奔文章页，发出的请求**没有 Referer、`Sec-Fetch-Site: none`** ——
+"从天而降"正是 bot manager 要抓的形状。用户实测：**同一个浏览器里点"+"打开同一个网址就不会被拦**，
+甚至从被拦的 Cloudflare 页面点"+"重开也不会。
+
+- ⚠️ **但"+"打开同样不带 Referer**，所以起作用的多半是**会话连续性**（这个浏览器已经和该站
+  打过交道、拿到了 cookie），而不是 Referer 本身 —— 与 IOP 那次的结论一致
+- 📌 "先开来路页、再点击跳转"**两样一起给**：来路页那次加载收下站点 cookie，点击又带上 Referer
+- ⚠️ **必须是点击，不能是设头**。`Network.setExtraHTTPHeaders` 或 `Page.navigate` 的
+  `referrer` 参数会造出"有 Referer 但**缺** `Sec-Fetch-User`"的组合 —— 真人点击永远不会
+  产生这种形状，比不带更可疑。复用下载阶梯那套已验证的 `_REFERER_CLICK_JS` + 受信任点击
+- ⚠️ **来路页自己是拦截页就不点**（那样 Referer 是验证码页），点击失败退回直接导航
+- ❌ **点击之后必须等页面真的离开来路页**。预载循环有个兜底判据「body > 5000 字且非挑战页」，
+  而期刊某期的**目录页轻松满足**。实测：不等的话预载在还站在来路页时就宣布
+  `✅ 未触发挑战，直接访问成功`，**把来路页当文章捕获**（155,459 字符、0 条 API），
+  产出一篇 **144 行**的 md（正确是 303 行）。表现是"看着成功"，不是报错
+- ✅ 修好后实测 `10.1103/PhysRevX.7.041003` + `referer=https://journals.aps.org/prx/issues/7/4`：
+  `📄 已离开来路页 → https://link.aps.org/doi/…` → 预载捕获 API **4 条**、文档 1 份、
+  正文与补充材料都复用捕获、303 行、5 图、2 补充材料
+- 用法：`--json` 顶层 `referer`（缺省读 `header.referer`），**预载和 Fallback 两条路都用**
+
 ### 挑战页点到哪里（`_CHALLENGE_CLICK_TARGET_JS`）
 
 预载循环认出挑战页之后分两条路：`_find_turnstile_iframe_cdp()` 找到 Turnstile

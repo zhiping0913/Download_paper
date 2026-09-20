@@ -4003,6 +4003,11 @@ async def complete_extraction_workflow(
                 url,
                 CHROME_DEBUG_PORT,
                 expected_doi=doi,
+                # A cold tab aimed straight at the article arrives with no
+                # Referer and Sec-Fetch-Site: none. When --json supplies a
+                # referring page, the preload opens that first and clicks
+                # through instead. See bypass_cloudflare_cdp.
+                referer=referer or '',
                 timeout_s=int(DP_CLOUDFLARE_TIMEOUT),
             )
             if _cf_pre_result["success"]:
@@ -4211,6 +4216,7 @@ async def complete_extraction_workflow(
                 try:
                     _cf_result = await bypass_cloudflare_cdp(
                         url=url,
+                        referer=referer or '',
                         debug_port=CHROME_DEBUG_PORT,
                         timeout_s=DP_CLOUDFLARE_TIMEOUT,
                         wait_for_content=True,
