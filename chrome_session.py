@@ -88,6 +88,7 @@ import websockets
 from core.utilities import (
     DEFAULT_API_HARVEST,
     api_harvest_patterns,
+    env_seconds,
     url_looks_like_bot_challenge,
 )
 
@@ -1612,6 +1613,21 @@ async def bypass_cloudflare_cdp(
                     await asyncio.sleep(3)
 
             deadline = asyncio.get_event_loop().time() + timeout_s
+            # One extension, and only for a page that is demonstrably still
+            # working on a challenge. Measured on APS
+            # (10.1103/physreva.79.020103, a slow machine): the preload spent
+            # its whole 60 s on "title='Just a moment...' iframes=0" -- the
+            # Turnstile widget had not rendered yet, so there was nothing to
+            # click and nothing to pass. It gave up, and the Playwright path
+            # that ran afterwards found the widget, clicked it once and got
+            # through. Failing at the deadline cost a second full page load on
+            # a machine where one load was already taking over two minutes.
+            #
+            # ⚠️ Extended only when a challenge was seen and the page is still
+            # on it: a page that is merely slow, or that has quietly become
+            # the article, must not buy extra time here.
+            extension_s = env_seconds('DP_CHALLENGE_EXTRA_WAIT', timeout_s)
+            extended = False
             challenge_detected = False
             challenge_rounds = 0  # 挑战页已经过了多少轮（用于判断 iframe 是否延迟加载）
             turnstile_tried = False
@@ -1652,7 +1668,19 @@ async def bypass_cloudflare_cdp(
                 except Exception as _e:
                     print(f"  ⚠️  下载目录初始化异常: {_e}")
 
-            while asyncio.get_event_loop().time() < deadline:
+            while True:
+                if asyncio.get_event_loop().time() >= deadline:
+                    # Still on a challenge and never got a chance to act on it?
+                    # Give it one more window instead of handing the whole load
+                    # back to be repeated. See the note where extension_s is set.
+                    if (challenge_detected and not extended and is_challenge
+                            and extension_s > 0):
+                        extended = True
+                        deadline = asyncio.get_event_loop().time() + extension_s
+                        print(f"  ⏳ 仍停在挑战页，再等 {extension_s:.0f}s"
+                              f"（widget 可能还没渲染出来）")
+                    else:
+                        break
                 try:
                     # 获取标题
                     title_r = await _send(ws, "Runtime.evaluate", {"expression": "document.title || ''"})
