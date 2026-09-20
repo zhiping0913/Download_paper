@@ -1461,6 +1461,25 @@ async def bypass_cloudflare_cdp(
                 print(f"  📄 复用 New Tab (chrome://newtab)")
                 break
         
+        # Chrome 刚起来、整个浏览器只有一个 about:blank —— 那就是我们自己用
+        # start_url 开的那个启动 tab，直接用它。
+        #
+        # ⚠️ 这不违反下面那条「绝不复用 about:blank」：那条防的是**别人**
+        # （通常是 Playwright）开的空白 tab，它带自动化指纹。而"整个浏览器只
+        # 有这一个 page target"正是"除了启动 tab 还没有任何东西"的样子。
+        # 不加这一条的后果是每次都再开一个空白 tab，于是窗口里有两个 tab：
+        # 一个空白的，一个真正的页面。用户从命令行开 Chrome 只会看到一个。
+        if not ws_url:
+            pages = [t for t in targets if t.get("type") == "page"]
+            if (len(pages) == 1
+                    and (pages[0].get("url") or "").lower() in (
+                        "about:blank", "")):
+                ws_url = pages[0].get("webSocketDebuggerUrl")
+                if ws_url:
+                    created_at_target = False
+                    blank_tab_we_opened = True
+                    print("  📄 复用启动时的空白 tab（浏览器里只有它）")
+
         # 找不到 New Tab 就新建一个
         # 注意：绝不复用 about:blank tab——它很可能是 Playwright 创建的，
         # 带有自动化指纹，会导致 Cloudflare 直接 403
