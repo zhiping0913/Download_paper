@@ -841,10 +841,26 @@ iframe 就点它，找不到才走兜底。
   就是完整那份；实测四种 `Accept-Language`（en/fr/zh/不发）**全部返回完整正文**，
   切法语再切回英文，`div.body` 始终在、正文文本始终是 235,190 字符。
   所以真正起作用的是"**再要一次**"，不是语言
-- 📌 因此 `_refetch_if_shell()` 的做法是**对同一 URL 重新导航**（最多 2 次），
-  不模拟那个按钮 —— 不依赖它存在，也不依赖 Cambridge 前端的实现。拿到带
-  `<div class="body">` 的那份就替换 `_raw_server_html`，`page_raw.html` 随之
-  被覆盖成实际用于提取的那一份
+- 📌 **真正起作用的是 `cache-control: max-age=0`**，这也决定了 `_refetch_if_shell()`
+  两层的顺序。真机实测同一篇：
+
+  | 做法 | 请求头 `cache-control` |
+  |---|---|
+  | `goto(同一 URL)` | **无** —— 可能直接吃缓存 |
+  | `reload()` | `max-age=0` |
+  | 点 Français | `max-age=0` |
+
+  所以 ① 先 `reload()`（与点击**同样的缓存语义**，但不依赖按钮存在）×2，
+  ② 再点语言切换（用户在真机上验证过有效的那一个）。都失败就返回空，
+  绝不拿壳冒充正文。拿到带 `<div class="body">` 的那份就替换 `_raw_server_html`，
+  `page_raw.html` 随之被覆盖成实际用于提取的那一份
+- ⚠️ **点击后只等 `networkidle` 会抓到 0 字节**。点击触发的导航是异步的，
+  networkidle 可以被"当前这个页面"满足，于是监听器在新文档到达前就被摘掉了。
+  必须用 `expect_navigation` 包住点击再补一段固定等待 —— 实测 0 字节 → 2,259,527 字节。
+  ⚠️ 同步 emit 的假 page 永远测不出这条，它只在真机上暴露
+- 📌 点击后那份文档是 `<html lang="fr">`，但**正文仍是英文原文**（实测作者名
+  Danson×49、petawatt×272）。Cambridge 只翻译界面外壳，不翻译论文，
+  所以拿它当 raw 不会产出一篇法语 md
 - ⚠️ 判据是 `<div class="body">`（完整页恰好 1 个），正是
   `extract_article_text_from_html` 找不到它就返回空正文的那个容器。用词边界匹配，
   `class="bodycopy"` 不算
