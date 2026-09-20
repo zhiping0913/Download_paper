@@ -30,12 +30,16 @@ Body markup, all inside ``fullTextHtml``:
     div.article-table           table, with div.table-footnotes beneath
     div.ref-content             references
 
-No supplemental: no SPIE article seen so far ships any, so nothing is
-extracted for it rather than guessing at markup that may not exist.
+Supplemental: files get their own DOI -- the article's plus an ``.sNN``
+suffix -- and the body text links to it. The landing page never mentions
+the word (measured: 0 occurrences), so the .sNN suffix is what identifies
+them. There is also an /api/<family>/article/supplemental endpoint; it is
+read from the capture when present, but has not been observed firing.
 """
 
 from __future__ import annotations
 
+import os
 import json
 import re
 from typing import Dict, List, Optional, Tuple
@@ -365,6 +369,13 @@ class SPIEHandler(PublisherHandler):
         # and this handler then asked for the identical resource a second
         # time. SPIE runs Imperva and is the strictest publisher here, so the
         # request worth not making is this one.
+        if os.environ.get('DP_SPIE_SUPP_DUMP'):
+            # Read-only: lists what was already captured, issues nothing.
+            _cap = getattr(self, '_captured_api', None) or {}
+            print(f"  🔎 捕获到的 API 响应 {len(_cap)} 条：")
+            for _e in _cap.values():
+                print(f"     · {len(_e.get('body') or ''):>9,} 字符  {(_e.get('url') or '')[:110]}")
+
         captured, captured_url = self.captured_api_entry('/article/fulltexthtml')
         if captured:
             html = self._fulltext_from_captured(captured)
@@ -916,8 +927,88 @@ class SPIEHandler(PublisherHandler):
         doi = (doi or self.doi or '').strip()
         return f"{self.SPIE_BASE}/journals/{doi}.pdf" if doi else None
 
+    # ------------------------------------------------------------------
+    # Supplemental material
+    # ------------------------------------------------------------------
+    #: SPIE gives supplemental files their own DOI, the article's with an
+    #: ``.sNN`` suffix, and links to it from the body text.
+    _SUPP_DOI_RE = re.compile(
+        r'https?://(?:dx\.)?doi\.org/(10\.\d{4,9}/[^\s"\'<>]+?\.s\d+)',
+        re.IGNORECASE)
+
+    @classmethod
+    def supplemental_from_fulltext(cls, body_html: str, doi: str = '') -> list:
+        """Supplemental links carried by the article body, in document order.
+
+        SPIE publishes supplemental material under its own DOI -- the
+        article's plus an ``.sNN`` suffix -- and the body references it as
+
+            <a target="xrefwindow" href="https://doi.org/10.1117/1.APN.4.3.036004.s01">
+              Supplementary Material</a>
+
+        Measured on 10.1117/1.APN.4.3.036004: three such anchors, all the
+        same .s01, and the word "supplemental" appears nowhere in the landing
+        page. The suffix is what identifies these; matching on the link text
+        would be language- and wording-dependent.
+
+        Deduplicated, because the body cites the same file from several
+        paragraphs.
+        """
+        if not body_html:
+            return []
+        seen, out = set(), []
+        want = (doi or '').lower()
+        for m in cls._SUPP_DOI_RE.finditer(body_html):
+            supp_doi = m.group(1)
+            # Only this article's own supplements: a .sNN DOI belonging to a
+            # cited paper would otherwise be downloaded as ours.
+            if want and not supp_doi.lower().startswith(want + '.s'):
+                continue
+            url = f'https://doi.org/{supp_doi}'
+            if url in seen:
+                continue
+            seen.add(url)
+            out.append(url)
+        return out
+
+    def supplemental_from_capture(self) -> tuple:
+        """``(urls, descriptions)`` from a captured /article/supplemental call.
+
+        ⚠️ Not observed yet. The endpoint exists and the page is reported to
+        call it during load, but two runs on 10.1117/1.APN.4.3.036004 captured
+        nothing for it -- so this stays a bonus path and the body-text links
+        above are what actually finds the files. It lands supplemental.json
+        when it does fire, the same way the fulltext path lands its payload.
+        """
+        body, url = self.captured_api_entry('/article/supplemental')
+        if not body:
+            return [], {}
+        try:
+            payload = json.loads(body)
+        except Exception:
+            print("  ⚠️  预载捕获的 supplemental 无法解析为 JSON")
+            return [], {}
+        self._cache_json('supplemental.json', payload)
+        urls, descs = [], {}
+        data = payload.get('data') if isinstance(payload, dict) else None
+        for item in (data if isinstance(data, list) else (data or {}).get('items') or []):
+            if not isinstance(item, dict):
+                continue
+            href = (item.get('url') or item.get('href') or '').strip()
+            if not href:
+                continue
+            full = urljoin(self.SPIE_BASE + '/', href)
+            urls.append(full)
+            label = (item.get('description') or item.get('caption') or '').strip()
+            if label:
+                descs[full.rsplit('/', 1)[-1]] = label
+        if urls:
+            print(f"  ♻️  补充材料复用预载捕获：{len(urls)} 个（{url}）")
+        return urls, descs
+
     async def get_supplemental_url(self, doi: str) -> Optional[str]:
-        # No SPIE article seen so far ships supplemental material.
+        # Supplemental files have their own DOIs and are found in the body
+        # text, not at a constructible URL. See supplemental_from_fulltext.
         return None
 
     async def extract_references(self, html: str) -> list:
@@ -981,6 +1072,15 @@ class SPIEHandler(PublisherHandler):
             else:
                 metadata.setdefault('references', [])
 
+            # Supplemental: the captured API when it fires, otherwise the
+            # body's own .sNN DOI links (which is what has actually been
+            # observed -- see supplemental_from_fulltext).
+            supp_urls, supp_descriptions = self.supplemental_from_capture()
+            if not supp_urls and fulltext:
+                supp_urls = self.supplemental_from_fulltext(fulltext, self.doi or doi)
+                if supp_urls:
+                    print(f"  ✓ 补充材料（正文中的 .sNN DOI）: {len(supp_urls)} 个")
+
             # hasAccess=False 时正文 API 什么都不给，但 landing page 上图还在
             if not figure_urls:
                 figure_urls = self.extract_figures_from_landing(landing)
@@ -992,8 +1092,8 @@ class SPIEHandler(PublisherHandler):
                 'links': {
                     'pdf_url': pdf_url,
                     'figure_urls': figure_urls,
-                    'supplemental_urls': [],
-                    'supplemental_descriptions': {},
+                    'supplemental_urls': supp_urls,
+                    'supplemental_descriptions': supp_descriptions,
                 },
                 'fulltext_data': fulltext or landing,
                 'journal_name': 'spie',
