@@ -19,6 +19,14 @@ from publisher.nature import NatureHandler
 class SpringerBookHandler(PublisherHandler):
     """Handler for Springer Books and book chapters (springer.com/book, springer.com/chapter)"""
 
+    PUBLISHER = 'springer_book'
+
+    # A book's "supplemental material" is its own chapters -- one PDF each,
+    # dozens of them, most of a run's wall clock -- when what was asked for is
+    # the book. Off unless the run says otherwise; --supplemental=True still
+    # wins, because an explicit request outranks a handler's default.
+    SUPPLEMENTAL_DEFAULT = False
+
     def __init__(self, page=None, captured_data_dir=None, doi: str = None):
         """
         Initialize Springer Book handler
@@ -89,11 +97,8 @@ class SpringerBookHandler(PublisherHandler):
             print(f"  ℹ️  Detected reference work — using /referencework/ TOC paths")
 
         try:
-            # Extract page HTML content
-            try:
-                fulltext_html = await page.content()
-            except Exception:
-                fulltext_html = ''
+            # The response the server sent, not the rendered DOM.
+            fulltext_html = await self.get_page_html(page)
 
             # Extract key sections (after navigating to correct page)
             metadata = await self.extract_metadata(page)
@@ -234,7 +239,7 @@ class SpringerBookHandler(PublisherHandler):
         }
 
         try:
-            html = await page.content()
+            html = await self.get_page_html(page)
             soup = BeautifulSoup(html, 'html.parser')
 
             # Extract book title - look for h1.app-card-open__heading or similar
@@ -490,12 +495,15 @@ class SpringerBookHandler(PublisherHandler):
         book_url = f"https://link.springer.com/{toc_path}/{self.doi}?page={page_num}"
         nav_page = await page.context.new_page()
         try:
-            await nav_page.goto(book_url, wait_until='domcontentloaded', timeout=60000)
-            try:
-                await nav_page.wait_for_load_state('networkidle', timeout=15000)
-            except Exception:
-                pass
-            return await nav_page.content()
+            # A TOC page is one of the pages this handler opens beyond the
+            # article, so it goes through the shared helper: listener attached
+            # before the navigation, raw document taken, three attempts. The
+            # rendered copy buys nothing here -- the chapter list is server
+            # rendered -- and taking it would put a MathJax-rewritten DOM into
+            # the same pipeline as everything else.
+            return await goto_and_capture_document(
+                nav_page, book_url, timeout_ms=60000,
+                label=f"目录第 {page_num} 页")
         except Exception as e:
             print(f"  ⚠️  获取第{page_num}页失败: {e}")
             return ''

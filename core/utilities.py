@@ -466,6 +466,11 @@ def env_off(name: str, default: str = '1') -> bool:
 #: fetching is skipped, so nothing about the article is lost from the record.
 DP_SUPPLEMENTAL = not env_off('DP_SUPPLEMENTAL')
 
+#: Whether the run said anything at all. A handler may default to skipping
+#: (books do); an explicit flag or variable outranks that, and "not set" has
+#: to be distinguishable from "set to True" for that to work.
+DP_SUPPLEMENTAL_SET = 'DP_SUPPLEMENTAL' in os.environ
+
 
 def http_asset_headers(referer: str = None) -> dict:
     headers = {
