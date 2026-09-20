@@ -4,7 +4,6 @@ Handles extraction from Nature and Nature-family journals (Nature Physics, Natur
 """
 
 from publisher.base import PublisherHandler
-from core.network_capture import setup_response_capture
 import re
 import json
 from pathlib import Path
@@ -19,6 +18,7 @@ from playwright.async_api import async_playwright
 
 from publisher.wildcard import (
     convert_html_fragment_to_markdown,
+    goto_and_capture_document,
     extract_abstract_with_fallbacks,
     find_generic_article_body,
     format_citation_as_text,
@@ -31,6 +31,8 @@ from publisher.wildcard import (
 
 class NatureHandler(PublisherHandler):
     """Handler for Nature and Springer Nature journals"""
+
+    PUBLISHER = 'nature'
 
     def __init__(self, journal_name: str = 'nature', page=None, captured_data_dir=None, doi: str = None):
         """
@@ -48,7 +50,8 @@ class NatureHandler(PublisherHandler):
         Args:
             page: Playwright page object (should already be navigated to DOI)
             doi: DOI of the paper
-            captured: Optional dict with already-captured network data from setup_network_capture()
+            captured: unused; kept for the shared extract_all signature. The
+                     article response arrives on _raw_server_html.
 
         Returns:
             dict with keys: 'metadata', 'links', 'fulltext_data', 'journal_name'
@@ -60,8 +63,6 @@ class NatureHandler(PublisherHandler):
         )
         doi = self.doi  # resolve doi from handler after init (may have been None)
 
-        if captured is None:
-            captured = self.setup_network_capture(page, self.doi or doi)
 
         # Get the actual page URL for correct base_url resolution
         set_actual_base_url(self, page)
@@ -101,11 +102,10 @@ class NatureHandler(PublisherHandler):
                 'supplemental_descriptions': supplemental_descriptions
             }
 
-            # 6. Capture article HTML for fulltext (Nature doesn't have JSON API like APS)
-            try:
-                fulltext_html = await page.content()
-            except:
-                fulltext_html = None
+            # 6. The article HTML for the fulltext (Nature has no JSON API).
+            # The raw server response, not the rendered DOM: Nature renders its
+            # formulas with MathJax, which leaves nothing recoverable behind.
+            fulltext_html = await self.get_page_html(page) or None
 
             # 6.5 Fetch inline table pages and convert to markdown
             table_data = {}
@@ -114,7 +114,7 @@ class NatureHandler(PublisherHandler):
                 if table_infos:
                     print(f"  📊 发现 {len(table_infos)} 个行内表格，正在获取...")
                 for table_id, caption, href in table_infos:
-                    table_page_html = await self._fetch_table_page(page, href)
+                    table_page_html = await self._fetch_table_page(page, href, table_id)
                     if table_page_html:
                         table_md = self._convert_table_html_to_md(table_page_html)
                         if table_md:
@@ -124,15 +124,6 @@ class NatureHandler(PublisherHandler):
                             print(f"    ✓ {caption}")
 
             links['table_data'] = table_data
-
-            # 7. Save HTML to captured_data if captured_data was set up
-            if fulltext_html and captured is not None:
-                try:
-                    # captured dict should have been set up by setup_network_capture()
-                    # Save HTML to the captured data directory
-                    print("  ✓ HTML已在网络监听中保存")
-                except:
-                    pass
 
             return {
                 'metadata': metadata,
@@ -159,47 +150,12 @@ class NatureHandler(PublisherHandler):
             if managed_context is not None:
                 self.page = None
 
-    def setup_network_capture(self, page=None, doi: str = None):
-        """Set up network event listener to capture responses
-
-        Call this before or after page navigation, so it captures network traffic.
-        Returns a dict that will be populated with captured data.
-
-        Args:
-            page: Playwright page object
-            doi: DOI for organizing output files
-
-        Returns:
-            dict that will be populated with captured data
-        """
-        page = page or self.page
-        doi = doi or self.doi
-        if page is None:
-            raise ValueError("NatureHandler.setup_network_capture() requires a Playwright page")
-        if doi is None:
-            raise ValueError("NatureHandler.setup_network_capture() requires a DOI")
-
-        self.configure(page=page, doi=doi)
-
-        output_dir = self.captured_data_dir or Path("captured_data") / doi.replace('/', '_')
-        captured = {
-            'json_responses': [],
-            'document': None,
-            'documents': [],
-            'timeline': [],
-            'html': None,              # Save page HTML
-        }
-
-        def on_document(response, html, entry, captured):
-            captured['html'] = html
-
-        return setup_response_capture(
-            page,
-            output_dir,
-            captured=captured,
-            on_document=on_document,
-        )
-
+    # ⚠️ Nature's own network listener is gone, the same one APS carried:
+    # core.network_capture printed a line per response and wrote every HTML
+    # document it saw into the paper's directory. Here it bought even less
+    # than it did there -- the dict it filled was read by nothing, and step 7
+    # of extract_all only printed that the capture had saved the HTML. The
+    # workflow's capture holds the article response on _raw_server_html.
     async def extract_metadata(self, page) -> dict:
         """Extract metadata from Nature article page
 
@@ -281,7 +237,7 @@ class NatureHandler(PublisherHandler):
         }""")
 
         try:
-            html_content = await page.content()
+            html_content = await self.get_page_html(page)
             metadata['abstract'] = self.extract_abstract_from_html_content(html_content)
         except Exception as e:
             print(f"  ⚠️  Abstract HTML extraction failed: {str(e)[:80]}")
@@ -682,19 +638,46 @@ class NatureHandler(PublisherHandler):
                 table_infos.append((table_id, caption, href))
         return table_infos
 
-    async def _fetch_table_page(self, page, table_url: str) -> str:
-        """Navigate to a table page and return its HTML content."""
+    async def _fetch_table_page(self, page, table_url: str,
+                                table_id: str = '') -> str:
+        """Open a table page and return the response the server sent.
+
+        Nature keeps inline tables on their own pages, so this is the one
+        navigation the handler makes beyond the article. It reads the raw
+        document rather than page.content(): a table can carry formulas, and
+        MathJax rewrites them in the rendered DOM exactly as in the article.
+        Retries live in goto_and_capture_document, which also explains the
+        ways a capture can come back empty.
+
+        The document lands as ``table_<id>.html`` beside the other captures --
+        it is a page this run fetched, and the markdown is built from it.
+
+        The article stays available regardless: _raw_server_html was pinned
+        before this ran, so get_page_html still answers with the article even
+        though the page is now standing on a table.
+        """
         full_url = table_url if table_url.startswith('http') else self.actual_base_url + table_url
-        try:
-            await page.goto(full_url, wait_until='domcontentloaded', timeout=30000)
-            try:
-                await page.wait_for_load_state('networkidle', timeout=10000)
-            except Exception:
-                pass
-            return await page.content()
-        except Exception as e:
-            print(f"  ⚠️  Failed to fetch table page {full_url}: {e}")
+        html = await goto_and_capture_document(
+            page, full_url, label=f"\u8868\u683c\u9875 {table_id or table_url}")
+        if not html:
+            print(f"  \u26a0\ufe0f  \u8868\u683c\u9875\u59cb\u7ec8\u672a\u6355\u83b7\u5230\u539f\u59cb\u54cd\u5e94\uff0c\u8df3\u8fc7"
+                  f"\uff08\u5b81\u53ef\u7f3a\u8fd9\u5f20\u8868\uff0c\u4e5f\u4e0d\u7528\u516c\u5f0f\u5df2\u88ab\u66ff\u6389\u7684 DOM\uff09")
             return ''
+        self._save_table_html(html, table_id)
+        return html
+
+    def _save_table_html(self, html: str, table_id: str) -> None:
+        """Land a fetched table page beside the other captures."""
+        if not html or not self.captured_data_dir:
+            return
+        safe = re.sub(r'[^A-Za-z0-9_.-]', '_', table_id or 'table')[:60]
+        try:
+            out = Path(self.captured_data_dir) / f'table_{safe}.html'
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(html, encoding='utf-8')
+            print(f"    \u2713 {out.name} \u5df2\u4fdd\u5b58 ({out.stat().st_size:,} bytes)")
+        except Exception as exc:
+            print(f"    \u26a0\ufe0f  table_{safe}.html \u4fdd\u5b58\u5931\u8d25: {str(exc)[:60]}")
 
     @classmethod
     def _convert_table_html_to_md(cls, table_page_html: str) -> str:
@@ -1269,7 +1252,7 @@ class NatureHandler(PublisherHandler):
 
         # Try HTML structure first (more reliable for Springer books/chapters)
         try:
-            fulltext_html = await page.content()
+            fulltext_html = await self.get_page_html(page)
             figures = self._extract_figures_from_html(fulltext_html)
             if figures:
                 print(f"  ✅ Figures found from HTML structure: {len(figures)}")
