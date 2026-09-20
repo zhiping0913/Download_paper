@@ -306,6 +306,229 @@ def pin_capture_on_handler(handler, raw_html: str = '', api_capture: dict = None
                   f"（最大 {biggest:,} 字符）")
 
 
+class PageCapture:
+    """Everything one article-page load produced, and where it lands.
+
+    One object for what used to be four parallel piles of locals -- the
+    headless precheck's raw-HTML/API locals and the headed path's three.
+    They drifted:
+    API bodies were kept on one path and thrown away on the other, so every
+    handler's "reuse what the page already fetched" branch was dead code in
+    headless, and the symptom was a paper quietly missing files rather than an
+    error. Headed and headless are two modes of the same Chrome; only how a
+    browser is launched may branch on the mode.
+
+    Sources, all merged into the same two piles:
+
+    * ``attach(page)``   -- Playwright's response listener (either mode)
+    * ``absorb_cdp(...)``-- the headed preload's CDP sink, which is the only
+      thing that sees the article document on a headed run (Playwright is not
+      connected yet when the preload navigates)
+    """
+
+    def __init__(self, doi: str = ''):
+        self.doi = doi or ''
+        self.documents: list = []
+        self.api: dict = {}
+        self._page = None
+        self._listener = None
+
+    # -- collection ---------------------------------------------------
+    def attach(self, page):
+        """Start recording *page*'s responses. Registers before any goto()."""
+        async def _on_response(response):
+            try:
+                if (response.request.resource_type == 'document'
+                        and response.ok
+                        and 'text/html' in response.headers.get('content-type', '')):
+                    self.documents.append(await response.text())
+                    return
+                # The endpoints the page fetches for itself. Keyed by URL plus
+                # a counter so a publisher that answers the same URL twice
+                # (before and after its bot check) keeps both, the way the CDP
+                # sink keys by requestId.
+                if response.ok and url_wants_api_harvest(response.url):
+                    body = await response.text()
+                    if body:
+                        self.api[f"{response.url}#{len(self.api)}"] = {
+                            'url': response.url,
+                            'type': response.request.resource_type,
+                            'status': response.status,
+                            'body': body,
+                        }
+            except Exception:
+                pass
+
+        self._page = page
+        self._listener = _on_response
+        page.on('response', _on_response)
+        return self
+
+    def absorb_cdp(self, responses: dict) -> None:
+        """Merge a CDP preload's capture (``result["responses"]``)."""
+        for entry in (responses or {}).values():
+            body = entry.get('body')
+            if not body:
+                continue
+            if 'html' in (entry.get('mimeType') or '').lower():
+                self.documents.append(body)
+            elif (entry.get('type') or '') != 'Document':
+                self.api[f"cdp:{len(self.api)}"] = entry
+
+    # -- results ------------------------------------------------------
+    def raw_html(self) -> str:
+        """The document that is actually the article (see pick_raw_article_html)."""
+        return pick_raw_article_html(self.documents, self.doi) or ''
+
+    def announce(self, where: str) -> None:
+        if self.api:
+            print(f"  ✓ {where}捕获 API 响应 {len(self.api)} 条"
+                  f"（最大 {max(len(v.get('body') or '') for v in self.api.values()):,} 字符）")
+        if self.documents:
+            print(f"  ✓ {where}捕获文档响应 {len(self.documents)} 份"
+                  f"（最大 {max(len(h) for h in self.documents):,} 字符）")
+        else:
+            print(f"  ⚠️  {where}未捕到文档响应")
+
+    def land(self, captured_data_dir, rendered_html: str = '') -> str:
+        """Write page_raw.html (and page.html when a rendered DOM is given).
+
+        Landing happens here, as soon as the bytes exist, rather than after
+        extract_all: waiting meant page_raw.html appeared only once the whole
+        extraction had run, and not at all if anything in between raised.
+        """
+        raw = self.raw_html()
+        if not captured_data_dir:
+            return raw
+        try:
+            captured_data_dir.mkdir(parents=True, exist_ok=True)
+            if raw:
+                save_html_snapshot(captured_data_dir / "page_raw.html", raw, "原始HTML")
+            if rendered_html:
+                save_html_snapshot(captured_data_dir / "page.html", rendered_html, "HTML")
+        except Exception as e:
+            print(f"  ⚠️  HTML 落盘失败: {e}")
+        return raw
+
+    def pin(self, handler, label: str = '') -> str:
+        """Hand the capture to *handler* and return the raw article HTML."""
+        raw = self.raw_html()
+        pin_capture_on_handler(handler, raw, self.api, label)
+        return raw
+
+
+async def navigate_with_capture(page, urls, *, capture: PageCapture,
+                                publisher_token: str = '',
+                                extra_headers: dict = None,
+                                timeout_s: float = None,
+                                solve_challenge: bool = True):
+    """Load the first of *urls* that works, recording everything it fetches.
+
+    The single entry point both modes use: MathJax interception, request
+    headers, the response listener, the navigation itself and the Cloudflare
+    checkbox all happen here, in this order, so neither mode can end up with
+    one of them and not the others.
+
+    ⚠️ The listener has to exist before the first goto(), and block_mathjax
+    before the first script request -- that is why this owns the navigation
+    rather than being something a caller runs afterwards.
+
+    Returns ``(final_url, rendered_html, error)``; *error* is the last
+    navigation exception when every URL failed.
+    """
+    timeout_ms = int((timeout_s or DP_PAGE_LOAD_TIMEOUT) * 1000)
+
+    if should_block_mathjax(publisher_token):
+        await block_mathjax(page)
+    elif publisher_token:
+        print(f"  ⏭  {publisher_token.upper()} 读原始响应，不拦 MathJax")
+
+    if extra_headers:
+        try:
+            await page.set_extra_http_headers(
+                {str(k): str(v) for k, v in extra_headers.items()})
+            print(f"  ↪ 附加 header(s): {list(extra_headers.keys())}")
+        except Exception as e:
+            print(f"  ⚠️  set_extra_http_headers 失败: {e}")
+
+    capture.attach(page)
+
+    last_error = None
+    # urls=None means the page is already loaded (the headed preload opened it
+    # over raw CDP before Playwright connected). Everything above still has to
+    # run -- the listener for any navigation this flow makes later, the header
+    # and MathJax settings for the same reason -- and the challenge check below
+    # still applies to whatever is on screen.
+    for candidate in ([] if urls is None else
+                      ([urls] if isinstance(urls, str) else list(urls))):
+        print(f"  ↪ 访问: {candidate}")
+        try:
+            await page.goto(candidate, wait_until='domcontentloaded', timeout=timeout_ms)
+            try:
+                await page.wait_for_load_state('networkidle', timeout=timeout_ms)
+            except Exception:
+                print("  ℹ️  页面主文档已加载，后台资源未完全静默，继续")
+            last_error = None
+            break
+        except Exception as e:
+            last_error = e
+            print(f"  ⚠️  访问失败: {type(e).__name__}: {str(e)[:100]}")
+
+    rendered = ''
+    try:
+        rendered = await page.content()
+    except Exception:
+        pass
+
+    if solve_challenge and last_error is None:
+        rendered = await _clear_challenge_if_present(page, rendered, timeout_ms)
+
+    return (page.url if page else ''), rendered, last_error
+
+
+async def _clear_challenge_if_present(page, rendered_html: str, timeout_ms: int) -> str:
+    """Click through a Cloudflare checkbox if this page is one. Returns the HTML.
+
+    ⚠️ Gated on detection rather than run unconditionally. auto_solve_bot_challenge
+    waits ``DP_CLOUDFLARE_INITIAL_POLL`` seconds for a widget to appear before
+    concluding there is none, and the headed path used to pay that on every
+    single article -- including the overwhelming majority where the preload had
+    already cleared the challenge, or where there never was one. The detector
+    is the same one the headless branch already trusts to decide "blocked, fall
+    back to headed", and it fires on a real interstitial on three independent
+    signals (title, _cf_chl_opt, the challenge-platform script with a short
+    body).
+    """
+    try:
+        if not is_bot_challenge_page(page.url, rendered_html):
+            return rendered_html
+    except Exception:
+        return rendered_html
+
+    print("  🤖 检测到 Cloudflare 挑战页，尝试自动点击...")
+    try:
+        solved = await auto_solve_bot_challenge(
+            page, timeout_s=DP_CLOUDFLARE_TIMEOUT,
+            initial_poll_s=DP_CLOUDFLARE_INITIAL_POLL)
+    except Exception as e:
+        print(f"  ⚠️  auto_solve_bot_challenge 抛异常: {e}")
+        return rendered_html
+    if not solved:
+        return rendered_html
+
+    # A JS-only challenge answers the same URL 403 then 200 once the cookie is
+    # set, so the listener never saw the article. Reload to capture it.
+    print("  🔄 挑战已通过，重新加载页面以获取论文内容...")
+    try:
+        await page.goto(page.url, wait_until='networkidle', timeout=timeout_ms)
+    except Exception as e:
+        print(f"     ⚠️  重新加载异常: {e}")
+    try:
+        return await page.content()
+    except Exception:
+        return rendered_html
+
+
 def save_html_snapshot(path, content: str, label: str = "HTML") -> bool:
     """Write *content* to *path*, unless the file already holds exactly that.
 
@@ -3530,100 +3753,33 @@ async def complete_extraction_workflow(
                             pass
                 headless_page = await headless_context.new_page()
 
-                # Stop MathJax from running so we keep original \(...\) / <math>
-                # markup in the DOM. Must be registered before the first goto().
-                # Publishers whose handlers read the raw server response don't
-                # need it, and route interception is an in-page intervention
-                # we'd rather not perform at all -- see RAW_HTML_PUBLISHERS.
-                _pub_pre = _publisher_for_page(doi=doi)
-                if should_block_mathjax(_pub_pre):
-                    await block_mathjax(headless_page)
-                else:
-                    print(f"  ⏭  {_pub_pre.upper()} 读原始响应，不拦 MathJax")
-
-                # Attach any JSON-supplied headers (e.g. Referer). Cookies
-                # continue to be carried by the shared context.
-                if extra_headers:
-                    try:
-                        await headless_page.set_extra_http_headers(
-                            {str(k): str(v) for k, v in extra_headers.items()}
-                        )
-                        print(f"  ↪ 附加 header(s): {list(extra_headers.keys())}")
-                    except Exception as e:
-                        print(f"  ⚠️  set_extra_http_headers 失败: {e}")
-
-                # Capture raw server HTML (pre-JavaScript) via response interception.
-                _headless_raw_html: list = []
-                # ...and the endpoints the page fetches for itself. This is
-                # the ONLY capture a headless run gets: the CDP preload that
-                # feeds _headed_api never runs here, and the headless-direct
-                # path below returns straight into process_with_handler
-                # without passing the headed listener. Without this, a
-                # handler's "reuse what the page already fetched" path is
-                # permanently dead in headless -- which is not a limitation
-                # of headless at all: this listener is registered before
-                # goto() and sees XHR/Fetch perfectly well. It simply used to
-                # throw everything but documents away.
-                _headless_api: dict = {}
-
-                async def _headless_on_response(response):
-                    try:
-                        if (response.request.resource_type == 'document'
-                                and response.ok
-                                and 'text/html' in response.headers.get('content-type', '')):
-                            _headless_raw_html.append(await response.text())
-                            return
-                        if response.ok and url_wants_api_harvest(response.url):
-                            body = await response.text()
-                            if body:
-                                _headless_api[f"{response.url}#{len(_headless_api)}"] = {
-                                    'url': response.url,
-                                    'type': response.request.resource_type,
-                                    'status': response.status,
-                                    'body': body,
-                                }
-                    except Exception:
-                        pass
-
-                headless_page.on('response', _headless_on_response)
+                # One entry point for both modes: MathJax interception,
+                # headers, the response listener, the navigation and the
+                # Cloudflare checkbox. See navigate_with_capture.
+                _capture = PageCapture(doi)
+                _final_url, headless_rendered_html, last_precheck_error = \
+                    await navigate_with_capture(
+                        headless_page,
+                        build_headless_precheck_urls(),
+                        capture=_capture,
+                        publisher_token=_publisher_for_page(doi=doi),
+                        extra_headers=extra_headers,
+                    )
 
                 try:
-                    last_precheck_error = None
-                    for precheck_url in build_headless_precheck_urls():
-                        print(f"  ↪ 预检访问: {precheck_url}")
-                        try:
-                            await headless_page.goto(precheck_url, wait_until='domcontentloaded', timeout=int(DP_PAGE_LOAD_TIMEOUT * 1000))
-                            try:
-                                await headless_page.wait_for_load_state('networkidle', timeout=int(DP_PAGE_LOAD_TIMEOUT * 1000))
-                            except:
-                                print("  ℹ️  页面主文档已加载，后台资源未完全静默，继续预检")
-                            last_precheck_error = None
-                            break
-                        except Exception as e:
-                            last_precheck_error = e
-                            print(f"  ⚠️  预检访问失败: {type(e).__name__}: {str(e)[:100]}")
-
                     if last_precheck_error is not None:
                         raise last_precheck_error
 
                     # 保存无头浏览器访问结果
-                    # page_raw.html / headless_initial.html = 原始HTTP响应（JS运行前）
-                    # page.html = 渲染后DOM（handler稍后通过process_with_handler覆盖写入）
-                    headless_raw_html = pick_raw_article_html(_headless_raw_html, doi) or None
-                    headless_rendered_html = await headless_page.content()
+                    # page_raw.html = 原始HTTP响应（JS运行前）
+                    # page.html     = 渲染后DOM
+                    # headless_initial.html = 本阶段所见的那一份，便于溯源
                     headless_html = headless_rendered_html  # used for bot-detection below
-
-                    headless_html_file = captured_data_dir / "headless_initial.html"
-                    page_html_file = captured_data_dir / "page.html"
-                    # Always write the rendered DOM to page.html (consistent with headed path)
-                    save_html_snapshot(page_html_file, headless_rendered_html, "HTML")
-                    # Write raw server response separately when available
-                    if headless_raw_html:
-                        save_html_snapshot(headless_html_file, headless_raw_html, "原始HTML")
-                        save_html_snapshot(captured_data_dir / "page_raw.html",
-                                           headless_raw_html, "原始HTML")
-                    else:
-                        save_html_snapshot(headless_html_file, headless_rendered_html, "页面")
+                    headless_raw_html = _capture.land(
+                        captured_data_dir, headless_rendered_html) or None
+                    save_html_snapshot(captured_data_dir / "headless_initial.html",
+                                       headless_raw_html or headless_rendered_html,
+                                       "原始HTML" if headless_raw_html else "页面")
 
                     # 检测最终URL
                     final_headless_url = headless_page.url
@@ -3660,8 +3816,7 @@ async def complete_extraction_workflow(
                             doi=doi,
                         )
                         handler.crossref_data = crossref_data
-                        pin_capture_on_handler(handler, headless_raw_html,
-                                               _headless_api, '预检捕获')
+                        _capture.pin(handler, '预检捕获')
 
                         captured_data = None
                         if hasattr(handler, 'setup_network_capture'):
@@ -3836,14 +3991,8 @@ async def complete_extraction_workflow(
 
             # Intercept the main-document HTTP response to capture the raw server
             # HTML *before* JavaScript (e.g. MathJax) rewrites the DOM.
-            _headed_raw_html: list = []
-            _headed_api: dict = {}
-            # What the Playwright listener manages to collect. On a headless
-            # run this is the ONLY capture there is: the CDP preload never
-            # runs, so _headed_api stays empty. The listener itself can see
-            # XHR/Fetch perfectly well -- it is registered before goto() --
-            # it simply used to throw everything but documents away.
-            _pw_api: dict = {}
+            _capture = PageCapture(doi)
+            _preload_had_api = False
 
             # ⚠️ The listener below cannot see the article on a headed run.
             # The preload fetches the page over raw CDP *before* Playwright is
@@ -3859,44 +4008,17 @@ async def complete_extraction_workflow(
             if _cf_preloaded:
                 try:
                     _pre = (_cf_pre_result.get('responses') or {})
-                    for _entry in _pre.values():
-                        _body = _entry.get('body')
-                        if _body and 'html' in (_entry.get('mimeType') or '').lower():
-                            _headed_raw_html.append(_body)
-                    # Non-document bodies the page fetched for itself. Handed
-                    # to the handler the same way _raw_server_html is, so a
-                    # handler can read a response the page already made instead
-                    # of issuing the identical request a second time.
-                    _headed_api = {k: v for k, v in _pre.items()
-                                   if v.get('body')
-                                   and (v.get('type') or '') != 'Document'}
-                    if _headed_api:
-                        print(f"  ✓ 预载捕获 API 响应 {len(_headed_api)} 条"
-                              f"（最大 {max(len(v['body']) for v in _headed_api.values()):,} 字符）")
-                    if _headed_raw_html:
-                        print(f"  ✓ 预载捕获文档响应 {len(_headed_raw_html)} 份"
-                              f"（最大 {max(len(h) for h in _headed_raw_html):,} 字符）")
-                        # Land it now, not after extract_all.
-                        #
-                        # The raw body is already in hand here; waiting for the
-                        # handler to return meant page_raw.html appeared only
-                        # once the whole extraction had run, and not at all if
-                        # anything in between raised. The headless path has
-                        # always written it at precheck time (see the
-                        # headless_initial.html block); this brings the headed
-                        # path in line. process_with_handler still writes it
-                        # too -- same bytes, and it stays correct for runs that
-                        # never went through a preload.
-                        try:
-                            _early_raw = pick_raw_article_html(_headed_raw_html, doi)
-                            if _early_raw and captured_data_dir:
-                                captured_data_dir.mkdir(parents=True, exist_ok=True)
-                                save_html_snapshot(captured_data_dir / "page_raw.html",
-                                                   _early_raw, "原始HTML")
-                        except Exception as _e:
-                            print(f"  ⚠️  原始HTML提前落盘失败: {_e}")
-                    else:
-                        print(f"  ⚠️  预载未捕到文档响应（共 {len(_pre)} 条记录）")
+                    # The preload is the only thing that sees the article
+                    # document on a headed run: Playwright is not connected
+                    # when it navigates. Merge it into the same capture the
+                    # listener fills, then land it immediately -- waiting for
+                    # extract_all meant page_raw.html appeared only once the
+                    # whole extraction had run, and not at all if anything in
+                    # between raised.
+                    _capture.absorb_cdp(_pre)
+                    _preload_had_api = bool(_capture.api)
+                    _capture.announce('预载')
+                    _capture.land(captured_data_dir)
 
                     # Opt-in diagnostic: what did the page fetch on its own?
                     #
@@ -3976,35 +4098,12 @@ async def complete_extraction_workflow(
                 except Exception as _e:
                     print(f"  ⚠️  预载响应合并失败: {_e}")
 
-            async def _headed_on_response(response):
-                try:
-                    if (response.request.resource_type == 'document'
-                            and response.ok
-                            and 'text/html' in response.headers.get('content-type', '')):
-                        _headed_raw_html.append(await response.text())
-                        return
-                    # The endpoints a page fetches for itself. Keyed by URL
-                    # plus a counter so a publisher that answers the same URL
-                    # twice (before and after its bot check) keeps both, the
-                    # way the CDP sink keys by requestId.
-                    if response.ok and url_wants_api_harvest(response.url):
-                        body = await response.text()
-                        if body:
-                            _pw_api[f"{response.url}#{len(_pw_api)}"] = {
-                                'url': response.url,
-                                'type': response.request.resource_type,
-                                'status': response.status,
-                                'body': body,
-                            }
-                except Exception:
-                    pass
-
             # ── 纯 CDP 过 Cloudflare 挑战 + 预加载页面 ──
             # 如果预载阶段（Playwright 连接前）已经成功过了挑战，直接复用页面。
             # 否则用 Playwright 连接后的 CDP 再试一次（作为 fallback）。
             _cf_loaded = False  # 纯CDP是否已成功加载页面
             # (_cf_raw_html removed: the CDP-bypass paths no longer push
-            # page.content() into _headed_raw_html, so nothing holds it.)
+            # page.content() into the capture, so nothing holds it.)
 
             if _cf_preloaded:
                 # 预载已成功：在 Playwright pages 中找到对应页面复用
@@ -4046,7 +4145,7 @@ async def complete_extraction_workflow(
                     # this branch does not supply one.
                     page = _cf_page_obj
                     # ⚠️ Deliberately NOT appending page.content() into
-                    # _headed_raw_html. That list is consumed as
+                    # the capture. Its documents are consumed as
                     # _raw_server_html, which handlers treat as the pre-JS
                     # server body -- Optica and Cambridge read it precisely to
                     # get TeX that MathJax would have destroyed. Feeding it the
@@ -4093,7 +4192,7 @@ async def complete_extraction_workflow(
                             page = _cf_page_obj
                             # Same as above: page.content() is the rendered DOM
                             # and must not masquerade as the raw server body in
-                            # _headed_raw_html. get_page_html() falls back to
+                            # the capture. get_page_html() falls back to
                             # page.content() on its own when nothing was
                             # captured, so nothing is lost by not faking it.
                             _cf_loaded = True
@@ -4118,29 +4217,11 @@ async def complete_extraction_workflow(
             # do nothing for *that* load -- the raw body comes from the
             # preload's own capture instead. They still matter whenever this
             # flow navigates itself, which is exactly the page just created.
-            if extra_headers:
-                try:
-                    await page.set_extra_http_headers(
-                        {str(k): str(v) for k, v in extra_headers.items()}
-                    )
-                    print(f"  ↪ 附加 header(s): {list(extra_headers.keys())}")
-                except Exception as e:
-                    print(f"  ⚠️  set_extra_http_headers 失败: {e}")
-
-            # Stop MathJax from running so the rendered DOM (page.content())
-            # also keeps original \(...\) / <math> markup. Must be registered
-            # before the first goto().
-            # Skipped for publishers whose handlers parse the raw server
-            # response: nothing downstream reads the rendered math, so the
-            # interception would only add an aborted subresource request for
-            # the page to notice -- see RAW_HTML_PUBLISHERS.
+            # Headers, MathJax interception, the response listener, the
+            # navigation and the Cloudflare checkbox all happen in
+            # navigate_with_capture below -- the same call the headless branch
+            # makes. Nothing about them is mode-specific.
             _pub_pre = _publisher_for_page(url=url, doi=doi)
-            if should_block_mathjax(_pub_pre):
-                await block_mathjax(page)
-            else:
-                print(f"  ⏭  {_pub_pre.upper()} 读原始响应，不拦 MathJax")
-
-            page.on('response', _headed_on_response)
 
             # Step 1: Navigate and detect publisher
             print("Step 1️⃣  导航到DOI并检测出版商...")
@@ -4159,44 +4240,26 @@ async def complete_extraction_workflow(
                 captured_data = handler.setup_network_capture()
                 print("✓ 网络监听已启动\n")
 
+            # urls=None when the preload already opened the page: the
+            # listener and settings still have to be installed (this flow may
+            # navigate later), and the challenge check still applies to
+            # whatever is on screen.
             if _cf_loaded:
-                # 纯 CDP 已加载页面，跳过 goto 和 Cloudflare 处理
                 print("  ✓ 页面已由纯CDP预加载，跳过 goto")
-            else:
-                print("DEBUG: about to page.goto")
-                try:
-                    resp = await page.goto(url, wait_until='networkidle', timeout=int(DP_PAGE_LOAD_TIMEOUT * 1000))
-                    print(f"DEBUG: page.goto done, status={resp.status if resp else None}, url={page.url[:80]}")
-                except Exception as e:
-                    print(f"DEBUG: page.goto exception: {e}")
-
-                # If the landing page is a Cloudflare Turnstile "verify you are
-                # human" checkbox, try to click through it automatically.
-                try:
-                    cf_solved = await auto_solve_bot_challenge(page, timeout_s=DP_CLOUDFLARE_TIMEOUT, initial_poll_s=DP_CLOUDFLARE_INITIAL_POLL)
-                    # If Cloudflare was solved and the page navigated to the real
-                    # content, the on-response listener already captured the new
-                    # document HTML — but if the challenge was JS-only (same URL
-                    # returning 403 then 200 after cookie is set), we need to
-                    # reload to get the real content into _headed_raw_html.
-                    if cf_solved:
-                        # Always reload after challenge resolution to ensure we
-                        # capture the real article HTML.
-                        print("  🔄 挑战已通过，重新加载页面以获取论文内容...")
-                        try:
-                            await page.goto(page.url, wait_until='networkidle', timeout=int(DP_PAGE_LOAD_TIMEOUT * 1000))
-                            print(f"     ✓ 重新加载完成, status check: {len(_headed_raw_html)} document(s) captured")
-                        except Exception as e:
-                            print(f"     ⚠️  重新加载异常: {e}")
-                except Exception as e:
-                    print(f"  ⚠️  auto_solve_bot_challenge 抛异常: {e}")
+            await navigate_with_capture(
+                page,
+                None if _cf_loaded else url,
+                capture=_capture,
+                publisher_token=_pub_pre,
+                extra_headers=extra_headers,
+            )
 
             # Store the raw server HTML on the handler so it can use it instead
             # of page.content() (which returns the post-JS-rendered DOM).
             # Pick the document that is actually the article, not merely the
             # last one seen -- the listener also records the doi.org redirect
             # hop and any interstitial. See pick_raw_article_html.
-            _headed_raw = pick_raw_article_html(_headed_raw_html, doi) or None
+            _headed_raw = _capture.raw_html() or None
 
             final_url = page.url
             print(f"✓ 最终 URL: {final_url}")
@@ -4223,8 +4286,9 @@ async def complete_extraction_workflow(
             # page's own load, which is when these calls happen. The
             # listener's is the fallback (and, on the headless branch above,
             # the only capture there is).
-            pin_capture_on_handler(handler, _headed_raw, _headed_api or _pw_api,
-                                   '' if _headed_api else '监听捕获')
+            # Silent when the preload already printed its tally; the
+            # listener's own capture announces itself.
+            _capture.pin(handler, '' if _preload_had_api else '监听捕获')
 
             print(f"✓ 检测出版商: {publisher.upper()}\n")
 
