@@ -982,12 +982,9 @@ class CambridgeHandler(PublisherHandler):
 
     async def extract_metadata(self, page) -> dict:
         """Return metadata from HTML meta tags and DOM."""
-        html_content = ''
-        if page is not None:
-            try:
-                html_content = await page.content()
-            except Exception:
-                html_content = ''
+        # The captured server response, not the rendered DOM: Cambridge is
+        # in RAW_HTML_PUBLISHERS and everything read here is server rendered.
+        html_content = await self.get_page_html(page) if page is not None else ''
 
         meta = self._extract_metadata_from_html_meta(html_content)
         author_entries = self._extract_authors_from_html(html_content)

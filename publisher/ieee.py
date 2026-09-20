@@ -938,10 +938,9 @@ class IEEEHandler(PublisherHandler):
     # ==================================================================
 
     async def extract_metadata(self, page) -> dict:
-        try:
-            html = await page.content()
-        except Exception:
-            html = ''
+        # xplGlobal.document.metadata is server rendered, so the capture has
+        # it; IEEE is in RAW_HTML_PUBLISHERS.
+        html = await self.get_page_html(page)
 
         xpl = self.extract_xpl_metadata(html)
         self.resolve_article_id(getattr(page, 'url', '') or '', html)

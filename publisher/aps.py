@@ -1180,7 +1180,7 @@ class APSHandler(PublisherHandler):
             if captured.get('abstract_html'):
                 reference_html_candidates.append(captured['abstract_html'])
             try:
-                current_html = await page.content()
+                current_html = await self.get_page_html(page)
                 if current_html:
                     reference_html_candidates.append(current_html)
             except Exception:
