@@ -1203,6 +1203,14 @@ async def block_mathjax(page) -> None:
 #:                  lines (121 x-tex annotations)
 #:   ieee           10.1109/TPS.2010.2064310      byte-identical, 41 formula
 #:                  lines (its math is <tex-math> from the REST endpoint)
+#:   spie           10.1117/12.2038680 (2014 proceedings),
+#:                  10.1117/1.oe.62.8.086102 (2023) and
+#:                  10.1117/1.OE.64.11.115106 (2025): all byte-identical,
+#:                  0 / 27 / 57 formula lines. Its math arrives inside
+#:                  fulltexthtml.json and never passes through the page DOM.
+#:                  Runs were spaced 5 minutes apart -- SPIE is the strictest
+#:                  publisher here, and back-to-back visits are the shape its
+#:                  bot manager scores.
 #:
 #: ⚠️ The A/B only exercises the path where the raw capture succeeded. It says
 #: nothing about the fallback, which is exactly what the view-source rescue
@@ -1218,7 +1226,7 @@ async def block_mathjax(page) -> None:
 #: per-request ids, so that fetch is now a rescue rather than a routine step.
 RAW_HTML_PUBLISHERS = frozenset({
     'iop', 'sciencedirect', 'aps', 'optica', 'cambridge',
-    'acs', 'wiley', 'ieee',
+    'acs', 'wiley', 'ieee', 'spie',
 })
 
 
