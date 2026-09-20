@@ -546,6 +546,19 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
   第一版把预留写成 96 而最坏尾部是 100 —— **差 4 个字符，等于把要修的 bug 放回去**，
   是逐项相加才发现的，不是看出来的
 
+### 一份 HTML 只落一次
+
+- `page_raw.html` = 原始 HTTP 响应；`page.html` = 渲染后 DOM，**只在与原始响应不同时才写**
+- ⚠️ handler 大多把原始响应原样交回当 `fulltext_data`，于是两个名字装同样的字节 ——
+  实测存档 **57 篇里 30 篇** `page.html` 与 `page_raw.html` 逐字节相同。现在"有 page.html"
+  才真的意味着存在第二个视图
+- ❌ `headless_initial.html` **已取消**：它写的是 `raw or rendered`，也就是上面两个之中
+  的一个，实测 **5/5** 与 `page_raw.html` 逐字节相同
+- ⚠️ 正文页的 HTML **只由主流程落盘**。handler 侧剩下的写入都不是正文页：
+  Wiley / Optica 的 `source.html` 仅在 view-source 救援触发时写（写了就说明预载捕获落空，
+  是个要查的信号）；Cambridge 的 `page_shell.html` / `page_fr.html` 是重取阶梯的证据；
+  IOP / APS 写的是**补充材料页**
+
 ### 原始响应的捕获与选取（`_raw_server_html`）
 
 正文页的响应由 `page.on('response')` **被动**捕获——不发额外请求、不在页面里执行任何东西，

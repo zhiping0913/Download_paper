@@ -348,9 +348,12 @@ handler 创建由 `get_publisher_handler()` 负责：
 如果 `force_headed=False`，主流程会先启动无头 Chromium 访问 DOI，并保存：
 
 ```text
-captured_data/{doi}/headless_initial.html
-captured_data/{doi}/page.html
+captured_data/{doi}/page_raw.html   原始 HTTP 响应（JS 运行前）
+captured_data/{doi}/page.html       渲染后 DOM —— 只在与原始响应不同时才写
 ```
+
+（`headless_initial.html` 已取消：它存的就是上面两个之中的一个，实测存档里
+5/5 与 `page_raw.html` 逐字节相同。）
 
 Phase 0 会先访问 DOI resolver URL。如果 DOI 可以直接识别为 Nature，且 DOI resolver 访问失败，会继续尝试 Nature 文章直连 URL：
 

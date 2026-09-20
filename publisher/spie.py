@@ -365,13 +365,20 @@ class SPIEHandler(PublisherHandler):
         # and this handler then asked for the identical resource a second
         # time. SPIE runs Imperva and is the strictest publisher here, so the
         # request worth not making is this one.
-        captured = self.captured_api('/article/fulltexthtml')
+        captured, captured_url = self.captured_api_entry('/article/fulltexthtml')
         if captured:
             html = self._fulltext_from_captured(captured)
             if html:
                 return html
 
-        family = self.fulltext_family(landing_html, page_url)
+        # ⚠️ Prefer the family the *page itself* used, which the captured URL
+        # spells out (/api/journals|proceedings|ebooks/article/fulltexthtml).
+        # Asking the wrong family does not fail loudly: it answers
+        # hasAccess=False with an empty shell, which reads like a permissions
+        # problem. Inferring it from citation_article_type is a guess about
+        # what SPIE declares; the captured URL is what SPIE actually served.
+        family = self._family_from_url(captured_url) or \
+            self.fulltext_family(landing_html, page_url)
         referer = referer or f"{self.SPIE_BASE}/{family}"
 
         # 判定出的族先试；万一 SPIE 改了 meta 的写法，再把其余两个补上，
@@ -384,6 +391,17 @@ class SPIEHandler(PublisherHandler):
             html = await self._post_fulltext(page, api, doi, referer)
             if html:
                 return html
+        return ''
+
+    @classmethod
+    def _family_from_url(cls, url: str) -> str:
+        """The content family named in a captured fulltext URL, or ''."""
+        if not url:
+            return ''
+        low = url.lower()
+        for fam in cls.FULLTEXT_FAMILIES:
+            if f'/api/{fam}/article/fulltexthtml' in low:
+                return fam
         return ''
 
     def _fulltext_from_captured(self, body: str) -> str:

@@ -24,6 +24,8 @@ from publisher.wildcard import set_actual_base_url, init_extract_all_page
 class AIPHandler(PublisherHandler):
     """Handler interface for AIP Publishing articles."""
 
+    PUBLISHER = 'aip'
+
     def __init__(self, page=None, captured_data_dir=None, doi: str = None):
         super().__init__(page=page, captured_data_dir=captured_data_dir, doi=doi)
 
@@ -85,12 +87,7 @@ class AIPHandler(PublisherHandler):
 
     async def extract_metadata(self, page) -> dict:
         """Return metadata from HTML citation meta tags, with abstract from page body."""
-        html_content = ''
-        if page is not None:
-            try:
-                html_content = await page.content()
-            except Exception:
-                html_content = ''
+        html_content = await self.get_page_html(page) if page is not None else ''
 
         meta = self._extract_metadata_from_html_meta(html_content)
 
@@ -949,10 +946,11 @@ class AIPHandler(PublisherHandler):
 
             pdf_url = metadata.pop('_pdf_url', None)
 
-            try:
-                fulltext_html = await page.content()
-            except Exception:
-                fulltext_html = ''
+            # The raw server response, captured while the page loaded. AIP is
+            # the simplest handler here -- no in-page fetch, no navigation of
+            # its own -- so reading the capture leaves the article page with
+            # nothing but navigation and passive listening.
+            fulltext_html = await self.get_page_html(page)
             if fulltext_html and not metadata.get('abstract'):
                 metadata['abstract'] = self.extract_main_abstract_from_html(fulltext_html)
             if fulltext_html:

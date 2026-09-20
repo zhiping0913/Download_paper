@@ -3229,15 +3229,26 @@ async def complete_extraction_workflow(
             metadata['_landing_url'] = landing_url
 
         # Save HTML to the per-DOI capture directory.
-        # page.html     = post-JS rendered DOM (fulltext_data from handler)
         # page_raw.html = raw server HTTP response (pre-JS, captured by interceptor)
-        if isinstance(fulltext_data, str) and fulltext_data:
-            save_html_snapshot(captured_data_dir / "page.html", fulltext_data, "HTML")
-
-        raw_server_html = getattr(handler, '_raw_server_html', None)
+        # page.html     = post-JS rendered DOM, and ONLY when it differs
+        #
+        # ⚠️ Two names promise two views of the page. Now that the handlers
+        # read the raw response, most of them hand it straight back as
+        # fulltext_data, and the directory ended up with the same bytes twice:
+        # measured across the archive, 30 of 57 papers had page.html
+        # byte-identical to page_raw.html. Landing it once keeps the names
+        # honest -- page.html present means there really is a second view.
+        raw_server_html = getattr(handler, '_raw_server_html', None) or ''
         if raw_server_html:
             save_html_snapshot(captured_data_dir / "page_raw.html",
                                raw_server_html, "原始HTML")
+
+        if isinstance(fulltext_data, str) and fulltext_data:
+            if fulltext_data == raw_server_html:
+                print("  ↪ 渲染后 DOM 与原始响应相同，不另存 page.html")
+            else:
+                save_html_snapshot(captured_data_dir / "page.html",
+                                   fulltext_data, "HTML")
 
         # Merge with Crossref data (fill in missing fields)
         if crossref_data:
@@ -3772,14 +3783,16 @@ async def complete_extraction_workflow(
 
                     # 保存无头浏览器访问结果
                     # page_raw.html = 原始HTTP响应（JS运行前）
-                    # page.html     = 渲染后DOM
-                    # headless_initial.html = 本阶段所见的那一份，便于溯源
+                    # page.html     = 渲染后DOM，且只在与原始响应不同时才写
+                    #
+                    # ⚠️ headless_initial.html 不再写：它存的是
+                    # `raw or rendered`，也就是这两个之中的一个 —— 实测存档
+                    # 里 5/5 与 page_raw.html 逐字节相同。它当初是"预检阶段
+                    # 看到的那一份"，而现在那两个名字已经把这件事说清楚了，
+                    # 第三个名字只会让目录看起来有三个视图。
                     headless_html = headless_rendered_html  # used for bot-detection below
                     headless_raw_html = _capture.land(
                         captured_data_dir, headless_rendered_html) or None
-                    save_html_snapshot(captured_data_dir / "headless_initial.html",
-                                       headless_raw_html or headless_rendered_html,
-                                       "原始HTML" if headless_raw_html else "页面")
 
                     # 检测最终URL
                     final_headless_url = headless_page.url

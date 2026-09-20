@@ -263,6 +263,40 @@ def url_wants_api_harvest(url: str) -> bool:
     return bool(pats) and any(p in low for p in pats)
 
 
+def captured_api_entry(captured: dict, path_suffix: str) -> tuple:
+    """``(body, url)`` for a captured response whose URL path ends with *path_suffix*.
+
+    The URL is worth having on its own: SPIE's fulltext endpoint spells the
+    content family in it (/api/journals|proceedings|ebooks/article/fulltexthtml),
+    which the handler otherwise has to infer from a meta tag and, when that is
+    wrong, discovers only as an ``hasAccess=False`` empty shell that looks
+    like a permissions problem.
+
+    Returns ``('', '')`` on a miss. See captured_api_body for the matching
+    rules.
+    """
+    if not captured or not path_suffix:
+        return '', ''
+    want = path_suffix.rstrip('/').lower()
+    best, best_url = '', ''
+    for entry in captured.values():
+        if not isinstance(entry, dict):
+            continue
+        body = entry.get('body')
+        if not body:
+            continue
+        url = (entry.get('url') or '')
+        if not url:
+            continue
+        path = urlsplit(url).path.rstrip('/').lower()
+        if path == want or path.endswith(want):
+            # Prefer the largest when a page requests the same endpoint more
+            # than once -- a short answer is usually the pre-entitlement one.
+            if len(body) > len(best):
+                best, best_url = body, url
+    return best, best_url
+
+
 def captured_api_body(captured: dict, path_suffix: str) -> str:
     """Return a captured response body whose URL *path* ends with *path_suffix*.
 
@@ -280,26 +314,7 @@ def captured_api_body(captured: dict, path_suffix: str) -> str:
     then requests it as before. A miss must stay cheap and silent: capture is
     an optimisation, not a dependency.
     """
-    if not captured or not path_suffix:
-        return ''
-    want = path_suffix.rstrip('/').lower()
-    best = ''
-    for entry in captured.values():
-        if not isinstance(entry, dict):
-            continue
-        body = entry.get('body')
-        if not body:
-            continue
-        url = (entry.get('url') or '')
-        if not url:
-            continue
-        path = urlsplit(url).path.rstrip('/').lower()
-        if path == want or path.endswith(want):
-            # Prefer the largest when a page requests the same endpoint more
-            # than once -- a short answer is usually the pre-entitlement one.
-            if len(body) > len(best):
-                best = body
-    return best
+    return captured_api_entry(captured, path_suffix)[0]
 
 
 def pick_raw_article_html(candidates, doi: str = '') -> str:

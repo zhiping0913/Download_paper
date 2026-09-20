@@ -108,11 +108,20 @@ class PublisherHandler(ABC):
         own request as the fallback: capture is an optimisation and must never
         become a dependency.
         """
+        return self.captured_api_entry(path_suffix)[0]
+
+    def captured_api_entry(self, path_suffix: str) -> tuple:
+        """``(body, url)`` for a captured response, or ``('', '')``.
+
+        The URL answers questions the body cannot: SPIE's fulltext endpoint
+        spells the content family in its path, so a handler can read which
+        one the page used instead of inferring it from a meta tag.
+        """
         captured = getattr(self, '_captured_api', None)
         if not captured:
-            return ''
-        from core.utilities import captured_api_body
-        return captured_api_body(captured, path_suffix)
+            return '', ''
+        from core.utilities import captured_api_entry
+        return captured_api_entry(captured, path_suffix)
 
     def is_headed_run(self) -> bool:
         """Whether the page this handler was given belongs to a headed browser.
