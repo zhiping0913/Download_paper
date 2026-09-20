@@ -40,7 +40,11 @@ from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
 from html_to_md_converter import mathml_to_latex_pandoc
 from publisher.base import PublisherHandler
-from publisher.wildcard import init_extract_all_page, set_actual_base_url
+from publisher.wildcard import (
+    init_extract_all_page,
+    parse_article_html,
+    set_actual_base_url,
+)
 
 
 _OJ_DROP_SELECTORS = (
@@ -75,6 +79,8 @@ _OJ_IMG_PLACEHOLDER = '/NV_LEGCY/images/'
 
 class OpticsJournalHandler(PublisherHandler):
     """Full-text handler for opticsjournal.net."""
+
+    PUBLISHER = 'opticsjournal'
 
     OJ_BASE = 'https://www.opticsjournal.net'
 
@@ -321,11 +327,12 @@ class OpticsJournalHandler(PublisherHandler):
         """``{'fig_N': {'url', 'original_url', 'caption', 'label'}}``.
 
         Keyed by document order, matching the ``__OJ_FIG_n__`` markers the
-        body walk emits.
+        body walk emits -- so this has to parse the page the same way the
+        body walk does, or the two orders can drift apart.
         """
         if not html:
             return {}
-        soup = BeautifulSoup(html, 'html.parser')
+        soup = parse_article_html(html)
 
         figures = {}
         for index, holder in enumerate(soup.find_all('div', class_='ArticleFigure-list'), 1):
@@ -616,7 +623,13 @@ class OpticsJournalHandler(PublisherHandler):
     def extract_body_from_html(cls, html: str, base_level: int = 2) -> str:
         if not html:
             return ''
-        soup = BeautifulSoup(html, 'html.parser')
+        # Browser-equivalent parsing, not html.parser: this site writes its
+        # section headings as <p><h2>1　引言</h2></p>. HTML5 closes the open
+        # <p> before the <h2>, so a browser (and lxml) sees the heading as a
+        # sibling of the paragraphs and the walk finds it; html.parser keeps
+        # it nested and all five headings came out as plain text, losing the
+        # whole section structure of 10.3788/CJL231490.
+        soup = parse_article_html(html)
         for selector in _OJ_DROP_SELECTORS:
             for el in soup.select(selector):
                 el.decompose()
@@ -642,12 +655,7 @@ class OpticsJournalHandler(PublisherHandler):
     # ==================================================================
 
     async def get_pdf_url(self, doi: str = None) -> Optional[str]:
-        html = ''
-        if self.page is not None:
-            try:
-                html = await self.page.content()
-            except Exception:
-                html = ''
+        html = await self.get_page_html(self.page) if self.page is not None else ''
         if html:
             url = self.extract_metadata_from_html(html).get('_pdf_url')
             if url:
@@ -670,10 +678,10 @@ class OpticsJournalHandler(PublisherHandler):
             return self.OJ_BASE
 
     async def extract_metadata(self, page) -> dict:
-        try:
-            html = await page.content()
-        except Exception:
-            html = ''
+        # The captured server response. Figures here are lazy-loaded with the
+        # real URL in data-src, which is server-written, so both sources agree
+        # -- and citation_* / the two abstract blocks are server rendered too.
+        html = await self.get_page_html(page)
         return self.extract_metadata_from_html(html)
 
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
@@ -684,10 +692,7 @@ class OpticsJournalHandler(PublisherHandler):
         set_actual_base_url(self, page)
 
         try:
-            try:
-                html = await page.content()
-            except Exception:
-                html = ''
+            html = await self.get_page_html(page)
 
             metadata = self.extract_metadata_from_html(html)
             metadata['doi'] = doi or metadata.get('doi', '')
