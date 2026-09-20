@@ -127,6 +127,24 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
   "Open access"。用裸类名去取，一篇无权限的文章只要侧栏推荐了开放获取论文就会被
   判成有权限
 
+### SPIE 的补充材料
+
+- ❌ 旧注释写着「没见过带补充材料的 SPIE 文章」，**已被 `10.1117/1.APN.4.3.036004` 推翻**
+- 📌 **补充材料有自己的 DOI：文章 DOI + `.sNN`**，正文里这样引用：
+  `<a target="xrefwindow" href="https://doi.org/10.1117/1.APN.4.3.036004.s01">Supplementary Material</a>`
+  实测这篇引用了 **3 次**（都指向同一个 `.s01`），而 **landing page 里 `supplemental`
+  出现 0 次** —— 所以判据是 `.sNN` 后缀，不是链接文字（文字受语言和措辞影响）
+- ⚠️ **必须限定是本文的**：`supp_doi.startswith(本文DOI + '.s')`。参考文献里若引用了别人
+  论文的 `.sNN`，不加这条就会把别人的补充材料当成我们的下下来
+- ⚠️ 同一份文件正文里引用多次，**要去重**
+- 📌 另有 `/api/{family}/article/supplemental` 端点（POST 参数与正文相同）。代码里
+  **捕获到就优先用**（并落 `supplemental.json`），但**三次运行一次都没捕到**，
+  三次的预载都被 Imperva 拦下、走了 Fallback，所以这个端点是否会在干净加载时出现
+  **尚未证实**。正文里的 `.sNN` 链接才是实测有效的那条
+- ✅ 端到端实测：`✓ 补充材料（正文中的 .sNN DOI）: 1 个` →
+  `supplemental--1.APN.4.3.036004.s01.pdf`，453,957 字节、PDF 1.7、5 页；
+  md 里三处引用都渲染成了指向该 DOI 的链接
+
 ### researching.cn（中国激光杂志社，`10.3788`）
 
 - `doi.org/10.3788/...` 就跳到这里。Photonics Insights 等与 SPIE 联合出版的，
