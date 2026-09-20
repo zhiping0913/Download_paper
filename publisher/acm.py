@@ -69,6 +69,8 @@ class ACMHandler(PublisherHandler):
     contract and to leave a stub for future work.
     """
 
+    PUBLISHER = 'acm'
+
     ACM_BASE = 'https://dl.acm.org'
 
     def __init__(self, page=None, captured_data_dir=None, doi: str = None):
@@ -142,6 +144,20 @@ class ACMHandler(PublisherHandler):
         detailed: List[Dict[str, list]] = []
         seen = set()
 
+        # The served page's second author block, keyed by name: the one that
+        # actually holds the affiliations. Empty on a rendered DOM, where the
+        # dropBlock popover carries them instead.
+        detail_blocks: Dict[str, object] = {}
+        for block in soup.find_all('div', attrs={'property': 'author'}):
+            if not block.find('div', class_='affiliations'):
+                continue
+            given = block.find('span', attrs={'property': 'givenName'})
+            family = block.find('span', attrs={'property': 'familyName'})
+            key = ' '.join(p.get_text(strip=True)
+                           for p in (given, family) if p).strip()
+            if key:
+                detail_blocks.setdefault(key, block)
+
         for span in soup.find_all('span', attrs={'property': 'author'}):
             # Skip the inner spans that live inside a dropBlock__holder
             # (nested author markup for the popover) — the outer span
@@ -160,7 +176,15 @@ class ACMHandler(PublisherHandler):
 
             affiliations: List[str] = []
             emails: List[str] = []
-            holder = span.find('div', class_='dropBlock__holder')
+            # ⚠️ The dropBlock popover is built by JavaScript, so in the
+            # served response it does not exist. That HTML carries the same
+            # information in a second author block elsewhere in the article --
+            # <div property="author"> with a <div class="affiliations"> inside
+            # -- which is not a descendant of this span. Without looking there,
+            # reading the raw response yields authors with no affiliation at
+            # all: measured on 10.1145/3712285.3771783, 732 words lost.
+            holder = span.find('div', class_='dropBlock__holder') \
+                or detail_blocks.get(name)
             if holder:
                 for aff in holder.find_all('div', attrs={'property': 'affiliation'}):
                     aff_name = aff.find('span', attrs={'property': 'name'})
@@ -176,8 +200,7 @@ class ACMHandler(PublisherHandler):
                         if aff_text:
                             affiliations.append(aff_text)
                 for a in holder.find_all('a', attrs={'property': 'email'}):
-                    email = a.get_text(strip=True) or (a.get('href') or '').replace('mailto:', '')
-                    email = email.strip()
+                    email = cls._email_from_anchor(a)
                     if email and email not in emails:
                         emails.append(email)
             detailed.append({
@@ -186,6 +209,46 @@ class ACMHandler(PublisherHandler):
                 'emails': emails,
             })
         return names, detailed
+
+    @staticmethod
+    def _decode_cf_email(encoded: str) -> str:
+        """Undo Cloudflare's e-mail obfuscation.
+
+        ACM serves addresses as <span class="__cf_email__" data-cfemail="…">,
+        which the browser decodes with JavaScript -- which is why the served
+        HTML contains no address at all (0 hits for "gatech.edu" on a page
+        with eight of them). The scheme is a single-byte XOR: the first octet
+        is the key.
+        """
+        try:
+            data = bytes.fromhex(encoded)
+        except Exception:
+            return ''
+        if len(data) < 2:
+            return ''
+        key = data[0]
+        try:
+            return ''.join(chr(b ^ key) for b in data[1:])
+        except Exception:
+            return ''
+
+    @classmethod
+    def _email_from_anchor(cls, a) -> str:
+        """The address behind an ACM e-mail link, obfuscated or not."""
+        span = a.find('span', class_='__cf_email__')
+        if span and span.get('data-cfemail'):
+            decoded = cls._decode_cf_email(span['data-cfemail'])
+            if '@' in decoded:
+                return decoded
+        href = (a.get('href') or '')
+        if href.startswith('/cdn-cgi/l/email-protection#'):
+            decoded = cls._decode_cf_email(href.split('#', 1)[1])
+            if '@' in decoded:
+                return decoded
+        text = a.get_text(strip=True)
+        if '@' in text:
+            return text
+        return href.replace('mailto:', '').strip()
 
     @classmethod
     def _extract_abstract(cls, soup: BeautifulSoup) -> str:
@@ -294,24 +357,8 @@ class ACMHandler(PublisherHandler):
     # PublisherHandler contract
     # ------------------------------------------------------------------
 
-    # ⚠️ ACM stays on the rendered DOM, unlike every other converted handler.
-    # Measured on 10.1145/3712285.3771783: switching to the captured response
-    # dropped 732 words -- every author's affiliation and e-mail. The
-    # affiliation text is in the served HTML (6 hits for "Georgia Institute")
-    # but in a structure this parser does not read, and the addresses are not
-    # there at all (0 hits for "gatech.edu"): ACM assembles that block with
-    # JavaScript. Converting it is parser work on a different markup, not the
-    # one-line source switch the other publishers needed -- and doing it
-    # blindly loses the authors' affiliations without a word in the log.
-    #
-    # It therefore also keeps block_mathjax, which is what protects its
-    # formulas while the rendered DOM is what gets read.
-
     async def extract_metadata(self, page) -> dict:
-        try:
-            html = await page.content()
-        except Exception:
-            html = ''
+        html = await self.get_page_html(page)
         if not html:
             return {}
         soup = BeautifulSoup(html, 'html.parser')
@@ -380,10 +427,7 @@ class ACMHandler(PublisherHandler):
             metadata = await self.extract_metadata(page)
             metadata['doi'] = doi or metadata.get('doi', '')
 
-            try:
-                fulltext_html = await page.content()
-            except Exception:
-                fulltext_html = ''
+            fulltext_html = await self.get_page_html(page)
 
             # References are intentionally NOT extracted — full-text
             # (including the ref list DOM) is usually gated behind login
