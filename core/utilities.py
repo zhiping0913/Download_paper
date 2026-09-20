@@ -451,6 +451,22 @@ DP_HTTP_FIRST = os.environ.get('DP_HTTP_FIRST', '1').strip().lower() not in (
     '0', 'false', 'no', 'off')
 
 
+def env_off(name: str, default: str = '1') -> bool:
+    """True when *name* is set to one of the usual "no" spellings."""
+    return os.environ.get(name, default).strip().lower() in (
+        '0', 'false', 'no', 'off')
+
+
+#: Whether to download supplemental material at all (``--supplemental=False``
+#: or ``DP_SUPPLEMENTAL=0``). Off is a real use case, not a debugging knob:
+#: an OUP book lists **every one of its chapters** as a supplemental PDF --
+#: 19 files, ~60 MB and most of the run's wall clock for
+#: ``10.1093/acprof:oso/9780198562641.001.0001`` -- when all that was wanted
+#: was the book's own text. The links still go into the Markdown; only the
+#: fetching is skipped, so nothing about the article is lost from the record.
+DP_SUPPLEMENTAL = not env_off('DP_SUPPLEMENTAL')
+
+
 def http_asset_headers(referer: str = None) -> dict:
     headers = {
         'User-Agent': DP_HTTP_USER_AGENT,

@@ -11,6 +11,7 @@
 5. 转换为完整Markdown（公式转为LaTeX）
 """
 
+import argparse
 import json
 import asyncio
 import magic
@@ -81,6 +82,7 @@ from core.utilities import (
     url_looks_like_bot_challenge,
     url_wants_api_harvest,
     DP_HTTP_TOTAL_TIMEOUT,
+    DP_SUPPLEMENTAL,
     INPAGE_ABORT_JS,
 )
 
@@ -1849,7 +1851,14 @@ async def _download_all_resources(
 
         # Download supplemental materials
         supp_urls = links.get('supplemental_urls', [])
-        if supp_urls:
+        if supp_urls and not DP_SUPPLEMENTAL:
+            # Say how many were skipped rather than staying silent: "no
+            # supplemental files" and "told not to fetch them" look identical
+            # in the output directory afterwards.
+            print(f"\n⏭️  跳过补充材料 {len(supp_urls)} 个"
+                  f"（--supplemental=False / DP_SUPPLEMENTAL=0）——"
+                  f"链接仍写进 Markdown")
+        elif supp_urls:
             print("\nStep 5️⃣  下载补充材料...")
             print("=" * 80)
             supp_descriptions = links.get('supplemental_descriptions', {})
@@ -4615,6 +4624,17 @@ async def complete_extraction_workflow(
 # 入口点
 # ============================================================================
 
+def _parse_bool_flag(value: str) -> bool:
+    """Accept the spellings people actually type for ``--supplemental``."""
+    text = (value or '').strip().lower()
+    if text in ('1', 'true', 'yes', 'y', 'on'):
+        return True
+    if text in ('0', 'false', 'no', 'n', 'off'):
+        return False
+    raise argparse.ArgumentTypeError(
+        f"需要 True 或 False，收到 {value!r}")
+
+
 async def main():
     """Entry point with argparse support
 
@@ -4731,6 +4751,18 @@ JSON 格式:
         )
 
         parser.add_argument(
+            '--supplemental',
+            type=_parse_bool_flag,
+            nargs='?',
+            const=True,
+            default=None,
+            metavar='True|False',
+            help='是否下载补充材料 (默认: True；也可用环境变量 DP_SUPPLEMENTAL=0)。'
+                 'False 时跳过下载，链接仍写进 Markdown —— 书籍尤其有用：'
+                 'OUP 的书把每一章都列成补充材料 PDF，整本下下来既慢又不是要的东西'
+        )
+
+        parser.add_argument(
             '--refresh-headless-auth',
             action='store_true',
             default=False,
@@ -4738,6 +4770,14 @@ JSON 格式:
         )
 
         args = parser.parse_args()
+
+        # The flag wins over the environment variable; unset means keep
+        # whatever DP_SUPPLEMENTAL said at import time. Rebinding the module
+        # global is what the call site reads -- it imported the value, not
+        # the module.
+        if args.supplemental is not None:
+            globals()['DP_SUPPLEMENTAL'] = args.supplemental
+            os.environ['DP_SUPPLEMENTAL'] = '1' if args.supplemental else '0'
 
         # 构建 article 列表 —— 每项是 dict: {"doi", "link"?, "header"?}
         articles = []
