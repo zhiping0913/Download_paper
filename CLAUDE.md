@@ -626,6 +626,7 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
   | wiley | `10.1002/lpor.202401986` | 逐字节相同，36 行公式 |
   | ieee | `10.1109/TPS.2010.2064310` | 逐字节相同，41 行公式 |
   | spie | `10.1117/12.2038680`(2014会议) / `10.1117/1.oe.62.8.086102`(2023) / `10.1117/1.OE.64.11.115106`(2025) | 三篇全部逐字节相同，0/27/57 行公式 |
+  | aip | `10.1063/5.0326077` | 逐字节相同，46 行公式 |
 
 - ⚠️ **测 SPIE 每次访问之间隔 5 分钟**：它是本仓最严的一家，连打是它的 bot manager
   最会扣分的形状。另外 2014 与 2023 那两篇还与 **captured_data 里的旧存档逐字节相同**
@@ -753,6 +754,23 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
   view-source 得到 217,074 字节，**整份文档只差 4 行**，且差异是服务端 JSON 配置的
   **键序**与一个脚本标签；`citation_` 364/364、`math/tex` 134/134、`supplDataLink` 1/1、
   `article-text` 16/16 完全一致。所以它是那个 hack 的**忠实替代**，不是近似品
+
+### 不是 Cloudflare 的验证框
+
+- ⚠️ **判据只认 Cloudflare，别家的框连点击逻辑都进不去**。`_is_challenge_title()` 匹配 CF
+  各语言标题，`_CHALLENGE_DOM_JS` 匹配 `#challenge-form` / `[id^="cf-chl"]` /
+  `cdn-cgi/challenge-platform` —— **Imperva（SPIE）一条都不沾**，于是 `is_challenge`
+  恒为假，`_CHALLENGE_CLICK_TARGET_JS` 一次都没被调用过
+- 实测 SPIE 日志里那个框长这样：`📊 title='' cf=✗ iframes=1 body=0`，连续出现 4 次，
+  随后才是文章 —— **那几次是用户手动点掉的**，不是程序过的
+- 📌 所以加了一条**与厂商无关**的判据：**正文为空、有 iframe、连续两轮**（≈4 秒）。
+  ⚠️ 刻意收窄：要求 body **完全为空**而不是"很短"，两轮是为了排除"还在加载"。
+  误报的代价是往一个空白页上点一次
+- 📌 命中时**把每个 iframe 的 src 打印出来**（`_report_iframe_sources`）。这是写出精确
+  判据的唯一途径 —— 只有它能告诉我们那个框是 Imperva 的 `_Incapsula_Resource`、
+  还是 hCaptcha / reCAPTCHA。iframe 选择器也补上了这几家
+- ⚠️ 这条路径**尚未在真机上被触发验证过**，下次 SPIE 再弹框时看日志里的
+  `🤖 空白页 + iframe 持续 2 轮` 和 `🔎 iframe:` 两行
 
 ### 挑战页点到哪里（`_CHALLENGE_CLICK_TARGET_JS`）
 
