@@ -294,6 +294,19 @@ class ACMHandler(PublisherHandler):
     # PublisherHandler contract
     # ------------------------------------------------------------------
 
+    # ⚠️ ACM stays on the rendered DOM, unlike every other converted handler.
+    # Measured on 10.1145/3712285.3771783: switching to the captured response
+    # dropped 732 words -- every author's affiliation and e-mail. The
+    # affiliation text is in the served HTML (6 hits for "Georgia Institute")
+    # but in a structure this parser does not read, and the addresses are not
+    # there at all (0 hits for "gatech.edu"): ACM assembles that block with
+    # JavaScript. Converting it is parser work on a different markup, not the
+    # one-line source switch the other publishers needed -- and doing it
+    # blindly loses the authors' affiliations without a word in the log.
+    #
+    # It therefore also keeps block_mathjax, which is what protects its
+    # formulas while the rendered DOM is what gets read.
+
     async def extract_metadata(self, page) -> dict:
         try:
             html = await page.content()
