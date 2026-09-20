@@ -610,6 +610,9 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
     预载捕获与那次 fetch **公式源都是 121、x-tex 注解都是 121**，逐行 diff 164 行**全是
     每次请求都不同的 id**，提取器结果一致（4 图、68 参考文献、正文 39,388 字符）。
     现在 view-source 降为救援，日志里那一行出现 **0 次**
+  - ⚠️ 救援不触发时**不再写 `source.html`** —— 它和主流程落的 `page_raw.html` 是同一份
+    字节，两个名字装一样的内容。`source.html` 现在只有一个含义：**这次运行不得不自己
+    重取源码**
 - ⚠️ **给 handler 补 `PUBLISHER` 常量时别插进 docstring 同一行**：
   `PUBLISHER = 'acs'    """doc"""` **能编译**（相邻字符串隐式拼接），结果是
   `PUBLISHER = 'acsFull-text handler for ACS Publications.'`、`__doc__ = None`，
