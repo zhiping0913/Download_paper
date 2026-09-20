@@ -13,7 +13,6 @@ from pathlib import Path
 from html import unescape
 
 from publisher.base import PublisherHandler
-from core.network_capture import setup_response_capture
 from core.utilities import (
     evaluate_with_timeout,
     inpage_abort_ms,
@@ -831,8 +830,11 @@ class APSHandler(PublisherHandler):
         direct = self._pdf_url_from_html(html)
         if direct:
             return direct
-        doi = ''
-        if html:
+        # The DOI as the URL spells it: APS paths are case-sensitive and a
+        # lower-cased DOI 404s. Falls back to citation_doi, then to whatever
+        # the caller supplied.
+        doi = self._url_doi(page, '')
+        if not doi and html:
             soup = BeautifulSoup(html, 'html.parser')
             tag = soup.select_one('meta[name="citation_doi"]')
             doi = (tag.get('content') or '').strip() if tag else ''
@@ -851,171 +853,16 @@ class APSHandler(PublisherHandler):
         """Extract figure URLs and captions from APS JSON"""
         return extract_figure_assets_from_fulltext(json_data)
 
-    def setup_network_capture(self, page=None, doi: str = None):
-        """Set up network event listener to capture responses
+    # ⚠️ APS's own network listener is gone. It was a second capture
+    # mechanism running beside the workflow's (core.network_capture, which
+    # Nature still uses): it printed a line per response, wrote every HTML
+    # document it saw into the paper's directory -- four 0.25 MB Cloudflare
+    # interstitials on one challenged run -- and re-navigated the page when
+    # handed nothing. The workflow's capture supplies the same three things
+    # here: the article response on _raw_server_html, the fulltext JSON and
+    # the supplemental JSON on _captured_api. _capture_network_data() and
+    # load_captured_data() went with it; nothing outside this file used them.
 
-        Call this before page.goto(), so it captures all subsequent network traffic.
-        Returns a dict that will be populated with captured data.
-
-        Args:
-            page: Playwright page object
-            doi: DOI for organizing output files
-
-        Returns:
-            dict that will be populated with captured data
-        """
-        page = page or self.page
-        doi = doi or self.doi
-        if page is None:
-            raise ValueError("APSHandler.setup_network_capture() requires a Playwright page")
-        if doi is None:
-            raise ValueError("APSHandler.setup_network_capture() requires a DOI")
-
-        self.configure(page=page, doi=doi)
-
-        output_dir = self.captured_data_dir or Path("captured_data") / doi.replace('/', '_')
-        captured = {
-            'json_responses': [],
-            'document': None,
-            'documents': [],
-            'timeline': [],
-            'abstract_html': None,      # Save abstract page HTML
-            'fulltext_data': None,      # Save fulltext JSON (contains text and Acknowledgements)
-            'supplemental_data': None,  # Save supplemental information
-            'journal_prefix': None,     # Journal prefix extracted from URL (prl, pre, pra, etc.)
-        }
-
-        def should_save_json(response, jdata, jstr):
-            kws = ['abstract', 'article', 'fulltext', 'front', 'back']
-            has_paper = any(kw in jstr.lower() for kw in kws)
-            return has_paper or len(jstr) > 2000
-
-        def on_document(response, html, entry, captured):
-            url_str = response.url
-            if 'journals.aps.org/' in url_str and not captured['journal_prefix']:
-                match = re.search(r'journals\.aps\.org/([a-z]+)/', url_str)
-                if match:
-                    captured['journal_prefix'] = match.group(1)
-                    print(f"  ✓ 识别期刊: {captured['journal_prefix']}")
-
-            # APS pages can load iframe documents; keep only the article page.
-            is_article_html = doi in html or 'citation_doi' in html
-            if '/abstract/' in url_str and is_article_html:
-                captured['abstract_html'] = html
-                print(f"  ✓ 保存abstract HTML: {len(html)} 字节")
-
-        def on_json(response, jdata, jstr, entry, captured):
-            url_str = response.url
-            if '/fulltext/' in url_str:
-                captured['fulltext_data'] = jdata
-                print(f"  ✓ 保存fulltext数据: {len(jstr)} 字节")
-            elif '/supplemental/' in url_str:
-                captured['supplemental_data'] = jdata
-                print(f"  ✓ 保存supplemental数据: {len(jstr)} 字节")
-
-        return setup_response_capture(
-            page,
-            output_dir,
-            captured=captured,
-            json_should_save=should_save_json,
-            on_document=on_document,
-            on_json=on_json,
-        )
-
-    async def _capture_network_data(self, page, url: str) -> dict:
-        """Monitor network requests and capture JSON API responses
-
-        DEPRECATED: Use setup_network_capture() in Step 1 instead.
-        This method is kept for backward compatibility.
-
-        Returns:
-            dict with keys: 'json_responses', 'document', 'timeline', 'abstract_html',
-                           'fulltext_data', 'supplemental_data', 'journal_prefix'
-        """
-        # Extract DOI from URL
-        doi = url.replace('https://doi.org/', '').split('?')[0]
-
-        # Set up network capture (listener will capture from this point onward)
-        captured = self.setup_network_capture(page, doi)
-
-        # Navigate to URL
-        print(f"📄 访问: {url}")
-        print("=" * 80)
-
-        try:
-            await page.goto(url, wait_until='networkidle', timeout=60000)
-            print("✓ 页面加载完成")
-        except Exception as e:
-            print(f"⚠️  {type(e).__name__}: {str(e)[:100]}")
-
-        # Wait for additional requests
-        await asyncio.sleep(3)
-
-        return captured
-
-    def load_captured_data(self) -> dict:
-        """Load APS response data from the configured captured data directory."""
-        captured = {
-            'json_responses': [],
-            'document': None,
-            'timeline': [],
-            'abstract_html': None,
-            'fulltext_data': None,
-            'supplemental_data': None,
-            'journal_prefix': self.journal_prefix,
-        }
-
-        if not self.captured_data_dir or not self.captured_data_dir.exists():
-            return captured
-
-        html_files = sorted(self.captured_data_dir.glob("*.html"))
-        html_files.sort(key=lambda p: (
-            'abstract' not in p.name.lower(),
-            'journals.aps.org' not in p.name.lower(),
-            p.name,
-        ))
-        if html_files:
-            for html_path in html_files:
-                try:
-                    html = html_path.read_text(encoding='utf-8')
-                    if captured['abstract_html'] is None and ('citation_doi' in html or 'ol class="references"' in html):
-                        captured['abstract_html'] = html
-                    if captured['document'] is None:
-                        captured['document'] = {
-                            'file': str(html_path),
-                            'size': len(html),
-                        }
-                except Exception:
-                    pass
-
-        for json_path in sorted(self.captured_data_dir.glob("api_response_*.json")):
-            try:
-                with open(json_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                jstr = json.dumps(data)
-                item = {
-                    'file': str(json_path),
-                    'size': len(jstr),
-                }
-                captured['json_responses'].append(item)
-
-                filename = json_path.name.lower()
-                content = jstr.lower()
-                if captured['fulltext_data'] is None and ('fulltext' in filename or 'fulltext' in content):
-                    captured['fulltext_data'] = data
-                elif captured['supplemental_data'] is None and ('supplemental' in filename or 'supplemental' in content):
-                    captured['supplemental_data'] = data
-            except Exception:
-                continue
-
-        if captured['fulltext_data'] is None and captured['json_responses']:
-            try:
-                with open(captured['json_responses'][0]['file'], 'r', encoding='utf-8') as f:
-                    captured['fulltext_data'] = json.load(f)
-            except Exception:
-                pass
-
-        return captured
 
     @staticmethod
     def _pdf_url_from_html(html: str) -> str:
@@ -1158,8 +1005,8 @@ class APSHandler(PublisherHandler):
     async def _fetch_fulltext_json(self, page, doi: str) -> dict:
         """Actively fetch the APS fulltext JSON for *doi*.
 
-        The passive network capture in ``setup_network_capture`` only records
-        responses that happen to fly past. That works when doi.org lands the
+        The workflow's capture only holds what the page fetched for itself.
+        That works when doi.org lands the
         browser straight on the fulltext view, but for many articles it lands
         on ``/abstract/{doi}`` instead — and that page never XHRs the body, so
         ``captured['fulltext_data']`` stays empty and the generated paper.md
@@ -1265,8 +1112,9 @@ class APSHandler(PublisherHandler):
         Args:
             page: Playwright page object (should already be navigated to DOI)
             doi: DOI of the paper
-            captured: Optional dict with already-captured network data from setup_network_capture()
-                     If not provided, will call _capture_network_data() for backward compatibility
+            captured: unused; kept for the shared extract_all signature. What
+                     the page produced arrives on _raw_server_html and
+                     _captured_api instead.
 
         Returns:
             dict with keys: 'metadata', 'links', 'fulltext_data', 'journal_prefix'
@@ -1286,38 +1134,19 @@ class APSHandler(PublisherHandler):
         # 1. Extract metadata
         metadata = await self.extract_metadata(page)
 
-        # 2. Use provided captured data or capture it ourselves
-        if captured is None:
-            captured = self.load_captured_data()
-            if not captured.get('fulltext_data') and not captured.get('json_responses'):
-                # Backward compatibility: capture network data if not provided
-                url = f"https://doi.org/{doi}"
-                captured = await self._capture_network_data(page, url)
-        else:
-            # Network capture is already running, just wait for additional requests
-            await asyncio.sleep(3)
-            # Supplement with saved HTML files if abstract_html is missing
-            # (setup_network_capture was called after page.goto, so it missed the initial load)
-            if not captured.get('abstract_html'):
-                saved_data = self.load_captured_data()
-                if saved_data.get('abstract_html'):
-                    captured['abstract_html'] = saved_data['abstract_html']
-
-        # Last resort: the live page. abstract_html is filled by the passive
-        # network listener watching for a /abstract/ document, but the CDP
-        # preload loads that page before Playwright is attached, so the
-        # listener never sees it and everything downstream — the fuller
-        # abstract, the Popular Summary and its key image — was silently
-        # skipped. The page in hand *is* the abstract page, and reading it
-        # costs no extra request.
-        if not captured.get('abstract_html') and page is not None:
-            try:
-                live_html = await page.content()
-            except Exception:
-                live_html = ''
-            if live_html and ('citation_doi' in live_html or (doi or '') in live_html):
-                captured['abstract_html'] = live_html
-                print(f"  ✓ 使用当前页面作为 abstract HTML: {len(live_html)} 字节")
+        # 2. Everything the page produced comes from the workflow's own
+        # capture: the raw article response on _raw_server_html and the
+        # endpoints the page fetched on _captured_api.
+        #
+        # ⚠️ APS used to run a second, private network listener of its own.
+        # See the note where it was removed: one capture is enough, and it is
+        # the one the workflow already keeps for every publisher.
+        captured = dict(captured or {})
+        if not captured.get('abstract_html'):
+            abstract_html = await self.get_page_html(page)
+            if abstract_html and ('citation_doi' in abstract_html
+                                  or (doi or '') in abstract_html):
+                captured['abstract_html'] = abstract_html
 
         # 2.5 Extract abstract from abstract page HTML (优先于meta tag)
         if captured.get('abstract_html'):
@@ -1419,7 +1248,16 @@ class APSHandler(PublisherHandler):
             pass
 
         if not pdf_url:
-            pdf_url = f"https://journals.aps.org/{self.journal_prefix}/pdf/{doi}"
+            # ⚠️ Use the DOI as the *URL* spells it, not as the DOI list does.
+            # APS paths are case-sensitive: a list saying
+            # 10.1103/physreva.79.020103 gives /pra/pdf/10.1103/physreva.79.020103,
+            # which is not the article, while the page we are standing on says
+            # /pra/abstract/10.1103/PhysRevA.79.020103. _url_doi is the same
+            # helper _fetch_fulltext_json already uses for exactly this reason;
+            # the supplemental link was built from the URL all along, which is
+            # why that one came out right in the same run.
+            pdf_url = (f"https://journals.aps.org/{self.journal_prefix}"
+                       f"/pdf/{self._url_doi(page, doi)}")
 
         links = {
             'pdf_url': pdf_url,
@@ -1438,19 +1276,21 @@ class APSHandler(PublisherHandler):
                 # a navigation away from the article and a scrape of APS's
                 # "Not Found" page.
                 #
-                # ⚠️ "The capture says none" and "there is no capture" are not
-                # the same answer. Nothing is harvested on a headless run, or
-                # with DP_HARVEST_API=0, and concluding "no supplemental" from
-                # that would silently drop files from every paper. Only the
-                # first case skips the visit.
-                if getattr(self, '_captured_api', None):
-                    supp_links, supp_descriptions, supp_summary = \
-                        self._supplemental_from_capture(page, actual_doi)
-                else:
-                    supp_links, supp_descriptions, supp_summary = await get_supplemental_links(
-                        page, actual_doi, self.journal_prefix,
-                        captured_data_dir=self.captured_data_dir
-                    )
+                # The page fetches this endpoint for itself on every load, so
+                # the capture is the answer: files when it has them, none when
+                # it does not. No second visit either way.
+                #
+                # ⚠️ An empty capture is reported rather than papered over. It
+                # means the page load itself did not get far enough to fetch
+                # anything -- on a challenged run every response is the
+                # interstitial -- and the whole extraction is degraded, not
+                # just this step. Visiting /supplemental/{doi} from such a
+                # session would only collect the same interstitial.
+                if not getattr(self, '_captured_api', None):
+                    print("  ⚠️  预载捕获为空（页面多半没加载完），"
+                          "本次按没有补充材料处理")
+                supp_links, supp_descriptions, supp_summary = \
+                    self._supplemental_from_capture(page, actual_doi)
                 links['supplemental_urls'] = supp_links
                 links['supplemental_descriptions'] = supp_descriptions
                 if supp_summary:

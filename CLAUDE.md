@@ -95,6 +95,26 @@ python batch_process.py --file dois.txt                     # 批量
 | `10.3788` / researching.cn | ResearchingHandler | 有头 | 完整 |
 | opticsjournal.net | OpticsJournalHandler | 有头 | 完整（无补充材料） |
 
+### APS 的四个教训（2026-09-20，另一台机器的实跑日志）
+
+- ⚠️ **PDF 链接必须用页面 URL 里的 DOI 拼**：APS 路径大小写敏感。DOI 列表给
+  `10.1103/physreva.79.020103`，拼出的 `/pra/pdf/10.1103/physreva.79.020103` 不是文章；
+  而页面停在 `/pra/abstract/10.1103/PhysRevA.79.020103`。`_url_doi()` 就是干这个的
+  （`_fetch_fulltext_json` 一直在用），`extract_all` 的兜底漏了它 —— 同一份日志里
+  补充材料链接是对的，因为那条从 URL 生成
+- ❌ **APS 自带的那套旧监听器已删**（`core/network_capture`，Nature 仍在用）。它每条响应
+  打一行 `[200] …`、**把看到的每个 HTML 文档写进论文目录**（一次被挑战的运行留下
+  4 个 0.25 MB 的 Cloudflare 挑战页），拿不到数据时还会自己再导航一次。现在统一用
+  主流程那份捕获
+- 📌 **补充材料只看捕获**：有就用、没有就是没有，不再访问 `/supplemental/{doi}`。
+  捕获为空时明确打印——那种情况整个提取本来就降级了，从同一个被拦的会话去访问
+  只会再拿回一张挑战页
+- ⚠️ **预载不要在 widget 还没渲染出来时就判失败**。实测那台机器：预载 60 秒里状态行
+  只有一条 `title='Just a moment...' iframes=0`，**Turnstile 根本还没出现**，三次兜底
+  点击点在 `.main-content` 的空白处；随后 Playwright 那轮找到了真的 300×65 iframe，
+  点一次就过。现在「检测到挑战且到点时仍停在挑战页」会再等一轮
+  （`DP_CHALLENGE_EXTRA_WAIT`，默认与超时等长，**只延长一次**）
+
 ### access 判定（handler 可选返回，缺省 True）
 
 handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract_all()` 的返回里带上
