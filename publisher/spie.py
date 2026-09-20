@@ -1005,11 +1005,16 @@ class SPIEHandler(PublisherHandler):
     def supplemental_from_capture(self) -> tuple:
         """``(urls, descriptions)`` from a captured /article/supplemental call.
 
-        ⚠️ Not observed yet. The endpoint exists and the page is reported to
-        call it during load, but two runs on 10.1117/1.APN.4.3.036004 captured
-        nothing for it -- so this stays a bonus path and the body-text links
-        above are what actually finds the files. It lands supplemental.json
-        when it does fire, the same way the fulltext path lands its payload.
+        The page does call it during load: measured on 10.1117/12.3071462,
+        a run whose preload succeeded captured it and landed
+        supplemental.json. Runs whose preload was challenged captured nothing
+        -- not because the page skipped the call, but because the fallback
+        path used to discard its own capture.
+
+        ⚠️ A populated ``supplementalFiles`` has still not been seen (the one
+        captured payload was an empty list, on a paper whose supplement is a
+        poster), so the per-entry field names below are a guess and the code
+        says so out loud when it cannot find a link in an entry.
         """
         body, url = self.captured_api_entry('/article/supplemental')
         if not body:
@@ -1022,15 +1027,26 @@ class SPIEHandler(PublisherHandler):
         self._cache_json('supplemental.json', payload)
         urls, descs = [], {}
         data = payload.get('data') if isinstance(payload, dict) else None
-        for item in (data if isinstance(data, list) else (data or {}).get('items') or []):
+        # Measured shape (10.1117/12.3071462, captured when the preload
+        # succeeded): {"hasAccess": true, "data": {"urlId": "...",
+        # "supplementalFiles": []}}. That paper has a poster and no files, so
+        # the entry shape is still unknown -- hence the several field names
+        # and the dump below, which is how the next capture will tell us.
+        items = (data or {}).get('supplementalFiles') if isinstance(data, dict) else None
+        if items is None:
+            items = data if isinstance(data, list) else (data or {}).get('items') or []
+        for item in items or []:
             if not isinstance(item, dict):
                 continue
-            href = (item.get('url') or item.get('href') or '').strip()
+            href = (item.get('url') or item.get('href') or item.get('link')
+                    or item.get('filePath') or item.get('fileName') or '').strip()
             if not href:
+                print(f"  ⚠️  supplemental 条目没有可识别的链接字段: {sorted(item)}")
                 continue
             full = urljoin(self.SPIE_BASE + '/', href)
             urls.append(full)
-            label = (item.get('description') or item.get('caption') or '').strip()
+            label = (item.get('description') or item.get('caption')
+                     or item.get('title') or '').strip()
             if label:
                 descs[full.rsplit('/', 1)[-1]] = label
         if urls:

@@ -4183,6 +4183,19 @@ async def complete_extraction_workflow(
                     )
                     if _cf_result["success"]:
                         print(f"  ✅ 纯CDP挑战通过")
+                        # ⚠️ This path's capture used to be dropped on the
+                        # floor. absorb_cdp was called only for the first
+                        # preload, so whenever that one was challenged and
+                        # this fallback loaded the page instead, every
+                        # response it recorded was discarded -- and a handler
+                        # then re-requested endpoints the page had just
+                        # fetched. Measured on SPIE: preload success gave
+                        # "预载捕获 API 响应 2 条" and the fulltext was reused,
+                        # while a fallback load gave 0 captured and
+                        # "↪ 请求正文 API" every time.
+                        _capture.absorb_cdp(_cf_result.get("responses") or {})
+                        _capture.announce('Fallback 预载')
+                        _capture.land(captured_data_dir)
                         # 在 Playwright 中找到这个 page 并复用（优先按 CDP targetId，与 URL 无关）
                         _cf_target_id = _cf_result.get("target_id")
                         _cf_page_obj = await _find_pw_page_by_cdp_target(browser, _cf_target_id)
