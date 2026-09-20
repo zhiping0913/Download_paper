@@ -1043,17 +1043,25 @@ class CambridgeHandler(PublisherHandler):
     def _looks_like_full_article(cls, html: str) -> bool:
         return bool(html) and bool(cls._BODY_MARKER_RE.search(html))
 
-    def _save_shell_html(self, html: str) -> None:
-        """Land a body-less response as page_shell.html for later diagnosis."""
+    def _save_capture_html(self, html: str, name: str) -> None:
+        """Land one of the retry ladder's documents beside the other captures.
+
+        Both are worth keeping whatever the outcome. The shell is the only
+        artefact that can answer *why* it was served -- its response headers
+        are gone by the time we notice -- and it would otherwise be
+        overwritten by the good response. The Français document is what the
+        click rung actually received, which is the evidence for whether that
+        rung did anything on a machine where the shell is deterministic.
+        """
         if not html or not self.captured_data_dir:
             return
         try:
-            out = Path(self.captured_data_dir) / 'page_shell.html'
+            out = Path(self.captured_data_dir) / name
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(html, encoding='utf-8')
-            print(f"  ✓ page_shell.html 已保存 ({out.stat().st_size:,} bytes)")
+            print(f"  ✓ {name} 已保存 ({out.stat().st_size:,} bytes)")
         except Exception as exc:
-            print(f"  ⚠️  page_shell.html 保存失败: {str(exc)[:80]}")
+            print(f"  ⚠️  {name} 保存失败: {str(exc)[:80]}")
 
     async def _capture_one_document(self, page, action, label: str) -> str:
         """Run *action* with a document listener attached; return the biggest body."""
@@ -1157,7 +1165,7 @@ class CambridgeHandler(PublisherHandler):
         # served -- the response headers are gone by now, but a later diff of
         # shell vs full page is still worth having, and the shell would
         # otherwise be overwritten by the good response.
-        self._save_shell_html(html)
+        self._save_capture_html(html, 'page_shell.html')
 
         async def _reload():
             await page.reload(wait_until='domcontentloaded',
@@ -1184,6 +1192,12 @@ class CambridgeHandler(PublisherHandler):
         if not clicked[0]:
             print("  ⚠️  页面上没有语言切换按钮")
             return ''
+        # Land it whether or not it turned out to carry the body: this is the
+        # rung the user watched work, and its document is the evidence for
+        # what it returned. The header says lang="fr" but the article text is
+        # the English original -- Cambridge translates the chrome, not the
+        # paper -- so this file is comparable to page_raw.html directly.
+        self._save_capture_html(best, 'page_fr.html')
         if self._looks_like_full_article(best):
             print(f"  ✓ 点击语言切换后拿到正文（{len(best):,} 字符）")
             return best
