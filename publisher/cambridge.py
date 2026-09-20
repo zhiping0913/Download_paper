@@ -1124,8 +1124,48 @@ class CambridgeHandler(PublisherHandler):
             pass
         return True
 
-    async def _refetch_if_shell(self, page, html: str, tries: int = 2) -> str:
-        """Re-request the article when the response came back without a body.
+    async def _ensure_raw_article_html(self, page, raw_html: str,
+                                       rendered_html: str) -> str:
+        r"""Return a *raw server response* carrying the article, if one can be had.
+
+        Two failures used to be handled differently although they cost the
+        same thing. A body-less shell triggered the retry ladder, but a
+        *missing* raw capture silently fell through to ``page.content()`` --
+        and the rendered DOM always has ``<div class="body">``, so the ladder
+        never fired for it either. That fallback is where MathJax has already
+        turned every \(...\) into SVG whose only text is the speech string.
+
+        Both now take the same route: ask again (reload with max-age=0, then
+        the Français click) and keep the raw document that comes back. The
+        rendered DOM stays only as a last resort, and it is announced -- a
+        silent downgrade is the one outcome worth ruling out here, because
+        the markdown it produces looks fine.
+
+        Winning HTML is pinned back on ``_raw_server_html`` so page_raw.html
+        records what the extraction actually used.
+        """
+        if self._looks_like_full_article(raw_html):
+            return raw_html
+
+        if raw_html:
+            print(f"  ⚠️  Cambridge 原始响应里没有正文容器（{len(raw_html):,} 字符）"
+                  f" —— 重新请求")
+            self._save_capture_html(raw_html, 'page_shell.html')
+        else:
+            print("  ⚠️  Cambridge 未捕获到原始响应 —— 重新请求以取得原始响应")
+
+        better = await self._refetch_for_raw(page)
+        if better:
+            self._raw_server_html = better
+            return better
+
+        if rendered_html:
+            print("  ⚠️  仍未取到原始响应，退回渲染后 DOM"
+                  "（公式可能已被 MathJax 替换）")
+        return rendered_html
+
+    async def _refetch_for_raw(self, page, tries: int = 2) -> str:
+        """Ask Cambridge again and return a raw document that has the body.
 
         ⚠️ Cambridge answers the *same* URL with two different documents.
         Measured on 10.1017/hpl.2019.36, same code, same profile, minutes
@@ -1157,16 +1197,6 @@ class CambridgeHandler(PublisherHandler):
 
         Returns the good HTML, or '' when every attempt was still a shell.
         """
-        if self._looks_like_full_article(html):
-            return html
-        print(f"  ⚠️  Cambridge 响应里没有正文容器（{len(html):,} 字符）"
-              f" —— 重新请求")
-        # Keep the shell. It is the only artefact that can answer *why* it was
-        # served -- the response headers are gone by now, but a later diff of
-        # shell vs full page is still worth having, and the shell would
-        # otherwise be overwritten by the good response.
-        self._save_capture_html(html, 'page_shell.html')
-
         async def _reload():
             await page.reload(wait_until='domcontentloaded',
                               timeout=int(env_seconds('DP_PAGE_LOAD_TIMEOUT', 60) * 1000))
@@ -1233,17 +1263,8 @@ class CambridgeHandler(PublisherHandler):
                 rendered_html = await page.content()
             except Exception:
                 rendered_html = ''
-            fulltext_html = raw_html or rendered_html
-
-            # Cambridge sometimes answers with a body-less shell; ask again.
-            # Keeping the better document on _raw_server_html means
-            # page_raw.html is overwritten with it too (save_html_snapshot
-            # writes when the bytes differ), so the capture directory records
-            # what the extraction actually used.
-            _better = await self._refetch_if_shell(page, fulltext_html)
-            if _better and _better is not fulltext_html:
-                fulltext_html = _better
-                self._raw_server_html = _better
+            fulltext_html = await self._ensure_raw_article_html(
+                page, raw_html, rendered_html)
 
             if fulltext_html and not metadata.get('abstract'):
                 metadata['abstract'] = self.extract_main_abstract_from_html(fulltext_html)

@@ -585,9 +585,31 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
 被中止的子资源请求在页面里看得见。读原始响应的 handler 不需要它——它们的公式源从来
 就没进过 DOM。目标是逐步摘干净，而不是全局开关一刀切。
 
-- 判据只有一处：`core/utilities.RAW_HTML_PUBLISHERS`（当前只有 `'iop'`）+
-  `should_block_mathjax(publisher)`。**未知/空一律照旧拦截** —— 错误的跳过会静默丢掉
-  LaTeX 源，错误的拦截只多一次被中止的请求，两种代价不对称
+- 判据只有一处：`core/utilities.RAW_HTML_PUBLISHERS` + `should_block_mathjax(publisher)`。
+  **未知/空一律照旧拦截** —— 错误的跳过会静默丢掉 LaTeX 源，错误的拦截只多一次被中止的
+  请求，两种代价不对称
+- 当前成员：`iop`、`sciencedirect`、`aps`、`optica`、`cambridge`。**每一个都是 A/B 实测
+  进来的**（同一篇跑两遍、diff `paper.md`），不是推理出来的：
+
+  | | 样本 | 结果 |
+  |---|---|---|
+  | sciencedirect | `10.1016/j.rinp.2021.104097` | 逐字节相同（41,616 B）|
+  | aps | `10.1103/PhysRevA.98.043407` | 逐字节相同 |
+  | optica | `10.1364/OE.444043` | 逐字节相同 |
+  | cambridge | `10.1017/hpl.2018.33`（latex 藏在 svg 后面）| 逐字节相同，两边都是 46 行公式 |
+
+  `DP_RAW_HTML_PUBLISHERS=<token>` 只为这个 A/B 存在；**过了的要写进常量，不是靠环境变量长期配置**
+- ⚠️ **A/B 只走了"原始响应拿到了"那条路**，对回落路径什么都没证明 —— 而拦截真正保护的正是
+  回落。能接受这个残差，是因为加入这个集合是**一换一**：失去拦截，换来 `get_page_html()`
+  在捕获落空时先走 view-source 重取、并把降级**打印出来**
+- ⚠️ **Cambridge 是先把回落改掉才加进来的**。它原本是 `fulltext_html = raw_html or rendered_html`，
+  而渲染后的 DOM **一定**有 `<div class="body">`，所以重取阶梯看一眼就说"有正文"、
+  一次都不会触发 —— 最该重取的那种情况恰恰是唯一不重取的。现在"没捕到原始响应"和
+  "拿到的是壳"走同一条阶梯，渲染后 DOM 只作**声明过的**最后手段
+- ⚠️ **测法本身也踩过坑**：用 `ls -dt captured_data/*/ | head -1` 取"最新输出目录"是错的 ——
+  目录 mtime 只在新建/删除文件时更新，覆盖写已有文件不会动它，于是旧目录反而显得更新。
+  实测四个 A/B 产物 md5 全同（都是另一篇的 md），差点据此报出"通过"。要从日志里
+  `📝 Markdown 文件:` 那行取程序自己打印的路径
 - token 来自两处，但决策点仍是同一个：主流程用它已导入的
   `orchestrator.detect_publisher_from_url`（**不是** `core.utilities` 里那个同名的旧副本
   —— 后者只认 7 家，大多数会答 `unknown`）；`wildcard` 不能 import orchestrator
