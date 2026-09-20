@@ -1167,7 +1167,32 @@ async def block_mathjax(page) -> None:
 #:
 #: ⚠️ Adding one is only safe once *every* path that handler feeds reads raw
 #: HTML. Tokens use ``orchestrator.detect_publisher_from_url``'s vocabulary.
-RAW_HTML_PUBLISHERS = frozenset({'iop'})
+#: Publishers whose handlers read the raw server response, so MathJax never
+#: has to be intercepted for them (see should_block_mathjax). Membership is a
+#: trade, not just "one less thing": it also makes get_page_html re-fetch the
+#: source with view-source when no raw body was captured, and announce that
+#: downgrade instead of silently handing back a rendered DOM.
+#:
+#: Each entry was settled by running the same article with and without the
+#: interception and diffing paper.md -- the asymmetry (a wrong skip silently
+#: costs the LaTeX, a wrong block costs one aborted request) makes this a
+#: question to answer with evidence rather than by reading code paths:
+#:
+#:   iop            10.1088/... (13 archived papers, figures 13/13 identical)
+#:   sciencedirect  10.1016/j.rinp.2021.104097  paper.md byte-identical
+#:   aps            10.1103/PhysRevA.98.043407  paper.md byte-identical
+#:   optica         10.1364/OE.444043           paper.md byte-identical
+#:   cambridge      10.1017/hpl.2018.33         paper.md byte-identical,
+#:                  46 formula lines both ways ("latex hidden behind svg")
+#:
+#: ⚠️ The A/B only exercises the path where the raw capture succeeded. It says
+#: nothing about the fallback, which is exactly what the view-source rescue
+#: above is for. Cambridge was only added once its ``raw_html or
+#: rendered_html`` fallback was gone -- until then the riskiest path was the
+#: one the A/B could not reach.
+RAW_HTML_PUBLISHERS = frozenset({
+    'iop', 'sciencedirect', 'aps', 'optica', 'cambridge',
+})
 
 
 def should_block_mathjax(publisher: str) -> bool:
@@ -1181,8 +1206,21 @@ def should_block_mathjax(publisher: str) -> bool:
     Unknown or empty answers block, which is what every publisher did before
     this switch existed -- the safe direction, since a wrong skip silently
     costs the LaTeX source while a wrong block only costs an aborted request.
+
+    ``DP_RAW_HTML_PUBLISHERS`` adds tokens to the set for one run. It exists so
+    that "can this publisher stop intercepting MathJax?" can be answered by
+    diffing two paper.md files instead of by reasoning about which code path
+    reads the rendered DOM -- the asymmetry above makes that a question worth
+    settling with evidence. It is not a way to configure the set permanently;
+    a publisher that passes the A/B belongs in RAW_HTML_PUBLISHERS.
     """
-    return (publisher or '').lower() not in RAW_HTML_PUBLISHERS
+    token = (publisher or '').lower()
+    if token in RAW_HTML_PUBLISHERS:
+        return False
+    extra = (os.environ.get('DP_RAW_HTML_PUBLISHERS') or '').strip().lower()
+    if extra and token and token in {p.strip() for p in extra.split(',') if p.strip()}:
+        return False
+    return True
 
 
 async def fetch_view_source_html(page, url: str = None, timeout_ms: int = 30000) -> str:
