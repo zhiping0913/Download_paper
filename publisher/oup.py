@@ -27,6 +27,7 @@ from html_to_md_converter import (
 )
 from publisher.base import PublisherHandler
 from publisher.wildcard import (
+    parse_article_html,
     generate_reference_text_from_crossref,
     init_extract_all_page,
     render_heading_md,
@@ -42,6 +43,8 @@ _OUP_KEEP_PARAMS = {'Expires', 'Signature', 'Key-Pair-Id'}
 
 class OupHandler(PublisherHandler):
     """Handler for Oxford University Press articles (academic.oup.com)."""
+
+    PUBLISHER = 'oup'
 
     def __init__(self, page=None, captured_data_dir=None, doi: str = None):
         super().__init__(page=page, captured_data_dir=captured_data_dir, doi=doi)
@@ -563,7 +566,7 @@ class OupHandler(PublisherHandler):
         if not html_content:
             return '', ''
 
-        soup = BeautifulSoup(html_content, 'html.parser')
+        soup = parse_article_html(html_content)
 
         fulltext = (
             soup.find('div', attrs={'data-widgetname': 'ArticleFulltext'})
@@ -968,12 +971,8 @@ class OupHandler(PublisherHandler):
     # ------------------------------------------------------------------
 
     async def extract_metadata(self, page) -> dict:
-        html_content = ''
-        if page is not None:
-            try:
-                html_content = await page.content()
-            except Exception:
-                html_content = ''
+        # The captured server response: OUP renders the article server-side.
+        html_content = await self.get_page_html(page) if page is not None else ''
 
         meta = self._extract_metadata_from_html_meta(html_content)
 
@@ -1032,10 +1031,7 @@ class OupHandler(PublisherHandler):
 
             pdf_url = metadata.pop('_pdf_url', None)
 
-            try:
-                fulltext_html = await page.content()
-            except Exception:
-                fulltext_html = ''
+            fulltext_html = await self.get_page_html(page)
 
             if fulltext_html:
                 abstract_md, _ = self.extract_article_text_from_html(fulltext_html)

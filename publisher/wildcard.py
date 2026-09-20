@@ -650,3 +650,28 @@ async def goto_and_capture_document(page, url: str, *, tries: int = 3,
             print(f"  \u26a0\ufe0f  {what} \u672a\u6355\u83b7\u5230\u6587\u6863\u54cd\u5e94"
                   f"\uff0c\u91cd\u8bd5 {attempt + 1}/{tries}")
     return ''
+
+
+def parse_article_html(html: str) -> BeautifulSoup:
+    """Parse *html* the way a browser would, falling back when lxml is absent.
+
+    ⚠️ Publishers emit invalid markup that browsers silently repair, and
+    ``html.parser`` does not. OUP writes
+
+        <p class="chapter-para">The main results: <ul class="roman-lower">…
+
+    -- a list inside a paragraph. HTML5 says an open ``<p>`` is closed by a
+    ``<ul>``, so the rendered DOM has them as siblings and the list converts
+    normally; ``html.parser`` keeps the ``<ul>`` inside the ``<p>`` and the
+    paragraph walker flattens it into "points: - item - item" on one line.
+    Measured on 10.1093/mnras/stz656, where that is the whole of a 392 -> 379
+    line difference.
+
+    lxml applies the same auto-closing rule. When it is not installed the
+    fallback is the old behaviour rather than a crash -- a flattened list is
+    worse than a correct one and better than no extraction at all.
+    """
+    try:
+        return BeautifulSoup(html, 'lxml')
+    except Exception:
+        return BeautifulSoup(html, 'html.parser')
