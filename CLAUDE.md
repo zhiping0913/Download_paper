@@ -141,9 +141,23 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
   **捕获到就优先用**（并落 `supplemental.json`），但**三次运行一次都没捕到**，
   三次的预载都被 Imperva 拦下、走了 Fallback，所以这个端点是否会在干净加载时出现
   **尚未证实**。正文里的 `.sNN` 链接才是实测有效的那条
+- 📌 **SPIE 有两种补充材料，可以同时存在**：正文里的 `.sNN` DOI，以及**会议海报**
+- **海报的判据在 landing page 的内嵌 JSON：`"hasPoster":true`**。36 篇存档零例外 ——
+  26 篇会议论文是 `false`、2 篇是 `true`（`12.3071462`、`12.2668643`）、4 篇期刊论文
+  **根本没有这个字段**（期刊没有海报）。**绝不能靠"撞一下看有没有"**来判断
+- ⚠️ **这个标记只在原始响应里**：`page_raw.html` 有 `hasPoster":true`×1、
+  `ViewPoster?urlId=`×2，而 SPIE 的 `landing` 一直读 `page.content()` ——
+  这个功能本会**静默失效**。已把 `landing`、`extract_metadata`、`get_pdf_url`
+  全改成 `get_page_html()`，SPIE 现在零 `page.content()`
+- 下载链接优先取页面自己给的 `/proceedings/ViewPoster?urlId=<doi>&download=true`
+  （`DownloadPoster` 在所有存档里出现 **0 次**，虽然它也能下），取不到才按 DOI 构造
+- ⚠️ **SPIE 的 `convert_to_markdown` 原本没有补充材料段**（它以前没有补充材料）。
+  文件下到磁盘、md 里却不提，等于"下了没人知道"。补上了，且**只在真有内容时才输出标题**
 - ✅ 端到端实测：`✓ 补充材料（正文中的 .sNN DOI）: 1 个` →
   `supplemental--1.APN.4.3.036004.s01.pdf`，453,957 字节、PDF 1.7、5 页；
-  md 里三处引用都渲染成了指向该 DOI 的链接
+  md 里三处引用都渲染成了指向该 DOI 的链接。海报：`10.1117/12.3071462` →
+  `supplemental--10.1117_12.3071462_poster.pdf`，750,717 字节、PDF 1.5、1 页，
+  md 里有 `## Supplemental Material` 段
 
 ### researching.cn（中国激光杂志社，`10.3788`）
 

@@ -43,7 +43,7 @@ import os
 import json
 import re
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, quote, urlparse
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
@@ -369,13 +369,6 @@ class SPIEHandler(PublisherHandler):
         # and this handler then asked for the identical resource a second
         # time. SPIE runs Imperva and is the strictest publisher here, so the
         # request worth not making is this one.
-        if os.environ.get('DP_SPIE_SUPP_DUMP'):
-            # Read-only: lists what was already captured, issues nothing.
-            _cap = getattr(self, '_captured_api', None) or {}
-            print(f"  🔎 捕获到的 API 响应 {len(_cap)} 条：")
-            for _e in _cap.values():
-                print(f"     · {len(_e.get('body') or ''):>9,} 字符  {(_e.get('url') or '')[:110]}")
-
         captured, captured_url = self.captured_api_entry('/article/fulltexthtml')
         if captured:
             html = self._fulltext_from_captured(captured)
@@ -916,10 +909,7 @@ class SPIEHandler(PublisherHandler):
     async def get_pdf_url(self, doi: str = None) -> Optional[str]:
         html = ''
         if self.page is not None:
-            try:
-                html = await self.page.content()
-            except Exception:
-                html = ''
+            html = await self.get_page_html(self.page)
         if html:
             url = self.extract_metadata_from_html(html).get('_pdf_url')
             if url:
@@ -970,6 +960,47 @@ class SPIEHandler(PublisherHandler):
             seen.add(url)
             out.append(url)
         return out
+
+    #: Proceedings landing pages state this outright, so a poster is never
+    #: something to probe for. Written into the page's embedded JSON, which is
+    #: HTML-escaped there, hence the &quot; alternative.
+    _HAS_POSTER_RE = re.compile(r'(?:&quot;|")hasPoster(?:&quot;|")\s*:\s*true',
+                                re.IGNORECASE)
+    _POSTER_HREF_RE = re.compile(
+        r'["\'](/proceedings/ViewPoster\?urlId=[^"\'&]+(?:&amp;|&)?[^"\']*)["\']',
+        re.IGNORECASE)
+
+    @classmethod
+    def poster_url_from_landing(cls, landing_html: str, doi: str = '') -> str:
+        """The conference poster's download URL, or '' when there is none.
+
+        SPIE ships some proceedings papers with a poster PDF, and the landing
+        page says which: its embedded JSON carries ``"hasPoster":true`` or
+        ``false``. Measured across 36 archived SPIE captures -- 26 proceedings
+        papers with false, 2 with true, and the 4 journal papers without the
+        field at all (journals have no posters). So this is a stated fact, not
+        something to discover by requesting a URL for every paper and seeing
+        what comes back.
+
+        ⚠️ Must be read from the *landing page*, not the fulltext payload:
+        the field lives in the page's own JSON blob.
+
+        The href is taken from the page when present -- it is what SPIE
+        itself offers -- and constructed from the DOI otherwise.
+        """
+        if not landing_html or not cls._HAS_POSTER_RE.search(landing_html):
+            return ''
+        m = cls._POSTER_HREF_RE.search(landing_html)
+        if m:
+            href = m.group(1).replace('&amp;', '&')
+            if 'download=true' not in href:
+                href += ('&' if '?' in href else '?') + 'download=true'
+            return urljoin(cls.SPIE_BASE + '/', href)
+        doi = (doi or '').strip()
+        if not doi:
+            return ''
+        return (f"{cls.SPIE_BASE}/proceedings/ViewPoster"
+                f"?urlId={quote(doi, safe='')}&download=true")
 
     def supplemental_from_capture(self) -> tuple:
         """``(urls, descriptions)`` from a captured /article/supplemental call.
@@ -1024,11 +1055,7 @@ class SPIEHandler(PublisherHandler):
             return f"{self.SPIE_BASE}/journals" if self.doi else ''
 
     async def extract_metadata(self, page) -> dict:
-        try:
-            html = await page.content()
-        except Exception:
-            html = ''
-        return self.extract_metadata_from_html(html)
+        return self.extract_metadata_from_html(await self.get_page_html(page))
 
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
         page, managed_playwright, managed_browser, managed_context = await init_extract_all_page(
@@ -1038,10 +1065,14 @@ class SPIEHandler(PublisherHandler):
         set_actual_base_url(self, page)
 
         try:
-            try:
-                landing = await page.content()
-            except Exception:
-                landing = ''
+            # The raw server response, not the rendered DOM. Two things are
+            # only there: the landing page's embedded JSON (which is where
+            # hasPoster and the content family are stated) and the figure
+            # links. Measured on 10.1117/12.3071462's page_raw.html:
+            # hasPoster":true x1, ViewPoster?urlId= x2, family=proceedings,
+            # 3 landing figures -- and SPIE is in RAW_HTML_PUBLISHERS, so
+            # nothing else here wants the post-JS copy either.
+            landing = await self.get_page_html(page)
 
             metadata = self.extract_metadata_from_html(landing)
             metadata['doi'] = doi or metadata.get('doi', '')
@@ -1080,6 +1111,17 @@ class SPIEHandler(PublisherHandler):
                 supp_urls = self.supplemental_from_fulltext(fulltext, self.doi or doi)
                 if supp_urls:
                     print(f"  ✓ 补充材料（正文中的 .sNN DOI）: {len(supp_urls)} 个")
+
+            # A conference poster is the other kind of SPIE supplement, and a
+            # separate one: a paper can have both, or either. The landing page
+            # states whether it exists, so nothing is probed for.
+            poster_url = self.poster_url_from_landing(landing, self.doi or doi)
+            if poster_url and poster_url not in supp_urls:
+                supp_urls = list(supp_urls) + [poster_url]
+                supp_descriptions = dict(supp_descriptions)
+                supp_descriptions[f"{(self.doi or doi).replace('/', '_')}_poster.pdf"] = \
+                    'Conference poster'
+                print("  ✓ 会议海报: 1 个（landing page 的 hasPoster 为 true）")
 
             # hasAccess=False 时正文 API 什么都不给，但 landing page 上图还在
             if not figure_urls:
@@ -1146,6 +1188,29 @@ class SPIEHandler(PublisherHandler):
             body_md = self.extract_body_from_fulltext(article_text)
         if body_md:
             md.extend(['---', '', self._resolve_figures(body_md, kwargs), ''])
+
+        # Supplemental material: the .sNN DOIs cited in the body and, for
+        # proceedings, the conference poster. The section only exists when
+        # there is something in it -- a heading over nothing would claim the
+        # paper ships material it does not.
+        supp_urls = kwargs.get('supplemental_urls') or []
+        supp_downloads = kwargs.get('supplemental_downloads') or []
+        supp_descriptions = kwargs.get('supplemental_descriptions') or {}
+        if supp_urls or supp_downloads:
+            md.extend(['---', '', '## Supplemental Material', ''])
+            for index, url in enumerate(supp_urls):
+                target = url.get('url', '') if isinstance(url, dict) else url
+                local = supp_downloads[index] if index < len(supp_downloads) else ''
+                label = ''
+                for key, value in supp_descriptions.items():
+                    if local and key in local:
+                        label = value
+                        break
+                if local:
+                    md.append(f"- `{local}`" + (f" — {label}" if label else ''))
+                elif target:
+                    md.append(f"- [{label or target}]({target})")
+            md.append('')
 
         references = metadata.get('references') or []
         if references:
