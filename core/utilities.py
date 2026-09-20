@@ -1229,6 +1229,10 @@ async def block_mathjax(page) -> None:
 #:                  lines (121 x-tex annotations)
 #:   ieee           10.1109/TPS.2010.2064310      byte-identical, 41 formula
 #:                  lines (its math is <tex-math> from the REST endpoint)
+#:   oup            10.1093/mnras/stz656          identical but for three
+#:                  links' target attribute, where the raw response keeps the
+#:                  author's target="_blank" and the rendered DOM had blanked
+#:                  it. Needed parse_article_html first -- see below.
 #:   acm            10.1145/3712285.3771783       same 12 authors with their
 #:                  affiliations and addresses, 24 "Go to" nav links and 25
 #:                  hidden labels gone, and 7 \begin{align} blocks recovered
@@ -1267,7 +1271,7 @@ async def block_mathjax(page) -> None:
 #: per-request ids, so that fetch is now a rescue rather than a routine step.
 RAW_HTML_PUBLISHERS = frozenset({
     'iop', 'sciencedirect', 'aps', 'optica', 'cambridge',
-    'acs', 'wiley', 'ieee', 'spie', 'aip', 'nature', 'mdpi', 'acm',
+    'acs', 'wiley', 'ieee', 'spie', 'aip', 'nature', 'mdpi', 'acm', 'oup',
 })
 
 
