@@ -171,9 +171,21 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
 
 ### SPIE (`10.1117`、spiedigitallibrary.org)
 
-- landing page 只有元数据（`citation_*` + `ld+json`），正文要 **POST**
-  `/api/{family}/article/fulltexthtml`，body `{"urlId": "<doi>"}`，
-  用页面内 `fetch()` 发（DOI 不分大小写）。响应存 `fulltexthtml.json`
+- landing page 只有元数据（`citation_*` + `ld+json`），正文在
+  `/api/{family}/article/fulltexthtml`（POST，body `{"urlId": "<doi>"}`，DOI 不分大小写）。
+  响应存 `fulltexthtml.json`
+- 📌 **这个请求页面自己会发，不必我们再发一次**。实测 `10.1117/1.OE.64.11.115106`：
+  预载 sink 里有 `POST /api/journals/article/fulltexthtml` 200、**118,628 字符**，
+  而 handler 随后又请求了同一个资源。预载发生在 Playwright 连接**之前**、handler 的
+  POST 在**之后**，所以那条必定是页面自己发的。现在 `fetch_fulltext_html()` 先查捕获，
+  命中就用（照常落 `fulltexthtml.json`），只有解析失败 / `hasAccess=False` / 捕获为空
+  才回落到主动 POST，并打印原因
+- ⚠️ 这条对 SPIE 尤其值钱：它跑 **Imperva**、是本仓最严的一家，而那次
+  `_post_fulltext` 是正文页上**唯一**的页面内 `fetch()`。捕获命中时，SPIE 正文页
+  只剩导航和被动监听。实测复用后 `paper.md` 逐字节相同（264 行、5 图、正文 27,704 字符）
+- ⚠️ 测 SPIE 用专属 profile：`CHROME_PROFILE_SOURCE_DIR=/home/zhiping/.config/google-chrome-spie`
+  （`FRESH_PROFILE=0` 播种）。这与下面「SPIE 用 `FRESH_PROFILE=1`」那条不冲突 ——
+  后者针对的是**日常 profile**（播种会带进 bot manager 的案底），而这个是专为 SPIE 备的
 - ⚠️ **接口按内容族分三个**：`journals` / `proceedings` / `ebooks`。**问错了族不报错**，
   只回一个 `hasAccess=False` 的空壳，看着像没权限（会议论文集 `10.1117/12.x` 就踩过）。
   族名从 landing page 的 `<meta name="citation_article_type">` 读——SPIE 自己声明的；

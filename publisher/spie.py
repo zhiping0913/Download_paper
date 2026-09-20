@@ -357,6 +357,20 @@ class SPIEHandler(PublisherHandler):
         doi = (self.doi or '').strip()
         if not doi:
             return ''
+
+        # The landing page fetches this endpoint for itself while it loads, so
+        # the preload's capture usually already holds the answer. Measured on
+        # 10.1117/1.OE.64.11.115106: the sink recorded
+        # POST /api/journals/article/fulltexthtml, 200, 118,628 characters --
+        # and this handler then asked for the identical resource a second
+        # time. SPIE runs Imperva and is the strictest publisher here, so the
+        # request worth not making is this one.
+        captured = self.captured_api('/article/fulltexthtml')
+        if captured:
+            html = self._fulltext_from_captured(captured)
+            if html:
+                return html
+
         family = self.fulltext_family(landing_html, page_url)
         referer = referer or f"{self.SPIE_BASE}/{family}"
 
@@ -371,6 +385,27 @@ class SPIEHandler(PublisherHandler):
             if html:
                 return html
         return ''
+
+    def _fulltext_from_captured(self, body: str) -> str:
+        """Body HTML out of a captured fulltexthtml response, or ''.
+
+        Lands the payload as fulltexthtml.json exactly as the POST path does:
+        reusing the capture must leave the same file behind, or the capture
+        directory quietly stops being re-renderable offline.
+        """
+        try:
+            payload = json.loads(body)
+        except Exception:
+            print("  ⚠️  预载捕获的正文 API 无法解析为 JSON，改为主动请求")
+            return ''
+        html = self.fulltext_html_from_payload(payload)
+        if not html:
+            print(f"  ⚠️  预载捕获的正文 API 里没有 fullTextHtml"
+                  f"（hasAccess={payload.get('hasAccess')}）")
+            return ''
+        print(f"  ♻️  正文 API 复用预载捕获（{len(body):,} 字符，未重复请求）")
+        self._cache_json('fulltexthtml.json', payload)
+        return html
 
     async def _post_fulltext(self, page, api: str, doi: str, referer: str) -> str:
         """One POST to a fulltext endpoint; '' when it yields no body."""
