@@ -228,9 +228,6 @@ BOT_CHALLENGE_HINTS = ('captcha', 'challenge', 'accessdenied', 'blocked')
 #: would match other publishers' reading views and cost a body fetch per
 #: article for bytes nothing reads.
 #:
-#: ⚠️ SPIE is deliberately absent: its fulltext POST is issued by *us* from
-#: inside the page, not by the landing page, so there is nothing to capture.
-#:
 #: Lives here rather than in chrome_session because both capture paths need
 #: it -- the CDP preload (headed) and the Playwright response listener
 #: (either mode) -- and two copies would drift the first time a publisher is
@@ -240,6 +237,7 @@ DEFAULT_API_HARVEST = (
     '/rest/document/',       # IEEE: the REST article endpoints
     '/fulltext/10.',         # APS: the reading view's own JSON
     '/supplemental/10.',     # APS: the supplemental listing
+    '/article/fulltexthtml', # SPIE: the body the landing page fetches itself
 )
 
 
