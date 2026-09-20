@@ -37,6 +37,8 @@ from publisher.wildcard import (
 class MDPIHandler(PublisherHandler):
     """Handler for MDPI journal articles (www.mdpi.com)."""
 
+    PUBLISHER = 'mdpi'
+
     MDPI_BASE = 'https://www.mdpi.com'
 
     def __init__(self, page=None, captured_data_dir=None, doi: str = None):
@@ -670,12 +672,10 @@ class MDPIHandler(PublisherHandler):
     # ------------------------------------------------------------------
 
     async def extract_metadata(self, page) -> dict:
-        html_content = ''
-        if page is not None:
-            try:
-                html_content = await page.content()
-            except Exception:
-                html_content = ''
+        # The captured server response. MDPI renders the article server-side,
+        # so nothing here needs the post-JS copy -- and reading it is the one
+        # thing the flow no longer does on an article page.
+        html_content = await self.get_page_html(page) if page is not None else ''
 
         meta = self._extract_metadata_from_html_meta(html_content)
         affiliations = self._extract_affiliations(html_content)
@@ -817,10 +817,7 @@ class MDPIHandler(PublisherHandler):
             pdf_url = metadata.pop('_pdf_url', None)
             metadata.pop('_keywords', None)
 
-            try:
-                fulltext_html = await page.content()
-            except Exception:
-                fulltext_html = ''
+            fulltext_html = await self.get_page_html(page)
 
             if fulltext_html:
                 text_refs, _ = self.extract_references_from_html(fulltext_html)
