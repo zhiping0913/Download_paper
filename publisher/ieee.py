@@ -104,6 +104,11 @@ for _b in range(0x80, 0xA0):
 class IEEEHandler(PublisherHandler):
     """Full-text handler for IEEE Xplore."""
 
+    # Declared so get_page_html()'s view-source rescue applies: the token is
+    # read off the handler, so being spelled in RAW_HTML_PUBLISHERS is not
+    # enough on its own.
+    PUBLISHER = 'ieee'
+
     IEEE_BASE = 'https://ieeexplore.ieee.org'
 
     # REST endpoints, formatted with the numeric article id.

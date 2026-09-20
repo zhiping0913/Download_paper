@@ -17,7 +17,7 @@ Two things need care:
 
 *Math.* Formulas live in ``span.mathFormula``. When MathJax has run it
 empties that span and leaves an ``<mjx-container>`` whose only recoverable
-source is the ``<mjx-assistive-mml>`` MathML; when ``block_mathjax()`` did its
+source is the ``<mjx-assistive-mml>`` MathML; when the old MathJax interception did its
 job the span still holds the original markup. :meth:`_formula_latex` handles
 both, so the output is real LaTeX either way. Display formulas carry their
 number in a sibling ``span.label.title-label`` -- kept, since a paper that

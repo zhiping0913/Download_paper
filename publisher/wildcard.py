@@ -20,9 +20,7 @@ from html_to_md_converter import (
     remove_newlines_in_paragraph,
 )
 from core.utilities import (
-    block_mathjax,
     pick_raw_article_html,
-    should_block_mathjax,
 )
 
 
@@ -545,16 +543,6 @@ async def init_extract_all_page(handler, page=None, doi: str = None, handler_nam
         managed_context = await managed_browser.new_context(accept_downloads=True)
         page = await managed_context.new_page()
         handler.configure(page=page, doi=doi)
-
-        # Stop MathJax from running so the rendered DOM keeps original
-        # \(...\) / <math> markup. Must be registered before goto().
-        # Skipped for handlers that read the raw server response instead:
-        # the interception would buy them nothing and only leave an aborted
-        # subresource request for the page to notice. The handler names itself
-        # (PUBLISHER) because this module cannot import the orchestrator --
-        # the handlers import *this* one.
-        if should_block_mathjax(getattr(handler, 'PUBLISHER', '')):
-            await block_mathjax(page)
 
         # Intercept the main-document HTTP response to capture the raw server
         # HTML *before* JavaScript (e.g. MathJax) rewrites the DOM.

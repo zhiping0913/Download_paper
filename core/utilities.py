@@ -1181,156 +1181,27 @@ def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
 # Playwright Helpers
 # ============================================================================
 
-async def block_mathjax(page) -> None:
-    """Route-intercept MathJax script requests so they never execute.
-
-    Many publishers (Cambridge, AIP, IOP, Optica, …) serve their full-text
-    pages with original <math> MathML or \\(...\\) / \\[...\\] TeX delimiters.
-    When MathJax runs in the browser it rewrites those into SVG/CHTML, which
-    destroys the LaTeX source we want for the extracted markdown. Aborting
-    the script requests up-front leaves the DOM untouched, so page.content()
-    and the raw response listener both see the original math markup.
-
-    Call this on every page **before** the first page.goto() — once a script
-    has loaded, route handlers don't apply retroactively.
-    """
-    def _is_mathjax_url(url: str) -> bool:
-        u = url.lower()
-        return (
-            'mathjax' in u                 # generic — covers cdn.mathjax.org, self-hosted MathJax-*.js
-            or 'mml-chtml' in u            # MathJax 3 CHTML build
-            or 'mml-svg' in u              # MathJax 3 SVG build
-            or 'tex-mml' in u              # MathJax 3 TeX + MML build
-            or 'polyfill.io' in u          # MathJax 3 ships with a polyfill.io bootstrap
-        )
-
-    async def _abort(route):
-        try:
-            await route.abort()
-        except Exception:
-            # Page may have been closed by the time the request arrives.
-            pass
-
-    try:
-        await page.route(_is_mathjax_url, _abort)
-    except Exception as e:
-        # Don't let a broken interceptor block extraction — log and continue.
-        print(f"  ⚠️  无法注册 MathJax 拦截器: {e}")
-
-
-#: Publishers whose handlers parse the raw server response instead of the
-#: rendered DOM, so blocking MathJax buys them nothing. Route interception is
-#: an intervention the page can notice -- a subresource request that is
-#: aborted rather than answered -- and the aim is to keep shrinking this kind
-#: of in-page meddling, so a publisher belongs here as soon as its handler
-#: stops reading ``page.content()``.
+#: Publishers whose handler parses the raw server response rather than the
+#: rendered DOM -- which, since the last conversion, is all of them.
 #:
-#: ⚠️ Adding one is only safe once *every* path that handler feeds reads raw
-#: HTML. Tokens use ``orchestrator.detect_publisher_from_url``'s vocabulary.
-#: Publishers whose handlers read the raw server response, so MathJax never
-#: has to be intercepted for them (see should_block_mathjax). Membership is a
-#: trade, not just "one less thing": it also makes get_page_html re-fetch the
-#: source with view-source when no raw body was captured, and announce that
-#: downgrade instead of silently handing back a rendered DOM.
+#: ❌ This used to also mean "skip the MathJax route interception".
+#: :func:`block_mathjax` is gone: every handler now reads the captured
+#: response, and for a publisher we have no handler for the only thing that
+#: happens is that ``page_raw.html`` is landed for someone to write one from
+#: later -- and that file is the response, which MathJax never touched. So
+#: the interception protected nothing while remaining an intervention the
+#: page can see (an aborted subresource request).
 #:
-#: Each entry was settled by running the same article with and without the
-#: interception and diffing paper.md -- the asymmetry (a wrong skip silently
-#: costs the LaTeX, a wrong block costs one aborted request) makes this a
-#: question to answer with evidence rather than by reading code paths:
-#:
-#:   iop            10.1088/... (13 archived papers, figures 13/13 identical)
-#:   sciencedirect  10.1016/j.rinp.2021.104097  paper.md byte-identical
-#:   aps            10.1103/PhysRevA.98.043407  paper.md byte-identical
-#:   optica         10.1364/OE.444043           paper.md byte-identical
-#:   cambridge      10.1017/hpl.2018.33         paper.md byte-identical,
-#:                  46 formula lines both ways ("latex hidden behind svg")
-#:   acs            10.1021/acs.nanolett.8b05070  byte-identical, 17 formula
-#:                  lines (41 <math> live only in the raw response)
-#:   wiley          10.1002/lpor.202401986        byte-identical, 36 formula
-#:                  lines (121 x-tex annotations)
-#:   ieee           10.1109/TPS.2010.2064310      byte-identical, 41 formula
-#:                  lines (its math is <tex-math> from the REST endpoint)
-#:   researching    10.3788/PI.2023.R05           same 24 figures, 1,636
-#:                  formulas and 357 references; 8.5 KB smaller because the
-#:                  rendered DOM leaked MathJax fallback glyphs in front of
-#:                  formulas ("of Å$\sim 3.7...", "μ$\sim" 12 times)
-#:   science        10.1126/science.aam8393       same 4 figures, 4 tables, 76
-#:                  formulas and supplement; loses 26 "VIEW IN VIEWER" button
-#:                  labels JavaScript had injected into every figure and table
-#:                  reference, and keeps those references as links ([Fig. 1A](#F1))
-#:   oup            10.1093/mnras/stz656          identical but for three
-#:                  links' target attribute, where the raw response keeps the
-#:                  author's target="_blank" and the rendered DOM had blanked
-#:                  it. Needed parse_article_html first -- see below.
-#:   acm            10.1145/3712285.3771783       same 12 authors with their
-#:                  affiliations and addresses, 24 "Go to" nav links and 25
-#:                  hidden labels gone, and 7 \begin{align} blocks recovered
-#:                  that the rendered DOM had dropped. Needed a parser change
-#:                  first -- see _extract_authors.
-#:   mdpi           10.3390/photonics4020026      content-identical (107 word
-#:                  differences, all spacing around math -- and the raw
-#:                  response is the more faithful of the two: "$ ," becomes
-#:                  "$," in 11 places), block A/B byte-identical
-#:   nature         10.1038/s41566-023-01311-z    byte-identical, 27 formula
-#:                  lines; also verified that reading the capture instead of
-#:                  page.content() leaves paper.md unchanged
-#:   aip            10.1063/5.0326077             byte-identical, 46 formula
-#:                  lines; also verified that reading the capture instead of
-#:                  page.content() leaves paper.md unchanged
-#:   spie           10.1117/12.2038680 (2014 proceedings),
-#:                  10.1117/1.oe.62.8.086102 (2023) and
-#:                  10.1117/1.OE.64.11.115106 (2025): all byte-identical,
-#:                  0 / 27 / 57 formula lines. Its math arrives inside
-#:                  fulltexthtml.json and never passes through the page DOM.
-#:                  Runs were spaced 5 minutes apart -- SPIE is the strictest
-#:                  publisher here, and back-to-back visits are the shape its
-#:                  bot manager scores.
-#:
-#: ⚠️ The A/B only exercises the path where the raw capture succeeded. It says
-#: nothing about the fallback, which is exactly what the view-source rescue
-#: above is for. Cambridge was only added once its ``raw_html or
-#: rendered_html`` fallback was gone -- until then the riskiest path was the
-#: one the A/B could not reach.
-#: ⚠️ ACS and Wiley had to change source first. ACS read page.content() and
-#: recovered its math from mjx-assistive-mml -- i.e. from MathJax's own
-#: output -- so dropping the interception before switching it to the raw
-#: response would have deleted every formula. Wiley preferred an in-page
-#: view-source fetch; measured on 10.1002/lpor.202401986 the captured
-#: response carries the same 121 math sources and differs only in
-#: per-request ids, so that fetch is now a rescue rather than a routine step.
+#: What membership still buys: :meth:`PublisherHandler.get_page_html`
+#: re-fetches the source with view-source when no raw body was captured, and
+#: announces that downgrade instead of silently handing back a rendered DOM.
+#: ⚠️ The token is the handler's own ``PUBLISHER``, so a handler that does
+#: not declare one never gets the rescue however it is spelled here.
 RAW_HTML_PUBLISHERS = frozenset({
     'iop', 'sciencedirect', 'aps', 'optica', 'cambridge',
     'acs', 'wiley', 'ieee', 'spie', 'aip', 'nature', 'mdpi', 'acm', 'oup', 'science', 'researching',
     'opticsjournal',
 })
-
-
-def should_block_mathjax(publisher: str) -> bool:
-    """Whether MathJax still has to be intercepted for *publisher*.
-
-    Takes a token rather than a URL on purpose: the two detectors in this repo
-    disagree (``core.utilities.detect_publisher_from_url`` is an older, much
-    narrower copy of the orchestrator's), so the caller picks which one it
-    trusts and this stays a single, dumb decision point.
-
-    Unknown or empty answers block, which is what every publisher did before
-    this switch existed -- the safe direction, since a wrong skip silently
-    costs the LaTeX source while a wrong block only costs an aborted request.
-
-    ``DP_RAW_HTML_PUBLISHERS`` adds tokens to the set for one run. It exists so
-    that "can this publisher stop intercepting MathJax?" can be answered by
-    diffing two paper.md files instead of by reasoning about which code path
-    reads the rendered DOM -- the asymmetry above makes that a question worth
-    settling with evidence. It is not a way to configure the set permanently;
-    a publisher that passes the A/B belongs in RAW_HTML_PUBLISHERS.
-    """
-    token = (publisher or '').lower()
-    if token in RAW_HTML_PUBLISHERS:
-        return False
-    extra = (os.environ.get('DP_RAW_HTML_PUBLISHERS') or '').strip().lower()
-    if extra and token and token in {p.strip() for p in extra.split(',') if p.strip()}:
-        return False
-    return True
 
 
 async def fetch_view_source_html(page, url: str = None, timeout_ms: int = 30000) -> str:
@@ -1344,11 +1215,9 @@ async def fetch_view_source_html(page, url: str = None, timeout_ms: int = 30000)
     how "P sub 0 equals E sub 0 divided by tau sub eff" ends up in the
     markdown instead of ``{P_0} = {E_0}/{\tau _{\rm{eff}}}``.
 
-    Route-blocking MathJax (:func:`block_mathjax`) is the first line of
-    defence, but it only helps when the interceptor is registered before the
-    script loads — on CDP-attached headed pages, and after an in-handler
-    navigation, that is not guaranteed. Re-fetching the source is
-    unconditional and cannot be defeated by rendering.
+    This is the rescue path, and now the only one: the MathJax route
+    interception it used to back up is gone (see RAW_HTML_PUBLISHERS).
+    Re-fetching the source cannot be defeated by rendering.
 
     The fetch runs *inside the page* (``page.evaluate`` + ``fetch``) rather
     than through ``context.request``: same-origin credentials, and the real
