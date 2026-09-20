@@ -630,7 +630,7 @@ async def _fetch_html_in_new_tab(ctx, url: str, *, expect, timeout_s: float) -> 
             if _html_is_acceptable(html, expect):
                 print(f"    ✓ 取得页面 [新标签页·原始响应] {len(html):,} 字符")
                 return html
-        rendered = await tab.content()
+        rendered = await content_with_timeout(tab, what='阶梯 tab 层读取 DOM')
         if _html_is_acceptable(rendered, expect):
             print(f"    ✓ 取得页面 [新标签页·渲染后] {len(rendered):,} 字符")
             return rendered
@@ -663,7 +663,7 @@ async def _fetch_html_in_place(page, url: str, *, expect, timeout_s: float,
         except Exception:
             await page.goto(url, wait_until='domcontentloaded',
                             timeout=int(timeout_s * 1000))
-        html = await page.content()
+        html = await content_with_timeout(page, what='阶梯 tab 层读取 DOM')
         if _html_is_acceptable(html, expect):
             print(f"    ✓ 取得页面 [浏览器标签页] {len(html):,} 字符")
             return html

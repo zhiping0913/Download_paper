@@ -515,6 +515,14 @@ Playwright 里这几个调用**都不接受 `timeout=`**，也不受 `set_defaul
 `🛡️ 复用预载页面…` 再也不动** —— 需要的东西全在磁盘上。用 `content_with_timeout()`
 （超时返回 `''`，不抛异常，因为所有调用点本来就把空 HTML 当"这页不行"）。
 
+📌 **清点一次就会发现漏网**：报"某家已零 `page.content()`"之前要把
+`extract_metadata` 这条路径也数进去 —— Cambridge、IEEE 的 `extract_metadata` 和 APS 的
+参考文献兜底都是这么躲过检查的（已改）。取数阶梯的 `tab` 层和挑战通过后的重载读 DOM
+也都包上了超时。当前剩余的 `content()` 只有三类：`get_page_html()` 自己的契约回落、
+各家**声明过的**最后手段/纯归档、以及**尚未改造的 8 家**
+（`acm`/`mdpi`/`oup`/`oup_book`/`opticsjournal`/`researching`/`science`/`springer_book`
+—— 它们还在拦 MathJax，靠拦截保住公式，现状是自洽的）
+
 📌 **但真正的修法不是加超时，是别去问那个页面**。原来的流程是"先让实时页面自证
 （`page.content()`），失败了才回头看捕获" —— 顺序反了：捕获是**已经在手、已经落盘**的。
 现在是：`_pick_page_by_url()` 只读 `page.url`（Playwright 自己的状态，不往渲染进程发请求，

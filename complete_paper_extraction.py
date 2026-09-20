@@ -609,10 +609,7 @@ async def _clear_challenge_if_present(page, rendered_html: str, timeout_ms: int)
         await page.goto(page.url, wait_until='networkidle', timeout=timeout_ms)
     except Exception as e:
         print(f"     ⚠️  重新加载异常: {e}")
-    try:
-        return await page.content()
-    except Exception:
-        return rendered_html
+    return await content_with_timeout(page, what='挑战通过后读取 DOM') or rendered_html
 
 
 def save_html_snapshot(path, content: str, label: str = "HTML") -> bool:
