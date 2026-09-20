@@ -28,6 +28,17 @@ python complete_paper_extraction.py --doi "<DOI>" --pdf-only      # 只下 PDF�
 python batch_process.py --file dois.txt                     # 批量
 ```
 
+## 跳过补充材料（`--supplemental=False` / `DP_SUPPLEMENTAL=0`）
+
+默认 `True`，照常下。`False` 时**只跳过下载**，链接仍写进 Markdown ——
+产出目录里「本来就没有补充材料」和「叫我们别下」长得一模一样，所以跳过时
+明确打印跳过了几个。
+
+- 📌 **书籍是这个开关的由来**：OUP 的书把**每一章**都列成补充材料 PDF。实测
+  `10.1093/acprof:oso/9780198562641.001.0001` 有 **19 个** `.ag.pdf`、约 60 MB，
+  占掉整次运行的大部分墙钟时间 —— 而要的只是书本身
+- ⚠️ 命令行优先于环境变量；两个都不给才用默认。`--supplemental` 不带值等于 `True`
+
 ## pdf-only 模式
 
 很多老文章和会议短文的网页**根本没有正文**，生成 md 是白费功夫。两层，越往下访问越少：
