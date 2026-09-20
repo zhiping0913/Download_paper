@@ -585,3 +585,68 @@ async def init_extract_all_page(handler, page=None, doi: str = None, handler_nam
 
     return page, managed_playwright, managed_browser, managed_context
 
+
+async def goto_and_capture_document(page, url: str, *, tries: int = 3,
+                                    timeout_ms: int = 30000,
+                                    label: str = '') -> str:
+    """Navigate to *url* and return the document the server sent, or ''.
+
+    For the pages a handler must open beyond the article itself -- Nature's
+    inline tables, a Springer book's chapters. They are navigations, which is
+    allowed; what is not allowed is reading them back with ``page.content()``,
+    because MathJax has rewritten any formula in them by then exactly as it
+    does in the article.
+
+    Why a capture can come back empty, which is what the retries are for:
+
+    * the navigation raised (timeout, transient network error);
+    * the response was not a 200 ``text/html`` document -- a redirect into a
+      bot check, a 403, an unexpected content type;
+    * nothing was served at all because the page came from the back/forward
+      cache, which fires no document response.
+
+    The listener is attached before each goto and removed after it, so it sees
+    that navigation and nothing else. Each attempt is a fresh goto rather than
+    a reload, since the first one may have landed somewhere else entirely.
+    Returns the largest document seen, matching pick_raw_article_html's
+    reasoning: a challenge or error page is short, a real one is not.
+    """
+    what = label or url
+    for attempt in range(1, max(1, tries) + 1):
+        docs = []
+
+        async def _capture(response):
+            try:
+                if (response.request.resource_type == 'document'
+                        and response.ok
+                        and 'text/html' in response.headers.get('content-type', '')):
+                    docs.append(await response.text())
+            except Exception:
+                pass
+
+        page.on('response', _capture)
+        try:
+            await page.goto(url, wait_until='domcontentloaded', timeout=timeout_ms)
+            try:
+                await page.wait_for_load_state('networkidle', timeout=timeout_ms // 3)
+            except Exception:
+                pass
+        except Exception as exc:
+            print(f"  \u26a0\ufe0f  \u7b2c {attempt} \u6b21\u6253\u5f00 {what} \u5931\u8d25: "
+                  f"{type(exc).__name__}: {str(exc)[:80]}")
+        finally:
+            try:
+                page.remove_listener('response', _capture)
+            except Exception:
+                pass
+
+        if docs:
+            best = max(docs, key=len)
+            if attempt > 1:
+                print(f"  \u2713 \u7b2c {attempt} \u6b21\u624d\u6355\u83b7\u5230 {what} "
+                      f"\u7684\u539f\u59cb\u54cd\u5e94\uff08{len(best):,} \u5b57\u7b26\uff09")
+            return best
+        if attempt < tries:
+            print(f"  \u26a0\ufe0f  {what} \u672a\u6355\u83b7\u5230\u6587\u6863\u54cd\u5e94"
+                  f"\uff0c\u91cd\u8bd5 {attempt + 1}/{tries}")
+    return ''

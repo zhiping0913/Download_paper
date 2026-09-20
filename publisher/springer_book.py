@@ -8,7 +8,11 @@ For chapter DOIs (e.g., 10.1007/978-981-15-2381-6_2), normalizes to book DOI.
 from typing import Optional, Dict, List
 from bs4 import BeautifulSoup
 from publisher.base import PublisherHandler
-from publisher.wildcard import init_extract_all_page, set_actual_base_url
+from publisher.wildcard import (
+    goto_and_capture_document,
+    init_extract_all_page,
+    set_actual_base_url,
+)
 from publisher.nature import NatureHandler
 
 
@@ -517,12 +521,19 @@ class SpringerBookHandler(PublisherHandler):
             # back to a default instead of the mode this run is actually in.
             handler._force_headed = self.is_headed_run()
 
-            # Navigate to chapter page via DOI
-            await page.goto(f"https://doi.org/{chapter_doi}", wait_until='domcontentloaded', timeout=60000)
-            try:
-                await page.wait_for_load_state('networkidle', timeout=15000)
-            except Exception:
-                pass
+            # Navigate to the chapter and keep the response the server sent.
+            #
+            # ⚠️ Without this the inner handler has no _raw_server_html, so its
+            # get_page_html() falls back to page.content() -- the rendered DOM,
+            # where MathJax has already replaced the chapter's formulas. This
+            # is the same thing _force_headed above is here for: nothing in
+            # process_with_handler runs for a handler constructed in here, so
+            # whatever the workflow would have pinned has to be pinned by hand.
+            chapter_html = await goto_and_capture_document(
+                page, f"https://doi.org/{chapter_doi}", timeout_ms=60000,
+                label=f"章节 {chapter_doi}")
+            if chapter_html:
+                handler._raw_server_html = chapter_html
 
             # Extract chapter content using NatureHandler
             chapter_result = await handler.extract_all(page=page, doi=chapter_doi)
