@@ -1047,9 +1047,16 @@ async def _harvest_document_bodies(ws, sink: dict, limit: int = 48) -> int:
             continue
         if got.get("base64Encoded"):
             try:
-                body = base64.b64decode(body).decode("utf-8", "replace")
+                raw = base64.b64decode(body)
             except Exception:
                 continue
+            # Keep the bytes as bytes. A navigated-to image IS the document,
+            # so this is the only copy of the file we will ever get: Chrome
+            # renders it inline and never fires a download event, and the
+            # renderer evicts the buffer shortly after. Decoding it to text
+            # first would destroy it.
+            entry["body_bytes"] = raw
+            body = raw.decode("utf-8", "replace")
         entry["body"] = body
         fetched += 1
     return fetched
@@ -2802,7 +2809,57 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
         if landed:
             session.result = dict(session.result or {},
                                   success=True, downloaded_file=landed)
+
+    # Still nothing on disk? The browser may have *displayed* the file rather
+    # than downloading it. An image served as ``image/jpeg`` is rendered
+    # inline by design -- only ``Content-Disposition: attachment`` makes
+    # Chrome download it, and unlike PDFs (``always_open_pdf_externally``)
+    # there is no profile setting that changes that for images. The window
+    # shows the picture, no download event ever fires, and this rung used to
+    # report "未拿到文件" for a fetch that plainly succeeded.
+    #
+    # But the bytes are already in hand: the image is the tab's *document*,
+    # so the CDP harvest captured its body. Write that out instead of waiting
+    # for an event that structurally cannot happen.
+    if pdf_mode and download_dir and not (session.result or {}).get('downloaded_file'):
+        landed = _save_captured_body(session.result or {}, url, download_dir)
+        if landed:
+            print(f"  ✓ 浏览器内嵌显示，已从捕获取回字节: {landed}")
+            session.result = dict(session.result or {},
+                                  success=True, downloaded_file=landed)
     return session
+
+
+def _save_captured_body(result: dict, url: str, download_dir: str) -> str:
+    """Write the captured body of *url* into *download_dir*; '' if absent.
+
+    Matches on the URL and takes the largest body, the same rule
+    ``pick_raw_article_html``/``captured_api_entry`` use: a protected host can
+    answer the same URL twice (before and after its bot check) and the short
+    one is the interstitial.
+    """
+    best = b''
+    for entry in (result.get('responses') or {}).values():
+        if (entry.get('url') or '') != url:
+            continue
+        if entry.get('status') not in (200, 206):
+            continue
+        raw = entry.get('body_bytes')
+        if raw is None and isinstance(entry.get('body'), str):
+            # A textual document (SVG, say) never went through base64.
+            raw = entry['body'].encode('utf-8', 'replace')
+        if raw and len(raw) > len(best):
+            best = raw
+    if not best:
+        return ''
+    name = os.path.basename(urllib.parse.urlparse(url).path) or 'download.bin'
+    dest = os.path.join(download_dir, name)
+    try:
+        with open(dest, 'wb') as fh:
+            fh.write(best)
+    except Exception:
+        return ''
+    return dest
 
 
 async def _await_download_or_tab(download_dir: str, debug_port: int,
