@@ -1229,6 +1229,10 @@ async def block_mathjax(page) -> None:
 #:                  lines (121 x-tex annotations)
 #:   ieee           10.1109/TPS.2010.2064310      byte-identical, 41 formula
 #:                  lines (its math is <tex-math> from the REST endpoint)
+#:   mdpi           10.3390/photonics4020026      content-identical (107 word
+#:                  differences, all spacing around math -- and the raw
+#:                  response is the more faithful of the two: "$ ," becomes
+#:                  "$," in 11 places), block A/B byte-identical
 #:   nature         10.1038/s41566-023-01311-z    byte-identical, 27 formula
 #:                  lines; also verified that reading the capture instead of
 #:                  page.content() leaves paper.md unchanged
@@ -1258,7 +1262,7 @@ async def block_mathjax(page) -> None:
 #: per-request ids, so that fetch is now a rescue rather than a routine step.
 RAW_HTML_PUBLISHERS = frozenset({
     'iop', 'sciencedirect', 'aps', 'optica', 'cambridge',
-    'acs', 'wiley', 'ieee', 'spie', 'aip', 'nature',
+    'acs', 'wiley', 'ieee', 'spie', 'aip', 'nature', 'mdpi',
 })
 
 
