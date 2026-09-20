@@ -277,6 +277,44 @@ HEADLESS_ACCESSIBLE_PUBLISHERS = [
     ]
 
 
+def absorb_preload_capture(capture, result, label: str, captured_data_dir=None) -> int:
+    """Merge a CDP preload's responses into *capture*, land them, report.
+
+    ⚠️ Every CDP load must go through here, whatever its verdict. Two ways
+    this went wrong:
+
+    * The fallback path's result was never absorbed at all, so a page loaded
+      by it contributed nothing and handlers re-fetched endpoints the page
+      had already called. Measured on SPIE: a successful preload gave
+      "预载捕获 API 响应 2 条" and reused the fulltext; every fallback load
+      gave 0 captured and "↪ 请求正文 API".
+    * Absorbing only on success throws away the responses of a load that
+      *did* fetch the article but failed its DOI check -- and on a publisher
+      that challenges the first visit (SPIE's Imperva stops a cold,
+      referer-less tab most times), that is the common case, not the rare
+      one.
+
+    Keeping a failed load's responses is safe: pick_raw_article_html chooses
+    the article among the documents rather than assuming the last one, and
+    API bodies are keyed separately, so a challenge page can only add a
+    candidate that loses.
+
+    Returns how many API bodies the capture holds afterwards.
+    """
+    if not result:
+        return len(capture.api)
+    responses = result.get('responses') or {}
+    if not responses:
+        return len(capture.api)
+    before_docs, before_api = len(capture.documents), len(capture.api)
+    capture.absorb_cdp(responses)
+    if len(capture.documents) != before_docs or len(capture.api) != before_api:
+        capture.announce(label)
+        if captured_data_dir:
+            capture.land(captured_data_dir)
+    return len(capture.api)
+
+
 def pin_capture_on_handler(handler, raw_html: str = '', api_capture: dict = None,
                            label: str = '') -> None:
     """Hand a handler everything the page-loading phase captured.
@@ -4018,20 +4056,17 @@ async def complete_extraction_workflow(
             # pick_raw_article_html decide which one is the article -- it
             # takes the largest marked candidate, which is exactly how the two
             # responses a protected publisher sends for one URL get resolved.
-            if _cf_preloaded:
+            if _cf_pre_result:
                 try:
                     _pre = (_cf_pre_result.get('responses') or {})
                     # The preload is the only thing that sees the article
                     # document on a headed run: Playwright is not connected
-                    # when it navigates. Merge it into the same capture the
-                    # listener fills, then land it immediately -- waiting for
-                    # extract_all meant page_raw.html appeared only once the
-                    # whole extraction had run, and not at all if anything in
-                    # between raised.
-                    _capture.absorb_cdp(_pre)
-                    _preload_had_api = bool(_capture.api)
-                    _capture.announce('预载')
-                    _capture.land(captured_data_dir)
+                    # when it navigates. Absorbed whether or not the preload
+                    # reported success -- see absorb_preload_capture.
+                    _preload_had_api = bool(absorb_preload_capture(
+                        _capture, _cf_pre_result,
+                        '预载' if _cf_preloaded else '预载（未通过，仍收下响应）',
+                        captured_data_dir))
 
                     # Opt-in diagnostic: what did the page fetch on its own?
                     #
@@ -4181,21 +4216,13 @@ async def complete_extraction_workflow(
                         wait_for_content=True,
                         expected_doi=doi,
                     )
+                    # Absorbed before the verdict is even read: a load that
+                    # fetched the article but failed its DOI check still
+                    # carries everything the page requested.
+                    absorb_preload_capture(_capture, _cf_result,
+                                           'Fallback 预载', captured_data_dir)
                     if _cf_result["success"]:
                         print(f"  ✅ 纯CDP挑战通过")
-                        # ⚠️ This path's capture used to be dropped on the
-                        # floor. absorb_cdp was called only for the first
-                        # preload, so whenever that one was challenged and
-                        # this fallback loaded the page instead, every
-                        # response it recorded was discarded -- and a handler
-                        # then re-requested endpoints the page had just
-                        # fetched. Measured on SPIE: preload success gave
-                        # "预载捕获 API 响应 2 条" and the fulltext was reused,
-                        # while a fallback load gave 0 captured and
-                        # "↪ 请求正文 API" every time.
-                        _capture.absorb_cdp(_cf_result.get("responses") or {})
-                        _capture.announce('Fallback 预载')
-                        _capture.land(captured_data_dir)
                         # 在 Playwright 中找到这个 page 并复用（优先按 CDP targetId，与 URL 无关）
                         _cf_target_id = _cf_result.get("target_id")
                         _cf_page_obj = await _find_pw_page_by_cdp_target(browser, _cf_target_id)
