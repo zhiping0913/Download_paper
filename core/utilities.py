@@ -1229,6 +1229,11 @@ async def block_mathjax(page) -> None:
 #:                  lines (121 x-tex annotations)
 #:   ieee           10.1109/TPS.2010.2064310      byte-identical, 41 formula
 #:                  lines (its math is <tex-math> from the REST endpoint)
+#:   acm            10.1145/3712285.3771783       same 12 authors with their
+#:                  affiliations and addresses, 24 "Go to" nav links and 25
+#:                  hidden labels gone, and 7 \begin{align} blocks recovered
+#:                  that the rendered DOM had dropped. Needed a parser change
+#:                  first -- see _extract_authors.
 #:   mdpi           10.3390/photonics4020026      content-identical (107 word
 #:                  differences, all spacing around math -- and the raw
 #:                  response is the more faithful of the two: "$ ," becomes
@@ -1262,7 +1267,7 @@ async def block_mathjax(page) -> None:
 #: per-request ids, so that fetch is now a rescue rather than a routine step.
 RAW_HTML_PUBLISHERS = frozenset({
     'iop', 'sciencedirect', 'aps', 'optica', 'cambridge',
-    'acs', 'wiley', 'ieee', 'spie', 'aip', 'nature', 'mdpi',
+    'acs', 'wiley', 'ieee', 'spie', 'aip', 'nature', 'mdpi', 'acm',
 })
 
 
