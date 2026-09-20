@@ -513,6 +513,25 @@ PDF、图片、补充材料、API/页面（如 IOP 的 `/data`）走的是**同�
   而靠 UA 判断在 Chrome 的新无头模式下已失效），所以由主流程在 `extract_all`
   **之前**挂到 `handler._force_headed`（与 `_landing_url` / `_raw_server_html`
   同一套惯例），handler 统一经基类的 `is_headed_run()` 读取
+### springer_book：读捕获了，但 MathJax 拦截摘不掉
+
+三处 `page.content()` 已改（落地页、`extract_metadata`、**目录分页页** —— 分页页
+和章节页一样走 `goto_and_capture_document`），A/B 三轮 `paper.md` **md5 完全相同**
+（`4441dd1e`，2076 行、431 行公式）。
+
+- ⚠️ **但它进不了 `RAW_HTML_PUBLISHERS`，而且那一轮 noblock 是空跑**：拦截的决策点在
+  **导航之前**，那时只有 DOI。而 `detect_publisher_from_url('10.1007/…')` 答
+  **`unknown`** —— 识别靠的是 URL 路径里的 `springer.com/book`，重定向落地后才知道。
+  于是三轮日志里 `不拦 MathJax` 都是 **0 次**，`DP_RAW_HTML_PUBLISHERS=springer_book`
+  一点作用都没有
+- ⚠️ **不能靠 `10.1007` 前缀去补**：Springer 的期刊也是这个前缀，走的是 NatureHandler。
+  按前缀猜会把期刊一起判成 book
+- 📌 所以**不要把 `springer_book` 加进那个集合** —— 加了是空操作，却会让人以为拦截
+  已经摘掉了。章节走 NatureHandler 读原始响应，拦截留着只是多一层保险，不伤产出
+- 📌 **书籍默认不下载补充材料**（`SUPPLEMENTAL_DEFAULT = False`）：书的"补充材料"
+  就是它自己的每一章。显式的 `--supplemental` / `DP_SUPPLEMENTAL` **压过**这个默认，
+  所以必须能区分"没设置"和"设成了 True"，这就是 `DP_SUPPLEMENTAL_SET` 的用处
+
 - ⚠️ **绕过主流程的路径要自己传**：`springer_book` 会直接构造 `NatureHandler`
   并调它的 `extract_all()`，`process_with_handler` 根本不会为那个内层 handler 运行，
   于是 `_force_headed` 永远挂不上。这类嵌套调用必须手动把状态传过去
