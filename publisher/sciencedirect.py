@@ -2325,30 +2325,21 @@ class ScienceDirectHandler(PublisherHandler):
             # container is absent from both, so nothing is lost by reading the
             # pre-JS body -- and MathJax cannot have touched it.
             #
-            # rendered_html is archived as page.html and read by nothing.
-            # Keeping it preserves the repo-wide convention (page.html = the
-            # post-JS DOM, page_raw.html = the raw response) and leaves a
-            # second view to diagnose from when a body extraction comes back
-            # empty.
-            #
-            # ⚠️ The workflow hands `fulltext_data` (i.e. rendered_html)
-            # back to convert_to_markdown, so the abstract would be read off
-            # the post-JS DOM unless we say otherwise. On that DOM MathJax 3
-            # has already replaced every <math> with CHTML carrying no
-            # annotation, and the only text left is the a11y speech string --
-            # measured on 10.1016/j.rinp.2021.104097, whose abstract came out
-            # as "$\\text{[math: 10 to the 17th power times watts divided by
+            # ⚠️ Only the raw response is read, and only it is handed back.
+            # The post-JS copy used to be fetched here to be archived as
+            # page.html; nothing read it, and the abstract was briefly parsed
+            # from it by accident -- on that DOM MathJax 3 has replaced every
+            # <math> with CHTML carrying no annotation, and the only text left
+            # is the a11y speech string. Measured on
+            # 10.1016/j.rinp.2021.104097, the abstract came out as
+            # "$\\text{[math: 10 to the 17th power times watts divided by
             # centimeters squared]}$" while the raw response held the source
-            # MathML right there. So pin the raw HTML for that step.
+            # MathML right there.
             try:
                 fulltext_html = await self.get_page_html(page)
             except Exception:
                 fulltext_html = ''
             self._extraction_html = fulltext_html
-            try:
-                rendered_html = await page.content()
-            except Exception:
-                rendered_html = fulltext_html
 
             metadata = await self.extract_metadata(page)
             metadata['doi'] = doi or metadata.get('doi') or self.doi
@@ -2419,10 +2410,13 @@ class ScienceDirectHandler(PublisherHandler):
                     'supplemental_urls': supp_urls,
                     'supplemental_descriptions': supp_descriptions,
                 },
-                # The rendered DOM, not the raw body extraction reads: this is
-                # archived as page.html, and a second view of the page is
-                # exactly what an empty body needs to be diagnosable.
-                'fulltext_data': rendered_html,
+                # ⚠️ The raw response, not the rendered DOM. That copy used to
+                # be fetched purely so the workflow could archive it as
+                # page.html -- a second view "to diagnose from" that nothing
+                # ever read, and one more page.content() on the article page.
+                # page_raw.html is the archive, and the dedup in
+                # save_html_snapshot means page.html simply stops appearing.
+                'fulltext_data': fulltext_html,
                 'journal_name': 'sciencedirect',
                 # No 'access' key unless DP_SD_ACCESS_CHECK asks for one: the
                 # detector has a known false-negative mode and a wrong False

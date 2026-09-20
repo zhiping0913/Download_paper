@@ -1125,8 +1125,7 @@ class CambridgeHandler(PublisherHandler):
             pass
         return True
 
-    async def _ensure_raw_article_html(self, page, raw_html: str,
-                                       rendered_html: str) -> str:
+    async def _ensure_raw_article_html(self, page, raw_html: str) -> str:
         r"""Return a *raw server response* carrying the article, if one can be had.
 
         Two failures used to be handled differently although they cost the
@@ -1136,11 +1135,11 @@ class CambridgeHandler(PublisherHandler):
         never fired for it either. That fallback is where MathJax has already
         turned every \(...\) into SVG whose only text is the speech string.
 
-        Both now take the same route: ask again (reload with max-age=0, then
-        the Français click) and keep the raw document that comes back. The
-        rendered DOM stays only as a last resort, and it is announced -- a
-        silent downgrade is the one outcome worth ruling out here, because
-        the markdown it produces looks fine.
+        Both take the same route: ask again (reload with max-age=0, then the
+        Français click) and keep the raw document that comes back. There is no
+        rendered-DOM fallback: an md built from the post-JS copy looks
+        complete while MathJax has replaced its formulas, and a silent
+        downgrade is the one outcome worth ruling out.
 
         Winning HTML is pinned back on ``_raw_server_html`` so page_raw.html
         records what the extraction actually used.
@@ -1160,10 +1159,9 @@ class CambridgeHandler(PublisherHandler):
             self._raw_server_html = better
             return better
 
-        if rendered_html:
-            print("  ⚠️  仍未取到原始响应，退回渲染后 DOM"
-                  "（公式可能已被 MathJax 替换）")
-        return rendered_html
+        print("  ⚠️  仍未取到原始响应 —— 保留空正文以便溯源，"
+              "不从渲染后 DOM 重建")
+        return ''
 
     async def _refetch_for_raw(self, page, tries: int = 2) -> str:
         """Ask Cambridge again and return a raw document that has the body.
@@ -1260,12 +1258,12 @@ class CambridgeHandler(PublisherHandler):
             # into SVG, which destroys the LaTeX. The raw response still has
             # the original TeX delimiters.
             raw_html = getattr(self, '_raw_server_html', None) or ''
-            try:
-                rendered_html = await page.content()
-            except Exception:
-                rendered_html = ''
-            fulltext_html = await self._ensure_raw_article_html(
-                page, raw_html, rendered_html)
+            # ⚠️ No rendered-DOM fallback. If the retry ladder cannot produce
+            # a raw response, the body stays empty and says so: an md built
+            # from the post-JS DOM looks complete while its formulas have been
+            # replaced by MathJax, and a missing body is the failure that can
+            # be traced later.
+            fulltext_html = await self._ensure_raw_article_html(page, raw_html)
 
             if fulltext_html and not metadata.get('abstract'):
                 metadata['abstract'] = self.extract_main_abstract_from_html(fulltext_html)
@@ -1291,7 +1289,7 @@ class CambridgeHandler(PublisherHandler):
                 # Save the rendered DOM as fulltext_data → page.html so the
                 # capture directory keeps both views (page_raw.html is the
                 # raw response, written separately by the orchestrator).
-                'fulltext_data': rendered_html or raw_html,
+                'fulltext_data': fulltext_html,
                 'journal_name': 'cambridge',
             }
         finally:
