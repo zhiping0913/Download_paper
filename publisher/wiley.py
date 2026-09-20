@@ -426,7 +426,16 @@ class WileyHandler(PublisherHandler):
         """
         if 'tex2gif' in (node.get('src') or ''):
             return True
-        return node.find_parent(class_='inline-equation__construct') is not None
+        if node.find_parent(class_='inline-equation__construct') is not None:
+            return True
+        # Formulas set *in the running text* are a third shape again: a bare
+        # <img class="section_image" src=".../<stem>-math-NNNN.png"> with no
+        # equation wrapper at all. Same article: 45 display formulas in
+        # constructs, 120 inline ones like these, the two sets disjoint.
+        # Dropping them leaves holes mid-sentence ("the condition ensures
+        # that and f retain their initial values").
+        return ('section_image' in (node.get('class') or [])
+                and '-math-' in (node.get('src') or ''))
 
     @classmethod
     def _equation_image(cls, node: Tag) -> Optional[Tag]:
