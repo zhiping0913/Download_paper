@@ -20,6 +20,7 @@ from bs4 import BeautifulSoup
 from publisher.base import PublisherHandler
 from publisher.oup import OupHandler
 from publisher.wildcard import (
+    goto_and_capture_document,
     init_extract_all_page,
     set_actual_base_url,
 )
@@ -27,6 +28,8 @@ from publisher.wildcard import (
 
 class OupBookHandler(PublisherHandler):
     """Handler for OUP / Oxford Academic books (academic.oup.com/book/…)."""
+
+    PUBLISHER = 'oup'
 
     # Matches the ISBN-suffix portion of an OUP book/chapter DOI:
     # ``10.1093/acprof:oso/9780199299805.003.0011`` → ``.003.0011``.
@@ -133,20 +136,16 @@ class OupBookHandler(PublisherHandler):
         full_url = urljoin(self.actual_base_url, chapter_link['href'])
         print(f"  📖 Chapter {ch_idx}: {chapter_link['title'][:60]}")
         print(f"     {full_url}")
-        try:
-            await page.goto(full_url, wait_until='domcontentloaded', timeout=60000)
-            try:
-                await page.wait_for_load_state('networkidle', timeout=15000)
-            except Exception:
-                pass
-        except Exception as e:
-            print(f"     ⚠️  navigate failed: {e}")
-            return None
-
-        try:
-            chapter_html = await page.content()
-        except Exception as e:
-            print(f"     ⚠️  page.content() failed: {e}")
+        # The response the server sent for this chapter, not page.content().
+        # A chapter is one of the pages a handler opens beyond the article, so
+        # it goes through the shared helper: listener attached before the
+        # navigation, raw document taken, three attempts. The rendered copy is
+        # no better here than anywhere else -- OUP's chapters carry the same
+        # invalid <p><ul> markup and the same MathJax rewriting.
+        chapter_html = await goto_and_capture_document(
+            page, full_url, timeout_ms=60000, label=f"章节 {chapter_link['title'][:30]}")
+        if not chapter_html:
+            print("     ⚠️  未取到章节原始响应，跳过该章")
             return None
 
         # Pull chapter DOI from <meta citation_doi> on the chapter page.
@@ -199,12 +198,7 @@ class OupBookHandler(PublisherHandler):
     # ------------------------------------------------------------------
 
     async def extract_metadata(self, page) -> dict:
-        html_content = ''
-        if page is not None:
-            try:
-                html_content = await page.content()
-            except Exception:
-                html_content = ''
+        html_content = await self.get_page_html(page) if page is not None else ''
         meta = self._extract_book_metadata(html_content)
         return {
             'title': meta.get('title') or 'Oxford Academic Book',
@@ -265,10 +259,7 @@ class OupBookHandler(PublisherHandler):
                 except Exception as e:
                     print(f"  ⚠️  导航到书籍页面失败: {e}")
 
-            try:
-                book_html = await page.content()
-            except Exception:
-                book_html = ''
+            book_html = await self.get_page_html(page)
 
             metadata = await self.extract_metadata(page)
             metadata['doi'] = doi
