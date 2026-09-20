@@ -367,6 +367,11 @@ class PageCapture:
     def __init__(self, doi: str = ''):
         self.doi = doi or ''
         self.documents: list = []
+        # Same documents, with the page load each came from. A plain list of
+        # strings cannot answer "which navigation was this?", which is what
+        # restrict_to_article_load needs once a run loads a referring page
+        # before the article.
+        self.documents_meta: list = []
         self.api: dict = {}
         self._page = None
         self._listener = None
@@ -379,7 +384,12 @@ class PageCapture:
                 if (response.request.resource_type == 'document'
                         and response.ok
                         and 'text/html' in response.headers.get('content-type', '')):
-                    self.documents.append(await response.text())
+                    body = await response.text()
+                    self.documents.append(body)
+                    # The Playwright listener sees no loaderId; '' means
+                    # "unknown", which restrict_to_article_load treats as
+                    # "keep" rather than "drop".
+                    self.documents_meta.append({'body': body, 'loaderId': ''})
                     return
                 # The endpoints the page fetches for itself. Keyed by URL plus
                 # a counter so a publisher that answers the same URL twice
@@ -410,10 +420,51 @@ class PageCapture:
                 continue
             if 'html' in (entry.get('mimeType') or '').lower():
                 self.documents.append(body)
+                self.documents_meta.append(
+                    {'body': body, 'loaderId': entry.get('loaderId') or ''})
             elif (entry.get('type') or '') != 'Document':
                 self.api[f"cdp:{len(self.api)}"] = entry
 
     # -- results ------------------------------------------------------
+    def restrict_to_article_load(self) -> int:
+        """Drop API bodies that belong to a different page load. Returns how many.
+
+        DevTools clears its Network panel when you navigate: what stays is
+        what the *current* page fetched. This is the same rule, applied to a
+        capture that can now span two loads -- a referring page and then the
+        article.
+
+        Chrome issues a new loaderId per main-frame navigation, so the
+        article's own requests are the ones sharing the loaderId of the
+        article document. Anything recorded before the loaderId existed (the
+        Playwright listener records none) is kept: dropping an entry because
+        it lacks the field would throw away the whole headless capture.
+
+        ⚠️ Documents are never dropped. pick_raw_article_html chooses among
+        them by size and markers, and that choice is what identifies the
+        article in the first place -- filtering them here would be circular.
+        """
+        article = self.raw_html()
+        if not article:
+            return 0
+        loader = ''
+        for entry in list(self.documents_meta or []):
+            if entry.get('body') == article:
+                loader = entry.get('loaderId') or ''
+                break
+        if not loader:
+            return 0
+        dropped = 0
+        for key in list(self.api):
+            entry_loader = (self.api[key] or {}).get('loaderId') or ''
+            if entry_loader and entry_loader != loader:
+                del self.api[key]
+                dropped += 1
+        if dropped:
+            print(f"  ↪ 丢弃 {dropped} 条属于其它页面加载的 API 响应"
+                  f"（只保留论文页那一次）")
+        return dropped
+
     def raw_html(self) -> str:
         """The document that is actually the article (see pick_raw_article_html)."""
         return pick_raw_article_html(self.documents, self.doi) or ''
@@ -3867,6 +3918,7 @@ async def complete_extraction_workflow(
                             doi=doi,
                         )
                         handler.crossref_data = crossref_data
+                        _capture.restrict_to_article_load()
                         _capture.pin(handler, '预检捕获')
 
                         captured_data = None
@@ -4347,6 +4399,10 @@ async def complete_extraction_workflow(
             # the only capture there is).
             # Silent when the preload already printed its tally; the
             # listener's own capture announces itself.
+            # Keep only what the article's own load fetched, the way DevTools
+            # clears its Network panel on navigation. Matters once a referring
+            # page has been loaded in the same tab first.
+            _capture.restrict_to_article_load()
             _capture.pin(handler, '' if _preload_had_api else '监听捕获')
 
             print(f"✓ 检测出版商: {publisher.upper()}\n")

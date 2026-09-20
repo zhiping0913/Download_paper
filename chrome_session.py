@@ -985,6 +985,14 @@ def _record_cdp_event(sink: dict, msg: dict) -> None:
         "type": params.get("type") or "",
         "status": resp.get("status"),
         "mimeType": resp.get("mimeType") or "",
+        # Which page load this response belongs to. Chrome issues a new
+        # loaderId for every main-frame navigation, so this is the same thing
+        # DevTools uses when it clears the Network panel on navigation: the
+        # rows you keep seeing are the ones sharing the current loaderId.
+        # Needed once a run can load more than one page in a tab -- a
+        # referring page first, then the article.
+        "loaderId": params.get("loaderId") or resp.get("loaderId") or "",
+        "frameId": params.get("frameId") or "",
         "body": None,
     }
 
@@ -1555,7 +1563,19 @@ async def bypass_cloudflare_cdp(
                 print(f"  🚪  先开来路页再点击跳转: {referer[:70]}")
                 await _send(ws, "Page.navigate", {"url": referer})
                 landed = await _wait_for_committed_url(ws, 30)
-                if landed and not url_looks_like_bot_challenge(landed):
+                # ⚠️ A challenged referring page is NOT skipped here, unlike in
+                # the download ladder's referer rung. The two want different
+                # things. That rung fetches a file and measured three straight
+                # failures clicking out of a captcha (IOP 10.1088/1361-6587/
+                # aaa57d), because the request then carries the captcha as its
+                # Referer. This one only wants the article page to load, and a
+                # challenged referrer still leaves the session holding that
+                # site's cookies -- which is what makes reopening the URL from
+                # a blocked Cloudflare page work by hand.
+                if landed and url_looks_like_bot_challenge(landed):
+                    print(f"  🚧 来路页本身被拦（{landed[:60]}）——仍从它点击跳转"
+                          f"（这一步要的是会话，不是 Referer 的体面）")
+                if landed:
                     try:
                         armed = await _send(ws, "Runtime.evaluate", {
                             "expression": _REFERER_CLICK_JS % json.dumps(url),
