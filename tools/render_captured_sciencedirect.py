@@ -40,7 +40,43 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from urllib.parse import unquote, urlsplit  # noqa: E402
+
+from complete_paper_extraction import _http_download_to  # noqa: E402
+from core.utilities import fetch_crossref  # noqa: E402
 from publisher.sciencedirect import ScienceDirectHandler  # noqa: E402
+
+
+def _download_figures(paper_dir: Path, figure_urls: dict, doi: str) -> int:
+    """Fetch the figures straight over HTTP into *paper_dir*; return the count.
+
+    Images are the documented exception to "always go through a browser":
+    they sit on ars.els-cdn.com, which serves them to a plain request that
+    carries a browser UA and the article page as Referer. The article page
+    itself is what the collaborator had to capture; its figures do not need
+    the same treatment.
+
+    ⚠️ Success is judged on bytes, not status: a 200 carrying an HTML
+    challenge page would otherwise be saved as a .jpg.
+    """
+    referer = f'https://www.sciencedirect.com/science/article/pii/{doi}' if doi else None
+    got = 0
+    for fig_id, info in sorted((figure_urls or {}).items()):
+        url = info.get('url') if isinstance(info, dict) else info
+        if not url:
+            continue
+        name = unquote(urlsplit(url).path.rsplit('/', 1)[-1]) or f'figure_{fig_id}.jpg'
+        dest = paper_dir / name
+        if dest.is_file() and dest.stat().st_size > 0:
+            got += 1
+            continue
+        ok = _http_download_to(url, dest, referer=referer, want_image=True)
+        if ok and dest.is_file() and dest.stat().st_size > 0:
+            got += 1
+            print(f"    ✓ {name} ({dest.stat().st_size:,} bytes)")
+        else:
+            print(f"    ⚠️  下载失败: {url[:100]}")
+    return got
 
 
 def _local_figure_map(paper_dir: Path, figure_urls: dict) -> dict:
@@ -78,6 +114,10 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('paper_dir')
     ap.add_argument('--doi', default='')
+    ap.add_argument('--no-crossref', action='store_true',
+                    help='不获取 crossref.json')
+    ap.add_argument('--no-figures', action='store_true',
+                    help='不下载图片')
     args = ap.parse_args()
 
     paper_dir = Path(args.paper_dir).expanduser().resolve()
@@ -117,6 +157,33 @@ def main() -> int:
     if doi:
         metadata['doi'] = doi
 
+    # The abstract lives in __PRELOADED_STATE__, not in the meta tags. The
+    # live pipeline reads it there; this tool used to skip it and emit a
+    # paper.md whose Abstract section was empty.
+    if not metadata.get('abstract'):
+        abstract = handler._abstract_from_state(state)
+        if abstract:
+            metadata['abstract'] = abstract
+            print(f"  ✓ 摘要: {len(abstract):,} 字符")
+
+    # Crossref, exactly as the live workflow does it: it is a metadata API,
+    # not the publisher's site, so it is reachable from here even when the
+    # article is not. It lands as crossref.json and fills what the capture
+    # could not supply -- references above all, which ScienceDirect keeps out
+    # of the page HTML.
+    if not args.no_crossref and doi:
+        crossref = fetch_crossref(doi) or {}
+        if crossref:
+            (paper_dir / 'crossref.json').write_text(
+                json.dumps(crossref, ensure_ascii=False, indent=2), encoding='utf-8')
+            print(f"  ✓ crossref.json ({len(crossref.get('references') or [])} 条参考文献)")
+            for key in ('title', 'journal', 'year', 'publisher', 'volume',
+                        'issue', 'pages', 'abstract'):
+                if crossref.get(key) and not metadata.get(key):
+                    metadata[key] = crossref[key]
+            if crossref.get('references') and not metadata.get('references'):
+                metadata['references'] = crossref['references']
+
     # Body: the sdfe/arp JSON carries source MathML, so equations come out as
     # real LaTeX. Without it we fall back to the DOM walk inside
     # convert_to_markdown.
@@ -147,6 +214,15 @@ def main() -> int:
             print(f"  ✓ 参考文献: {len(refs)} 条")
 
     figure_filenames = _local_figure_map(paper_dir, figure_urls)
+    if figure_urls and not figure_filenames and not args.no_figures:
+        # Fetch, then map again rather than building the mapping in the
+        # downloader: _local_figure_map owns the key convention that
+        # convert_to_markdown expects (the figure *number*, not the id), and
+        # two copies of that convention would drift -- the first version of
+        # this returned its own keys and the markdown silently kept pointing
+        # at ars.els-cdn.com instead of the files just downloaded.
+        _download_figures(paper_dir, figure_urls, doi)
+        figure_filenames = _local_figure_map(paper_dir, figure_urls)
     print(f"  ✓ 本地图片: {len(figure_filenames)} 个")
 
     md = handler.convert_to_markdown(
