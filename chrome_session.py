@@ -1354,6 +1354,7 @@ async def has_cf_clearance_cdp(url: str, debug_port: int = 9222) -> bool:
 
 async def bypass_cloudflare_cdp(
     url: str,
+    referer: str = "",
     debug_port: int = 9222,
     timeout_s: int = 600,
     check_interval: float = 5.0,
@@ -1531,6 +1532,72 @@ async def bypass_cloudflare_cdp(
                 # Chrome opened it at startup, or the tab was created there.
                 print(f"  🚀  tab 已在目标页面，无需导航")
                 await asyncio.sleep(2)
+            elif blank_tab_we_opened and referer:
+                # Arrive from a referring page instead of out of nowhere.
+                #
+                # A cold tab navigated straight at the article sends no
+                # Referer and Sec-Fetch-Site: none -- a request that came from
+                # nowhere, which is the shape a bot manager scores. Opening a
+                # referring page first and *clicking* through gives Referer,
+                # Sec-Fetch-Site and Sec-Fetch-User: ?1 together; the download
+                # ladder's referer rung measured that combination against a
+                # local server and it is byte-identical to a human clicking.
+                #
+                # ⚠️ Setting the header instead (Network.setExtraHTTPHeaders,
+                # or Page.navigate's referrer) produces Referer *without*
+                # Sec-Fetch-User, which is a combination a real click never
+                # makes -- worse than sending none. Hence the click.
+                #
+                # It also warms the session: the referring page's own load
+                # collects the site's cookies, which is what makes a second
+                # visit in the same browser succeed where the first was
+                # stopped.
+                print(f"  🚪  先开来路页再点击跳转: {referer[:70]}")
+                await _send(ws, "Page.navigate", {"url": referer})
+                landed = await _wait_for_committed_url(ws, 30)
+                if landed and not url_looks_like_bot_challenge(landed):
+                    try:
+                        armed = await _send(ws, "Runtime.evaluate", {
+                            "expression": _REFERER_CLICK_JS % json.dumps(url),
+                            "returnByValue": True,
+                        })
+                        box = json.loads((armed.get('result') or {}).get('value') or '{}')
+                        await _click_at_cdp(ws, box.get('x', 8), box.get('y', 8))
+                        print(f"  🖱️  已自来路页点击跳转 → {url[:70]}")
+                        # ⚠️ Wait until the tab has actually left the
+                        # referring page. The loop below passes any page that
+                        # is merely long and unchallenged (body_fallback_passed
+                        # -- body > 5000 chars), and an issue listing is both.
+                        # Measured: without this the preload announced
+                        # "未触发挑战，直接访问成功" while still standing on the
+                        # referrer, captured that document instead of the
+                        # article (155,459 chars, 0 API responses) and produced
+                        # a 144-line paper.md where 303 was right.
+                        for _ in range(30):
+                            await asyncio.sleep(0.5)
+                            try:
+                                here = await _send(ws, "Runtime.evaluate", {
+                                    "expression": "location.href",
+                                    "returnByValue": True})
+                                now_url = (here.get('result') or {}).get('value') or ''
+                            except Exception:
+                                break
+                            if now_url and now_url.rstrip('/') != referer.rstrip('/'):
+                                print(f"  📄 已离开来路页 → {now_url[:80]}")
+                                break
+                        else:
+                            print("  ⚠️  点击后仍停在来路页，改为直接导航")
+                            await _send(ws, "Page.navigate", {"url": url})
+                    except Exception as exc:
+                        print(f"  ⚠️  点击跳转失败，改为直接导航: {type(exc).__name__}")
+                        await _send(ws, "Page.navigate", {"url": url})
+                else:
+                    # A challenged referring page is worse than none: the click
+                    # would carry the captcha as its Referer.
+                    print(f"  ⚠️  来路页不可用（{(landed or '未就绪')[:50]}），改为直接导航")
+                    await _send(ws, "Page.navigate", {"url": url})
+                await asyncio.sleep(3)
+                created_at_target = True
             elif blank_tab_we_opened:
                 # Straight to the command that works; see blank_tab_we_opened.
                 print(f"  🚀  导航到目标页面 (Page.navigate，空白 tab)...")
@@ -2140,6 +2207,7 @@ if __name__ == "__main__":
 
 
 async def open_url_via_cdp(url: str, port: int, *, expected_doi: str = '',
+                           referer: str = '',
                            pdf_mode: bool = False, download_dir: str = '',
                            timeout_s: int = 60, already_open: bool = False) -> dict:
     """Open *url* over raw CDP on an already-running Chrome at *port*.
@@ -2151,6 +2219,7 @@ async def open_url_via_cdp(url: str, port: int, *, expected_doi: str = '',
     """
     return await bypass_cloudflare_cdp(
         url=url,
+        referer=referer,
         debug_port=port,
         timeout_s=timeout_s,
         wait_for_content=not pdf_mode,
