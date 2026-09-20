@@ -176,7 +176,7 @@ class WileyHandler(PublisherHandler):
             if index:
                 return f" ![Equation](__WILEY_FIG_{index}__) "
             return f" ![Equation]({cls._abs_asset(cls._fallback_image_url(node))}) "
-        if name == 'img' and 'tex2gif' in (node.get('src') or ''):
+        if name == 'img' and cls._is_equation_img(node):
             # An inline formula shipped as an image; keep it in the text flow.
             index = cls._asset_index(node)
             if index:
@@ -365,6 +365,7 @@ class WileyHandler(PublisherHandler):
     # figures, and the GIFs older Wiley articles use instead of MathML
     # (10.1002/cssc.201000245 renders each equation as tex2gif-eqn-N.gif).
     _ASSET_SELECTOR = ('figure, img[src*="tex2gif"], '
+                       '.inline-equation__construct img, '
                        'span.fallback__mathEquation[data-altimg]')
 
     @classmethod
@@ -411,14 +412,37 @@ class WileyHandler(PublisherHandler):
         return (node.get('data-dp-asset') or '').strip()
 
     @classmethod
+    def _is_equation_img(cls, node: Tag) -> bool:
+        """True when this <img> *is* a formula rather than an illustration.
+
+        Two markups, both real: the ``tex2gif-eqn-N.gif`` of 2010-era
+        articles, and -- on articles that never got MathML at all
+        (10.1002/ctpp.201600075, 45 formulas, zero ``<math>`` elements) --
+        an ordinary ``/cms/asset/<uuid>/<stem>-math-NNNN.png`` sitting inside
+        ``span.inline-equation__construct``. The second shape looks exactly
+        like a figure image, so the *container* is what tells them apart;
+        matching on the ``-math-`` filename alone would be guessing at
+        Wiley's naming.
+        """
+        if 'tex2gif' in (node.get('src') or ''):
+            return True
+        return node.find_parent(class_='inline-equation__construct') is not None
+
+    @classmethod
     def _equation_image(cls, node: Tag) -> Optional[Tag]:
         """The image standing in for a formula, if this block uses one.
 
-        Two shapes: an <img src=...tex2gif...> on older articles, and a
-        span.fallback__mathEquation carrying data-altimg where the <math>
-        came through empty.
+        Three shapes: an <img src=...tex2gif...> on older articles, a plain
+        <img> inside span.inline-equation__construct on articles with no
+        MathML at all, and a span.fallback__mathEquation carrying data-altimg
+        where the <math> came through empty.
         """
         img = node.find('img', src=re.compile('tex2gif'))
+        if img is None:
+            for candidate in node.find_all('img'):
+                if cls._is_equation_img(candidate):
+                    img = candidate
+                    break
         if img is not None:
             return img
         for span in node.select('span.fallback__mathEquation[data-altimg]'):
