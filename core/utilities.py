@@ -1229,6 +1229,10 @@ async def block_mathjax(page) -> None:
 #:                  lines (121 x-tex annotations)
 #:   ieee           10.1109/TPS.2010.2064310      byte-identical, 41 formula
 #:                  lines (its math is <tex-math> from the REST endpoint)
+#:   science        10.1126/science.aam8393       same 4 figures, 4 tables, 76
+#:                  formulas and supplement; loses 26 "VIEW IN VIEWER" button
+#:                  labels JavaScript had injected into every figure and table
+#:                  reference, and keeps those references as links ([Fig. 1A](#F1))
 #:   oup            10.1093/mnras/stz656          identical but for three
 #:                  links' target attribute, where the raw response keeps the
 #:                  author's target="_blank" and the rendered DOM had blanked
@@ -1271,7 +1275,7 @@ async def block_mathjax(page) -> None:
 #: per-request ids, so that fetch is now a rescue rather than a routine step.
 RAW_HTML_PUBLISHERS = frozenset({
     'iop', 'sciencedirect', 'aps', 'optica', 'cambridge',
-    'acs', 'wiley', 'ieee', 'spie', 'aip', 'nature', 'mdpi', 'acm', 'oup',
+    'acs', 'wiley', 'ieee', 'spie', 'aip', 'nature', 'mdpi', 'acm', 'oup', 'science',
 })
 
 

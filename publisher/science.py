@@ -37,6 +37,8 @@ from publisher.wildcard import (
 class ScienceHandler(PublisherHandler):
     """Handler for Science / AAAS articles (www.science.org)."""
 
+    PUBLISHER = 'science'
+
     SCIENCE_BASE = 'https://www.science.org'
 
     def __init__(self, page=None, captured_data_dir=None, doi: str = None):
@@ -798,12 +800,9 @@ class ScienceHandler(PublisherHandler):
     # ------------------------------------------------------------------
 
     async def extract_metadata(self, page) -> dict:
-        html_content = ''
-        if page is not None:
-            try:
-                html_content = await page.content()
-            except Exception:
-                html_content = ''
+        # The captured server response; Science renders the article
+        # server-side and the access flag this handler reads lives there too.
+        html_content = await self.get_page_html(page) if page is not None else ''
 
         meta = self._extract_metadata_from_html_meta(html_content)
         abstract = self.extract_abstract_from_html(html_content)
@@ -902,10 +901,7 @@ class ScienceHandler(PublisherHandler):
             except Exception:
                 pass
 
-            try:
-                fulltext_html = await page.content()
-            except Exception:
-                fulltext_html = ''
+            fulltext_html = await self.get_page_html(page)
 
             metadata = await self.extract_metadata(page)
             metadata['doi'] = doi or metadata.get('doi') or self.doi
