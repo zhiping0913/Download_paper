@@ -1011,10 +1011,10 @@ class SPIEHandler(PublisherHandler):
         -- not because the page skipped the call, but because the fallback
         path used to discard its own capture.
 
-        ⚠️ A populated ``supplementalFiles`` has still not been seen (the one
-        captured payload was an empty list, on a paper whose supplement is a
-        poster), so the per-entry field names below are a guess and the code
-        says so out loud when it cannot find a link in an entry.
+        A populated payload has now been seen too -- see the shape below --
+        and this path is preferred over the body links because it carries the
+        publisher's own filename (APN_4_3_036004_ds001.pdf rather than one
+        derived from the .s01 DOI).
         """
         body, url = self.captured_api_entry('/article/supplemental')
         if not body:
@@ -1027,11 +1027,21 @@ class SPIEHandler(PublisherHandler):
         self._cache_json('supplemental.json', payload)
         urls, descs = [], {}
         data = payload.get('data') if isinstance(payload, dict) else None
-        # Measured shape (10.1117/12.3071462, captured when the preload
-        # succeeded): {"hasAccess": true, "data": {"urlId": "...",
-        # "supplementalFiles": []}}. That paper has a poster and no files, so
-        # the entry shape is still unknown -- hence the several field names
-        # and the dump below, which is how the next capture will tell us.
+        # Measured shape (10.1117/1.APN.4.3.036004):
+        #
+        #   {"hasAccess": true,
+        #    "data": {"urlId": "10.1117/1.APN.4.3.036004",
+        #             "supplementalFiles": [
+        #               {"fileNameRemote": "APN_4_3_036004_ds001.pdf",
+        #                "url": "/journals/supplementalcontent/10.1117//1.APN…/APN…_ds001.pdf",
+        #                "sequence": 1, "title": null, "abstract": null,
+        #                "doi": "10.1117/1.APN.4.3.036004.s01"}]}}
+        #
+        # The entry's "doi" is the same .s01 the body links to, so this path
+        # and supplemental_from_fulltext find the same file -- this one just
+        # names it the way the publisher does. A paper with no files answers
+        # with an empty list (measured on 10.1117/12.3071462, whose
+        # supplement is a poster), which is a real answer, not a miss.
         items = (data or {}).get('supplementalFiles') if isinstance(data, dict) else None
         if items is None:
             items = data if isinstance(data, list) else (data or {}).get('items') or []
@@ -1039,8 +1049,10 @@ class SPIEHandler(PublisherHandler):
             if not isinstance(item, dict):
                 continue
             href = (item.get('url') or item.get('href') or item.get('link')
-                    or item.get('filePath') or item.get('fileName') or '').strip()
+                    or item.get('filePath') or item.get('fileNameRemote') or '').strip()
             if not href:
+                # Still worth saying out loud: the shape above came from one
+                # article, and a second one may name its fields differently.
                 print(f"  ⚠️  supplemental 条目没有可识别的链接字段: {sorted(item)}")
                 continue
             full = urljoin(self.SPIE_BASE + '/', href)
