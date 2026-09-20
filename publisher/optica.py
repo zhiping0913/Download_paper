@@ -30,7 +30,11 @@ from publisher.wildcard import (
 
 
 class OpticaHandler(PublisherHandler):
+
+
     """Handler for Optica Publishing articles (opg.optica.org)."""
+
+    PUBLISHER = 'optica'
 
     OPTICA_BASE = 'https://opg.optica.org'
 

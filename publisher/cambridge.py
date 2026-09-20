@@ -23,7 +23,11 @@ from publisher.wildcard import set_actual_base_url, init_extract_all_page, gener
 
 
 class CambridgeHandler(PublisherHandler):
+
+
     """Handler for Cambridge University Press articles (cambridge.org)."""
+
+    PUBLISHER = 'cambridge'
 
     def __init__(self, page=None, captured_data_dir=None, doi: str = None):
         super().__init__(page=page, captured_data_dir=captured_data_dir, doi=doi)

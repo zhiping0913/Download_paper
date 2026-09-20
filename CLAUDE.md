@@ -588,8 +588,8 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
 - 判据只有一处：`core/utilities.RAW_HTML_PUBLISHERS` + `should_block_mathjax(publisher)`。
   **未知/空一律照旧拦截** —— 错误的跳过会静默丢掉 LaTeX 源，错误的拦截只多一次被中止的
   请求，两种代价不对称
-- 当前成员：`iop`、`sciencedirect`、`aps`、`optica`、`cambridge`。**每一个都是 A/B 实测
-  进来的**（同一篇跑两遍、diff `paper.md`），不是推理出来的：
+- 当前成员：`iop`、`sciencedirect`、`aps`、`optica`、`cambridge`、`acs`、`wiley`、`ieee`。
+  **每一个都是 A/B 实测进来的**（同一篇跑两遍、diff `paper.md`），不是推理出来的：
 
   | | 样本 | 结果 |
   |---|---|---|
@@ -597,6 +597,24 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
   | aps | `10.1103/PhysRevA.98.043407` | 逐字节相同 |
   | optica | `10.1364/OE.444043` | 逐字节相同 |
   | cambridge | `10.1017/hpl.2018.33`（latex 藏在 svg 后面）| 逐字节相同，两边都是 46 行公式 |
+  | acs | `10.1021/acs.nanolett.8b05070` | 逐字节相同，17 行公式 |
+  | wiley | `10.1002/lpor.202401986` | 逐字节相同，36 行公式 |
+  | ieee | `10.1109/TPS.2010.2064310` | 逐字节相同，41 行公式 |
+
+- ⚠️ **ACS 和 Wiley 必须先换数据来源才够格**，顺序反了就是直接丢公式：
+  - **ACS** 原来只读 `page.content()`，公式靠 `mjx-assistive-mml` 捞 —— 那是 **MathJax 自己
+    的产物**。先摘拦截的话，41 个 `<math>` 会一起消失。现在读 `get_page_html()`；实测
+    原始响应与渲染后 DOM 对所有提取器结果**完全一致**（4 图、33 参考文献、正文 24,755 字符、
+    摘要 1,054 字符）
+  - **Wiley** 原来每篇发一次页面内 view-source `fetch()`。实测 `10.1002/lpor.202401986`：
+    预载捕获与那次 fetch **公式源都是 121、x-tex 注解都是 121**，逐行 diff 164 行**全是
+    每次请求都不同的 id**，提取器结果一致（4 图、68 参考文献、正文 39,388 字符）。
+    现在 view-source 降为救援，日志里那一行出现 **0 次**
+- ⚠️ **给 handler 补 `PUBLISHER` 常量时别插进 docstring 同一行**：
+  `PUBLISHER = 'acs'    """doc"""` **能编译**（相邻字符串隐式拼接），结果是
+  `PUBLISHER = 'acsFull-text handler for ACS Publications.'`、`__doc__ = None`，
+  而 `should_block_mathjax()` 对这个垃圾值返回 True —— 表现为"**什么都没变**"，
+  六个文件全中招且 `py_compile` 全绿
 
   `DP_RAW_HTML_PUBLISHERS=<token>` 只为这个 A/B 存在；**过了的要写进常量，不是靠环境变量长期配置**
 - ⚠️ **A/B 只走了"原始响应拿到了"那条路**，对回落路径什么都没证明 —— 而拦截真正保护的正是

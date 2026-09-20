@@ -50,7 +50,11 @@ from publisher.wildcard import (
 
 
 class ScienceDirectHandler(PublisherHandler):
+
+
     """Handler for ScienceDirect / Elsevier articles."""
+
+    PUBLISHER = 'sciencedirect'
 
     SD_BASE = 'https://www.sciencedirect.com'
 
