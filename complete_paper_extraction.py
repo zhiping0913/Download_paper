@@ -83,6 +83,7 @@ from core.utilities import (
     url_wants_api_harvest,
     DP_HTTP_TOTAL_TIMEOUT,
     DP_SUPPLEMENTAL,
+    DP_SUPPLEMENTAL_SET,
     INPAGE_ABORT_JS,
 )
 
@@ -1721,6 +1722,7 @@ async def _download_all_resources(
     reuse_context: bool = False,
     pdf_only: bool = False,
     referer_url: str = '',
+    supplemental_default: bool = True,
 ) -> dict:
     """Unified download manager for all resources (PDF, figures, supplemental)
 
@@ -1851,13 +1853,19 @@ async def _download_all_resources(
 
         # Download supplemental materials
         supp_urls = links.get('supplemental_urls', [])
-        if supp_urls and not DP_SUPPLEMENTAL:
+        # An explicit --supplemental / DP_SUPPLEMENTAL outranks the handler's
+        # own default; without one, the handler decides. Books say no: their
+        # "supplemental material" is every chapter of the book.
+        want_supp = (DP_SUPPLEMENTAL if DP_SUPPLEMENTAL_SET
+                     else supplemental_default)
+        if supp_urls and not want_supp:
             # Say how many were skipped rather than staying silent: "no
             # supplemental files" and "told not to fetch them" look identical
             # in the output directory afterwards.
+            _why = ("--supplemental=False / DP_SUPPLEMENTAL=0"
+                    if DP_SUPPLEMENTAL_SET else "该 handler 默认不下载")
             print(f"\n⏭️  跳过补充材料 {len(supp_urls)} 个"
-                  f"（--supplemental=False / DP_SUPPLEMENTAL=0）——"
-                  f"链接仍写进 Markdown")
+                  f"（{_why}）—— 链接仍写进 Markdown")
         elif supp_urls:
             print("\nStep 5️⃣  下载补充材料...")
             print("=" * 80)
@@ -3502,6 +3510,8 @@ async def complete_extraction_workflow(
             force_headed_downloads,
             reuse_context=browser_session is not None,
             pdf_only=pdf_only,
+            supplemental_default=getattr(
+                handler, 'SUPPLEMENTAL_DEFAULT', True),
             # The article URL, pinned before extract_all ran. It is what the
             # last rung clicks through from, so a normal run gets that rung
             # for free -- no JSON, no configuration.
@@ -4777,6 +4787,7 @@ JSON 格式:
         # the module.
         if args.supplemental is not None:
             globals()['DP_SUPPLEMENTAL'] = args.supplemental
+            globals()['DP_SUPPLEMENTAL_SET'] = True
             os.environ['DP_SUPPLEMENTAL'] = '1' if args.supplemental else '0'
 
         # 构建 article 列表 —— 每项是 dict: {"doi", "link"?, "header"?}
