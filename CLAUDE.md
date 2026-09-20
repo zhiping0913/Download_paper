@@ -246,6 +246,14 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
 - 图和表都有**两个 `<h4>` 图注**（中文「图 1. 」/「表 1. 」+ 英文「Fig. 1. 」/「Table 1. 」），
   两份都留——英文那份常带中文压缩掉的细节
 - 公式是 MathML（`<disp-formula>` 和行内 `<math>`），没有 annotation，走 pandoc
+- ⚠️ **章节标题写成 `<p><h2>1　引言</h2></p>`**，又是一处无效标记。HTML5 规定 `<h2>`
+  会先把未闭合的 `<p>` 关掉，所以浏览器和 lxml 看到的 h2 是段落的**兄弟**，而
+  `html.parser` 把它留在 `<p>` 里 —— 实测 `10.3788/CJL231490` 的 **5 个章节标题
+  全部退化成正文**，整篇没有一个 `##`。正文和图片都改用
+  `wildcard.parse_article_html()`（两处必须用同一种解析，否则文档顺序会漂）
+- 📌 **这家的 publisher token 在主流程里是 `researching` 而不是 `opticsjournal`**：
+  判定发生在重定向落地**之前**，按 `doi.org/10.3788` 猜。两个 token 现在都在
+  `RAW_HTML_PUBLISHERS` 里，所以行为一致；但拿它做别的判断前要知道这件事
 - 目前没见过带补充材料的文章，`get_supplemental_url()` 返回 None
 
 ### SPIE (`10.1117`、spiedigitallibrary.org)

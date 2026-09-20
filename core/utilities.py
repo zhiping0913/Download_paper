@@ -1296,6 +1296,7 @@ async def block_mathjax(page) -> None:
 RAW_HTML_PUBLISHERS = frozenset({
     'iop', 'sciencedirect', 'aps', 'optica', 'cambridge',
     'acs', 'wiley', 'ieee', 'spie', 'aip', 'nature', 'mdpi', 'acm', 'oup', 'science', 'researching',
+    'opticsjournal',
 })
 
 
