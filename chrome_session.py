@@ -1176,18 +1176,56 @@ async def _find_turnstile_iframe_cdp(ws) -> dict:
             'iframe[title*="security"]',
             'iframe[title*="verification"]',
         ];
+        // A full-page iframe is not a widget. Imperva serves its box as
+        // /_Incapsula_Resource sized to the whole viewport (measured:
+        // 1188x1417 on SPIE), and Cloudflare's "checkbox sits at left+30,
+        // vertically centred" convention then aims at empty margin -- three
+        // clicks landed on nothing. When the frame is same-origin we can look
+        // inside it for the real target and translate the coordinates.
+        function descend(el, rect) {
+            let doc = null;
+            try { doc = el.contentDocument; } catch (e) { doc = null; }
+            if (!doc) return null;
+            const inner = doc.querySelector(
+                'iframe, input[type="checkbox"], [role="checkbox"], ' +
+                '#captcha-box, .captcha, .g-recaptcha, .h-captcha');
+            if (!inner) return null;
+            const r = inner.getBoundingClientRect();
+            if (!(r.width > 1 && r.height > 1)) return null;
+            return { x: rect.left + r.left, y: rect.top + r.top,
+                     width: r.width, height: r.height,
+                     left: rect.left + r.left, top: rect.top + r.top,
+                     right: rect.left + r.right, bottom: rect.top + r.bottom };
+        }
+        const bigW = window.innerWidth * 0.6, bigH = window.innerHeight * 0.6;
         for (const sel of selectors) {
             const els = document.querySelectorAll(sel);
             for (let i = 0; i < els.length; i++) {
                 const el = els[i];
-                const rect = el.getBoundingClientRect();
+                let rect = el.getBoundingClientRect();
                 if (rect.width > 1 && rect.height > 1 &&
                     rect.bottom > 0 && rect.right > 0 &&
                     rect.top < window.innerHeight + 200) {
+                    let via = sel;
+                    if (rect.width >= bigW && rect.height >= bigH) {
+                        const deeper = descend(el, rect);
+                        if (deeper) { rect = deeper; via = sel + ' > inner'; }
+                    }
+                    // Where to click, decided here because only this code
+                    // knows whether it is looking at a Cloudflare widget or
+                    // at something found inside a full-page frame. left+30 is
+                    // the checkbox offset in Cloudflare's ~300x65 widget; on
+                    // a 24x24 checkbox it lands 6px past the right edge.
+                    const narrow = rect.width < 120;
                     return {
-                        found: true, selector: sel, index: i,
-                        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height,
-                                top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right },
+                        found: true, selector: via, index: i,
+                        rect: { x: rect.x !== undefined ? rect.x : rect.left,
+                                y: rect.y !== undefined ? rect.y : rect.top,
+                                width: rect.width, height: rect.height,
+                                top: rect.top, bottom: rect.bottom,
+                                left: rect.left, right: rect.right },
+                        cx: narrow ? rect.left + rect.width / 2 : rect.left + 30,
+                        cy: rect.top + rect.height / 2,
                         src: el.src || '',
                     };
                 }
@@ -1255,8 +1293,14 @@ async def _auto_click_turnstile_cdp(ws, timeout_s: float = 90.0) -> bool:
             await asyncio.sleep(1)
             continue
 
-        click_x = rect["left"] + 30
-        click_y = rect["top"] + rect["height"] / 2
+        # The finder supplies the point when it knows better than the
+        # Cloudflare convention -- e.g. a checkbox found inside a full-page
+        # Imperva frame, where left+30 misses.
+        click_x = info.get("cx")
+        click_y = info.get("cy")
+        if click_x is None or click_y is None:
+            click_x = rect["left"] + 30
+            click_y = rect["top"] + rect["height"] / 2
         click_attempts += 1
 
         src_preview = (info.get("src") or "")[:60]
@@ -1635,6 +1679,24 @@ async def bypass_cloudflare_cdp(
                             )
                         except Exception:
                             pass
+
+                    # 检查 cf_clearance
+                    cookies_r = await _send(ws, "Network.getAllCookies")
+                    cookies = cookies_r.get("cookies", [])
+                    has_cf = any(
+                        c.get("name") == "cf_clearance" and c.get("value")
+                        for c in cookies
+                    )
+
+                    # 检查 verification successful
+                    verification_ok = 'verification successful' in body_lower
+
+                    # 检查 iframe 数（调试用）
+                    iframe_r = await _send(ws, "Runtime.evaluate", {
+                        "expression": "document.querySelectorAll('iframe').length"
+                    })
+                    iframe_count = iframe_r.get("result", {}).get("value", 0)
+
                     # Vendor-independent fallback: a page with no text and an
                     # iframe, twice running. Imperva (SPIE) matches neither of
                     # the tests above -- its interstitial has no title and
@@ -1662,26 +1724,15 @@ async def bypass_cloudflare_cdp(
                     else:
                         blank_iframe_rounds = 0
 
+                    # Counted here, after every test that can set
+                    # is_challenge -- including the blank-page one above, whose
+                    # whole purpose is to reach the click logic below. Counting
+                    # earlier meant a blank-page challenge entered its first
+                    # round with challenge_rounds still 0, and the fallback
+                    # click is throttled on that counter.
                     if is_challenge:
                         challenge_detected = True
                         challenge_rounds += 1
-
-                    # 检查 cf_clearance
-                    cookies_r = await _send(ws, "Network.getAllCookies")
-                    cookies = cookies_r.get("cookies", [])
-                    has_cf = any(
-                        c.get("name") == "cf_clearance" and c.get("value")
-                        for c in cookies
-                    )
-
-                    # 检查 verification successful
-                    verification_ok = 'verification successful' in body_lower
-
-                    # 检查 iframe 数（调试用）
-                    iframe_r = await _send(ws, "Runtime.evaluate", {
-                        "expression": "document.querySelectorAll('iframe').length"
-                    })
-                    iframe_count = iframe_r.get("result", {}).get("value", 0)
 
                     # 状态打印
                     status = (
