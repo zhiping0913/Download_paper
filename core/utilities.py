@@ -1184,14 +1184,28 @@ async def block_mathjax(page) -> None:
 #:   optica         10.1364/OE.444043           paper.md byte-identical
 #:   cambridge      10.1017/hpl.2018.33         paper.md byte-identical,
 #:                  46 formula lines both ways ("latex hidden behind svg")
+#:   acs            10.1021/acs.nanolett.8b05070  byte-identical, 17 formula
+#:                  lines (41 <math> live only in the raw response)
+#:   wiley          10.1002/lpor.202401986        byte-identical, 36 formula
+#:                  lines (121 x-tex annotations)
+#:   ieee           10.1109/TPS.2010.2064310      byte-identical, 41 formula
+#:                  lines (its math is <tex-math> from the REST endpoint)
 #:
 #: ⚠️ The A/B only exercises the path where the raw capture succeeded. It says
 #: nothing about the fallback, which is exactly what the view-source rescue
 #: above is for. Cambridge was only added once its ``raw_html or
 #: rendered_html`` fallback was gone -- until then the riskiest path was the
 #: one the A/B could not reach.
+#: ⚠️ ACS and Wiley had to change source first. ACS read page.content() and
+#: recovered its math from mjx-assistive-mml -- i.e. from MathJax's own
+#: output -- so dropping the interception before switching it to the raw
+#: response would have deleted every formula. Wiley preferred an in-page
+#: view-source fetch; measured on 10.1002/lpor.202401986 the captured
+#: response carries the same 121 math sources and differs only in
+#: per-request ids, so that fetch is now a rescue rather than a routine step.
 RAW_HTML_PUBLISHERS = frozenset({
     'iop', 'sciencedirect', 'aps', 'optica', 'cambridge',
+    'acs', 'wiley', 'ieee',
 })
 
 

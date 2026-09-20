@@ -116,7 +116,11 @@ _ACS_TEMPLATE_ARTIFACT_RE = re.compile(r'^/[.\w-]+$')
 
 
 class ACSHandler(PublisherHandler):
+
+
     """Full-text handler for ACS Publications."""
+
+    PUBLISHER = 'acs'
 
     ACS_BASE = 'https://pubs.acs.org'
 
@@ -353,11 +357,7 @@ class ACSHandler(PublisherHandler):
         return re.sub(r'/m_([^/?]+)(\?|$)', r'/\1\2', url)
 
     async def extract_metadata(self, page) -> dict:
-        try:
-            html = await page.content()
-        except Exception:
-            html = ''
-        return self.extract_metadata_from_html(html)
+        return self.extract_metadata_from_html(await self.get_page_html(page))
 
     @classmethod
     def extract_metadata_from_html(cls, html: str) -> dict:
@@ -1021,10 +1021,7 @@ class ACSHandler(PublisherHandler):
     async def get_pdf_url(self, doi: str = None) -> Optional[str]:
         html = ''
         if self.page is not None:
-            try:
-                html = await self.page.content()
-            except Exception:
-                html = ''
+            html = await self.get_page_html(self.page)
         if html:
             url = self.extract_metadata_from_html(html).get('_pdf_url')
             if url:
@@ -1055,10 +1052,15 @@ class ACSHandler(PublisherHandler):
         set_actual_base_url(self, page)
 
         try:
-            try:
-                html = await page.content()
-            except Exception:
-                html = ''
+            # Read the raw server response, not the rendered DOM. Everything
+            # this handler wants is server rendered -- measured on
+            # 10.1021/acs.nanolett.8b05070, page_raw.html against page.html:
+            # title, abstract (1,054 chars), 4 figures, 33 references, a
+            # 24,755-character body and 1 supplement, identical from either.
+            # The math is the reason it matters: the raw response carries 41
+            # <math> elements inside span.mathFormula, and once MathJax is no
+            # longer intercepted those survive only there.
+            html = await self.get_page_html(page)
 
             metadata = self.extract_metadata_from_html(html)
             metadata['doi'] = doi or metadata.get('doi', '')

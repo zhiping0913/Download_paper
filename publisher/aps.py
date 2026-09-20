@@ -723,7 +723,11 @@ async def get_supplemental_links(page, doi: str = None, journal_prefix: str = No
 
 
 class APSHandler(PublisherHandler):
+
+
     """Handler for American Physical Society (APS) journals"""
+
+    PUBLISHER = 'aps'
 
     @staticmethod
     def journal_prefix_from_url(url: str) -> str:

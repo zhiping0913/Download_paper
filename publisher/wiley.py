@@ -96,7 +96,11 @@ _WILEY_NOISE_LINES = frozenset({
 
 
 class WileyHandler(PublisherHandler):
+
+
     """Full-text handler for Wiley Online Library."""
+
+    PUBLISHER = 'wiley'
 
     WILEY_BASE = 'https://onlinelibrary.wiley.com'
 
@@ -967,11 +971,7 @@ class WileyHandler(PublisherHandler):
             return f"{self.WILEY_BASE}/doi/{self.doi}" if self.doi else ''
 
     async def extract_metadata(self, page) -> dict:
-        try:
-            html = await page.content()
-        except Exception:
-            html = ''
-        return self.extract_metadata_from_html(html)
+        return self.extract_metadata_from_html(await self.get_page_html(page))
 
     def _save_source(self, html: str) -> None:
         """Keep the un-rendered page beside the other captures."""
@@ -1025,23 +1025,36 @@ class WileyHandler(PublisherHandler):
             except Exception:
                 rendered = ''
 
-            # Prefer the page source: MathJax strips both the TeX annotation
-            # and the MathML from the DOM once it runs, so the rendered copy
-            # has no recoverable formulas at all.
-            html = rendered
-            try:
-                source = await fetch_view_source_html(page)
-            except Exception as exc:
-                print(f"  ⚠️  view-source 抓取失败: {type(exc).__name__}: {exc}")
-                source = ''
-            if source:
-                self._save_source(source)
-                src_n = self._count_math_source(source)
-                cur_n = self._count_math_source(rendered)
-                if src_n >= cur_n:
+            # The raw server response, captured while the page loaded. MathJax
+            # strips both the TeX annotation and the MathML from the DOM once
+            # it runs, so the rendered copy has no recoverable formulas at all.
+            #
+            # This used to re-fetch the source from inside the page on every
+            # article. Measured on 10.1002/lpor.202401986, the captured
+            # response and that fetch carry the same 121 math sources and 121
+            # <annotation encoding="application/x-tex"> elements, and the
+            # handler's own extractors return the same title, 4 figures, 68
+            # references and a 39,388-character body from either; the two
+            # documents differ only in per-request ids (164 diff lines, all
+            # of that shape). So the fetch is now a rescue for when nothing
+            # was captured, not a routine step on the article page.
+            html = await self.get_page_html(page)
+            if html:
+                self._save_source(html)
+            if not html:
+                try:
+                    source = await fetch_view_source_html(page)
+                except Exception as exc:
+                    print(f"  ⚠️  view-source 抓取失败: {type(exc).__name__}: {exc}")
+                    source = ''
+                if source:
+                    self._save_source(source)
                     print(f"  ↪ Wiley: 使用 view-source 原始 HTML "
-                          f"({len(source):,} 字符, {src_n} 个公式源 → 原有 {cur_n} 个)")
+                          f"({len(source):,} 字符, "
+                          f"{self._count_math_source(source)} 个公式源)")
                     html = source
+                else:
+                    html = rendered
 
             metadata = self.extract_metadata_from_html(html)
             metadata['doi'] = doi or metadata.get('doi', '')
