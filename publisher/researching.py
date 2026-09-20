@@ -56,6 +56,8 @@ _RESEARCHING_NOISE_LINES = frozenset({
 class ResearchingHandler(PublisherHandler):
     """Full-text handler for researching.cn (Chinese Laser Press)."""
 
+    PUBLISHER = 'researching'
+
     RESEARCHING_BASE = 'https://www.researching.cn'
 
     def __init__(self, page=None, captured_data_dir=None, doi: str = None):
@@ -581,12 +583,7 @@ class ResearchingHandler(PublisherHandler):
     # ==================================================================
 
     async def get_pdf_url(self, doi: str = None) -> Optional[str]:
-        html = ''
-        if self.page is not None:
-            try:
-                html = await self.page.content()
-            except Exception:
-                html = ''
+        html = await self.get_page_html(self.page) if self.page is not None else ''
         if html:
             url = self.extract_metadata_from_html(html).get('_pdf_url')
             if url:
@@ -609,10 +606,10 @@ class ResearchingHandler(PublisherHandler):
             return self.RESEARCHING_BASE
 
     async def extract_metadata(self, page) -> dict:
-        try:
-            html = await page.content()
-        except Exception:
-            html = ''
+        # The captured server response. researching.cn renders server-side,
+        # and its figures are lazy-loaded -- the real URL is in lay-src, which
+        # the served HTML carries and the rendered DOM may have replaced.
+        html = await self.get_page_html(page)
         return self.extract_metadata_from_html(html)
 
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
@@ -623,10 +620,7 @@ class ResearchingHandler(PublisherHandler):
         set_actual_base_url(self, page)
 
         try:
-            try:
-                html = await page.content()
-            except Exception:
-                html = ''
+            html = await self.get_page_html(page)
 
             metadata = self.extract_metadata_from_html(html)
             metadata['doi'] = doi or metadata.get('doi', '')

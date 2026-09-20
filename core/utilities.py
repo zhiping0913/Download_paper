@@ -1229,6 +1229,10 @@ async def block_mathjax(page) -> None:
 #:                  lines (121 x-tex annotations)
 #:   ieee           10.1109/TPS.2010.2064310      byte-identical, 41 formula
 #:                  lines (its math is <tex-math> from the REST endpoint)
+#:   researching    10.3788/PI.2023.R05           same 24 figures, 1,636
+#:                  formulas and 357 references; 8.5 KB smaller because the
+#:                  rendered DOM leaked MathJax fallback glyphs in front of
+#:                  formulas ("of Å$\sim 3.7...", "μ$\sim" 12 times)
 #:   science        10.1126/science.aam8393       same 4 figures, 4 tables, 76
 #:                  formulas and supplement; loses 26 "VIEW IN VIEWER" button
 #:                  labels JavaScript had injected into every figure and table
@@ -1275,7 +1279,7 @@ async def block_mathjax(page) -> None:
 #: per-request ids, so that fetch is now a rescue rather than a routine step.
 RAW_HTML_PUBLISHERS = frozenset({
     'iop', 'sciencedirect', 'aps', 'optica', 'cambridge',
-    'acs', 'wiley', 'ieee', 'spie', 'aip', 'nature', 'mdpi', 'acm', 'oup', 'science',
+    'acs', 'wiley', 'ieee', 'spie', 'aip', 'nature', 'mdpi', 'acm', 'oup', 'science', 'researching',
 })
 
 
