@@ -70,6 +70,11 @@ _SPIE_NOISE_LINES = frozenset({'google scholar', 'crossref', 'pubmed'})
 class SPIEHandler(PublisherHandler):
     """Full-text handler for the SPIE Digital Library."""
 
+    # Declared so get_page_html()'s view-source rescue applies: the token is
+    # read off the handler, so being spelled in RAW_HTML_PUBLISHERS is not
+    # enough on its own.
+    PUBLISHER = 'spie'
+
     SPIE_BASE = 'https://www.spiedigitallibrary.org'
     # SPIE 的正文接口按内容族分三个，路径里的那一段就是族名：
     #   /api/journals/article/fulltexthtml      期刊

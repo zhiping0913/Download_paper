@@ -56,12 +56,12 @@ class PublisherHandler(ABC):
         ``wildcard.init_extract_all_page`` and by the headed-browser path in
         ``complete_paper_extraction.py`` before each main-page navigation.
 
-        ⚠️ The fallback is not equally safe for everyone. A handler listed in
-        ``RAW_HTML_PUBLISHERS`` has MathJax interception *skipped* precisely
-        because it reads raw HTML -- so for it, dropping to ``page.content()``
-        means reading a DOM where MathJax has already replaced the TeX with
-        SVG whose only text is the a11y speech string. Those handlers re-fetch
-        the source first, and the degradation is announced rather than silent.
+        ⚠️ Dropping to ``page.content()`` means reading a DOM where MathJax
+        has already replaced the TeX with SVG whose only text is the a11y
+        speech string -- and nothing stops it any more, the route
+        interception having been removed. A handler listed in
+        ``RAW_HTML_PUBLISHERS`` re-fetches the source with view-source first,
+        and the degradation is announced rather than silent.
         """
         raw = getattr(self, '_raw_server_html', None)
         if raw:
@@ -83,7 +83,7 @@ class PublisherHandler(ABC):
             if source:
                 return source
             print("  ⚠️  view-source 也失败，回落渲染后 DOM"
-                  "（该出版商未拦 MathJax，公式可能已被替换）")
+                  "（公式可能已被 MathJax 替换）")
 
         try:
             return await p.content()

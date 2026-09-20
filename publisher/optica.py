@@ -1099,7 +1099,7 @@ class OpticaHandler(PublisherHandler):
         # instead of "{P_0} = {E_0}/{\tau _{\rm{eff}}}".
         #
         # This used to re-fetch the source on every run, because neither
-        # upstream mechanism was trusted: block_mathjax only helps when the
+        # upstream mechanism was trusted: the old MathJax interception only helped when the
         # interceptor was registered before the script request, and the
         # main-document listener was said to miss the fulltext.cfm navigation
         # this handler performs itself. The second half of that was already

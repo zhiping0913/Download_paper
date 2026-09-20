@@ -38,8 +38,8 @@ class IOPHandler(PublisherHandler):
 
     # Both extract_metadata and extract_all read get_page_html() (the raw
     # server response), so nothing here looks at a MathJax-rendered DOM --
-    # which is what lets core.utilities.should_block_mathjax skip the route
-    # interception for IOP. See RAW_HTML_PUBLISHERS.
+    # which is what puts IOP in core.utilities.RAW_HTML_PUBLISHERS -- the
+    # set that now only decides who gets the view-source rescue.
     PUBLISHER = 'iop'
 
     def __init__(self, page=None, captured_data_dir=None, doi: str = None):

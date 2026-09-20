@@ -59,7 +59,6 @@ from core import (
     organize_paper_output,
     save_metadata_json,
     save_crossref_json,
-    block_mathjax,
 )
 # The fetch ladder lives in core.utilities because publisher handlers need it
 # too, and the dependency runs one way: a handler importing this module would
@@ -77,7 +76,6 @@ from core.utilities import (
     inpage_abort_ms,
     read_body_with_timeout,
     pick_raw_article_html,
-    should_block_mathjax,
     content_with_timeout,
     url_looks_like_bot_challenge,
     url_wants_api_harvest,
@@ -512,7 +510,6 @@ class PageCapture:
 
 
 async def navigate_with_capture(page, urls, *, capture: PageCapture,
-                                publisher_token: str = '',
                                 extra_headers: dict = None,
                                 timeout_s: float = None,
                                 solve_challenge: bool = True):
@@ -523,19 +520,13 @@ async def navigate_with_capture(page, urls, *, capture: PageCapture,
     checkbox all happen here, in this order, so neither mode can end up with
     one of them and not the others.
 
-    ⚠️ The listener has to exist before the first goto(), and block_mathjax
-    before the first script request -- that is why this owns the navigation
-    rather than being something a caller runs afterwards.
+    ⚠️ The listener has to exist before the first goto() -- that is why this
+    owns the navigation rather than being something a caller runs afterwards.
 
     Returns ``(final_url, rendered_html, error)``; *error* is the last
     navigation exception when every URL failed.
     """
     timeout_ms = int((timeout_s or DP_PAGE_LOAD_TIMEOUT) * 1000)
-
-    if should_block_mathjax(publisher_token):
-        await block_mathjax(page)
-    elif publisher_token:
-        print(f"  ⏭  {publisher_token.upper()} 读原始响应，不拦 MathJax")
 
     if extra_headers:
         try:
@@ -3933,7 +3924,6 @@ async def complete_extraction_workflow(
                         headless_page,
                         build_headless_precheck_urls(),
                         capture=_capture,
-                        publisher_token=_publisher_for_page(doi=doi),
                         extra_headers=extra_headers,
                     )
 
@@ -4425,7 +4415,6 @@ async def complete_extraction_workflow(
             # navigation and the Cloudflare checkbox all happen in
             # navigate_with_capture below -- the same call the headless branch
             # makes. Nothing about them is mode-specific.
-            _pub_pre = _publisher_for_page(url=url, doi=doi)
 
             # Step 1: Navigate and detect publisher
             print("Step 1️⃣  导航到DOI并检测出版商...")
@@ -4454,7 +4443,6 @@ async def complete_extraction_workflow(
                 page,
                 None if _cf_loaded else url,
                 capture=_capture,
-                publisher_token=_pub_pre,
                 extra_headers=extra_headers,
             )
 

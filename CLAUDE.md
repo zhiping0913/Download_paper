@@ -762,96 +762,28 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
   `<style id="MJX-CHTML-styles">` 里全是同名 CSS 选择器，按子串数会得到「29 处」
   而元素其实只有 1 处；这个误判本仓踩过一次
 
-### 谁还需要 `block_mathjax`（`RAW_HTML_PUBLISHERS`）
+### `block_mathjax` 已整个删除
 
-`block_mathjax` 用 `page.route` + `route.abort()` 掐掉 MathJax 脚本请求，是**页面内干预**：
-被中止的子资源请求在页面里看得见。读原始响应的 handler 不需要它——它们的公式源从来
-就没进过 DOM。目标是逐步摘干净，而不是全局开关一刀切。
+用 `page.route` + `route.abort()` 掐掉 MathJax 脚本，是**页面内干预**——被中止的
+子资源请求在页面里看得见。现在全仓**没有任何 `page.route`**。
 
-- 📌 **它还不能整个删掉，现在守的是"我们不认识的页面"**。决策点在**导航之前**，
-  那时只有 DOI。实测 19 个前缀：16 家已转的都能从 DOI 认出来 → 不拦；
-  **`10.1007`（Springer）、`10.1515`（De Gruyter）以及任何未知出版商答 `unknown` → 照旧拦**。
-  未知页面长什么样我们不知道，拦掉 MathJax 是唯一能保住 LaTeX 源的办法，
-  代价不对称（见下）。所以**保留**
-- 判据只有一处：`core/utilities.RAW_HTML_PUBLISHERS` + `should_block_mathjax(publisher)`。
-  **未知/空一律照旧拦截** —— 错误的跳过会静默丢掉 LaTeX 源，错误的拦截只多一次被中止的
-  请求，两种代价不对称
-- 当前成员：`iop`、`sciencedirect`、`aps`、`optica`、`cambridge`、`acs`、`wiley`、`ieee`。
-  **每一个都是 A/B 实测进来的**（同一篇跑两遍、diff `paper.md`），不是推理出来的：
-
-  | | 样本 | 结果 |
-  |---|---|---|
-  | sciencedirect | `10.1016/j.rinp.2021.104097` | 逐字节相同（41,616 B）|
-  | aps | `10.1103/PhysRevA.98.043407` | 逐字节相同 |
-  | optica | `10.1364/OE.444043` | 逐字节相同 |
-  | cambridge | `10.1017/hpl.2018.33`（latex 藏在 svg 后面）| 逐字节相同，两边都是 46 行公式 |
-  | acs | `10.1021/acs.nanolett.8b05070` | 逐字节相同，17 行公式 |
-  | wiley | `10.1002/lpor.202401986` | 逐字节相同，36 行公式 |
-  | ieee | `10.1109/TPS.2010.2064310` | 逐字节相同，41 行公式 |
-  | spie | `10.1117/12.2038680`(2014会议) / `10.1117/1.oe.62.8.086102`(2023) / `10.1117/1.OE.64.11.115106`(2025) | 三篇全部逐字节相同，0/27/57 行公式 |
-  | aip | `10.1063/5.0326077` | 逐字节相同，46 行公式 |
-  | nature | `10.1038/s41566-023-01311-z` | 逐字节相同，27 行公式 |
-
-- ⚠️ **测 SPIE 每次访问之间隔 5 分钟**：它是本仓最严的一家，连打是它的 bot manager
-  最会扣分的形状。另外 2014 与 2023 那两篇还与 **captured_data 里的旧存档逐字节相同**
-  （123 行 / 165 行），说明今天这一串改动对产出零影响
-- 📌 **"页面自己 fetch 正文"不是新版页面才有的**：2014 年的会议论文集同样命中，
-  五次访问全部复用捕获、零次主动 POST
-
-- ⚠️ **ACS 和 Wiley 必须先换数据来源才够格**，顺序反了就是直接丢公式：
-  - **ACS** 原来只读 `page.content()`，公式靠 `mjx-assistive-mml` 捞 —— 那是 **MathJax 自己
-    的产物**。先摘拦截的话，41 个 `<math>` 会一起消失。现在读 `get_page_html()`；实测
-    原始响应与渲染后 DOM 对所有提取器结果**完全一致**（4 图、33 参考文献、正文 24,755 字符、
-    摘要 1,054 字符）
-  - **Wiley** 原来每篇发一次页面内 view-source `fetch()`。实测 `10.1002/lpor.202401986`：
-    预载捕获与那次 fetch **公式源都是 121、x-tex 注解都是 121**，逐行 diff 164 行**全是
-    每次请求都不同的 id**，提取器结果一致（4 图、68 参考文献、正文 39,388 字符）。
-    现在 view-source 降为救援，日志里那一行出现 **0 次**
-  - ⚠️ 救援不触发时**不再写 `source.html`** —— 它和主流程落的 `page_raw.html` 是同一份
-    字节，两个名字装一样的内容。`source.html` 现在只有一个含义：**这次运行不得不自己
-    重取源码**
-- ⚠️ **给 handler 补 `PUBLISHER` 常量时别插进 docstring 同一行**：
-  `PUBLISHER = 'acs'    """doc"""` **能编译**（相邻字符串隐式拼接），结果是
-  `PUBLISHER = 'acsFull-text handler for ACS Publications.'`、`__doc__ = None`，
-  而 `should_block_mathjax()` 对这个垃圾值返回 True —— 表现为"**什么都没变**"，
-  六个文件全中招且 `py_compile` 全绿
-
-  `DP_RAW_HTML_PUBLISHERS=<token>` 只为这个 A/B 存在；**过了的要写进常量，不是靠环境变量长期配置**
-- ⚠️ **A/B 只走了"原始响应拿到了"那条路**，对回落路径什么都没证明 —— 而拦截真正保护的正是
-  回落。能接受这个残差，是因为加入这个集合是**一换一**：失去拦截，换来 `get_page_html()`
-  在捕获落空时先走 view-source 重取、并把降级**打印出来**
-- ⚠️ **Cambridge 是先把回落改掉才加进来的**。它原本是 `fulltext_html = raw_html or rendered_html`，
-  而渲染后的 DOM **一定**有 `<div class="body">`，所以重取阶梯看一眼就说"有正文"、
-  一次都不会触发 —— 最该重取的那种情况恰恰是唯一不重取的。现在"没捕到原始响应"和
-  "拿到的是壳"走同一条阶梯，渲染后 DOM 只作**声明过的**最后手段
-- ⚠️ **测法本身也踩过坑**：用 `ls -dt captured_data/*/ | head -1` 取"最新输出目录"是错的 ——
-  目录 mtime 只在新建/删除文件时更新，覆盖写已有文件不会动它，于是旧目录反而显得更新。
-  实测四个 A/B 产物 md5 全同（都是另一篇的 md），差点据此报出"通过"。要从日志里
-  `📝 Markdown 文件:` 那行取程序自己打印的路径
-- token 来自两处，但决策点仍是同一个：主流程用它已导入的
-  `orchestrator.detect_publisher_from_url`（**不是** `core.utilities` 里那个同名的旧副本
-  —— 后者只认 7 家，大多数会答 `unknown`）；`wildcard` 不能 import orchestrator
-  （handler 反过来 import 它，会成环），所以改由 handler 自报 `PublisherHandler.PUBLISHER`
-- ⚠️ **摘掉拦截会连带削弱一条回落路径**：原始响应没捕到时 `get_page_html()` 会退到
-  `page.content()`，而那份 DOM 现在**没有保护**。所以 `RAW_HTML_PUBLISHERS` 的 handler
-  在回落前先走 `fetch_view_source_html()` 重取，并把这次降级**打印出来**——
-  静默劣化比失败更难查
-- 📌 **预载阶段现在自己捕获响应，所以这条回落基本不再触发**。见下面「预载期间的
-  响应捕获」。它仍然留着，作为捕获落空时的保险
-
-### Nature：元数据也改读捕获了
-
-`extract_all` 的正文/表格上一轮就改完了，但 `extract_metadata` 等四处
-`page.evaluate` 当时漏了 —— 它们读的是 meta 标签、`ld+json`、补充材料链接、
-`citation_reference`，**全都在服务器发的那份里**。现在走
-`_meta_map` / `_json_ld_entity` / `_supplemental_candidates` / `_citation_references`，
-正文页上一处 `evaluate` 都没有了。
-
-- ⚠️ **复刻语义时别顺手"修正"**：JS 里是 `data[name] = content`，后面的**覆盖**前面的，
-  而 Nature 每个作者发一个 `citation_author` —— 所以源码注释写的"第一个作者"
-  实际取的是**最后一个**。改成"第一个"会让产出悄悄变
-- ✅ 实测 `10.1038/s41566-023-01311-z` 端到端重跑，`paper.md` 与归档**逐字节相同**；
-  四篇归档离线验证 metas 65/71/71、refs 45/23/49、supp 11/0/1
+- 📌 **理由不是"用得少了"，是它已经什么都不保护**。所有 handler 都读捕获的原始响应，
+  而原始响应里 MathJax 根本没跑过。对**没有 handler 的出版商**，兜底是主程序把
+  `page_raw.html` 落盘、供日后照着写 handler —— 那份也是响应。拦与不拦，我们要看的
+  字节完全一样
+- ❌ **我一度报告过"它还守着 `10.1007`(Springer) 和未知出版商"，这个说法站不住**。
+  `10.1007` 之所以会被拦，只是因为**判定发生在导航之前**、那时只有 DOI 而
+  `detect_publisher_from_url` 答 `unknown` —— 可真正接手的是 `springer_book`
+  和 `NatureHandler`，两个都读原始响应。那是**判定时机的产物，不是谁的需求**
+- `10.1515`（De Gruyter）同理，且目前没有相关文章；日后要抓就写专门的 handler
+- ⚠️ **唯一真的变了的地方**：`get_page_html()` 最后那层回落 —— 捕获为空**且**
+  view-source 也失败时读 `page.content()`，那份 DOM 现在没有任何东西拦着 MathJax。
+  它本来就会打印降级提示，现在提示词改成「公式可能已被 MathJax 替换」
+- `RAW_HTML_PUBLISHERS` **保留**，但含义只剩一条：**谁享受 view-source 救援**。
+  ⚠️ token 是从 handler 的 `PUBLISHER` 读的，**光写在集合里没用** —— IEEE 和 SPIE
+  在集合里却一直没声明 `PUBLISHER`，等于从没拿到过救援，已补上
+- `should_block_mathjax()` 和 `DP_RAW_HTML_PUBLISHERS` 一并删除（那个环境变量是为
+  逐家 A/B 存在的，八家做完就没有用处了）
 
 ### 有头 / 无头必须行为一致
 
