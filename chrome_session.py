@@ -1131,6 +1131,28 @@ _TURNSTILE_IFRAME_SELECTORS = [
 ]
 
 
+async def _report_iframe_sources(ws) -> None:
+    """Print every iframe's src. The only way to learn what a strange box is.
+
+    A vendor we do not recognise shows up as "blank page with an iframe" and
+    nothing more; the src is what says whether it is Imperva's
+    ``/_Incapsula_Resource``, an hCaptcha, a reCAPTCHA or something else, and
+    that is what a precise detector would have to be written against. Printing
+    it costs one CDP round trip on a page that is already stuck.
+    """
+    try:
+        r = await _send(ws, "Runtime.evaluate", {
+            "expression": """(() => [...document.querySelectorAll('iframe')]
+                .map(f => (f.getAttribute('src') || f.src || '(no src)')
+                          + ' | ' + (f.getAttribute('title') || '')))()""",
+            "returnByValue": True,
+        })
+        for src in (r.get("result", {}).get("value") or []):
+            print(f"     🔎 iframe: {str(src)[:160]}")
+    except Exception as exc:
+        print(f"     ⚠️  iframe 列举失败: {type(exc).__name__}")
+
+
 async def _find_turnstile_iframe_cdp(ws) -> dict:
     """用 CDP 在页面中查找 Turnstile challenge iframe。
     返回 {found, selector, index, rect, src}
@@ -1140,6 +1162,13 @@ async def _find_turnstile_iframe_cdp(ws) -> dict:
         const selectors = [
             'iframe[src*="challenges.cloudflare.com"]',
             'iframe[src*="cloudflare.com/cdn-cgi/challenge-platform"]',
+            // Not Cloudflare: Imperva (SPIE) and the captcha vendors its
+            // interactive step embeds. Detection used to stop at Cloudflare,
+            // so these boxes were never even looked for.
+            'iframe[src*="_Incapsula_Resource"]',
+            'iframe[src*="hcaptcha.com"]',
+            'iframe[src*="recaptcha"]',
+            'iframe[src*="captcha-delivery.com"]',
             'iframe[data-sitekey]',
             'iframe[title="Widget containing a Cloudflare security challenge"]',
             'iframe[title="Cloudflare"]',
@@ -1542,6 +1571,8 @@ async def bypass_cloudflare_cdp(
             challenge_detected = False
             challenge_rounds = 0  # 挑战页已经过了多少轮（用于判断 iframe 是否延迟加载）
             turnstile_tried = False
+            blank_iframe_rounds = 0
+            blank_iframe_reported = False
             last_status = ""
 
             # 下面这四个都在循环体内赋值，超时那行要读它们来如实说明失败原因。
@@ -1604,6 +1635,33 @@ async def bypass_cloudflare_cdp(
                             )
                         except Exception:
                             pass
+                    # Vendor-independent fallback: a page with no text and an
+                    # iframe, twice running. Imperva (SPIE) matches neither of
+                    # the tests above -- its interstitial has no title and
+                    # none of Cloudflare's ids -- so is_challenge stayed False
+                    # and the click logic was never even reached. Observed as
+                    #   📊 title='' cf=✗ iframes=1 body=0
+                    # four times across SPIE runs, each followed by the
+                    # article once a human clicked the box by hand.
+                    #
+                    # ⚠️ Deliberately narrow: an *empty* body, not a short
+                    # one, and two consecutive polls (~4s) so a page still
+                    # fetching its content is not mistaken for a challenge.
+                    # The cost of a false positive here is one click on a
+                    # blank page.
+                    if (not is_challenge and not title.strip()
+                            and len(body_text.strip()) == 0 and iframe_count >= 1):
+                        blank_iframe_rounds += 1
+                        if blank_iframe_rounds >= 2:
+                            is_challenge = True
+                            if not blank_iframe_reported:
+                                blank_iframe_reported = True
+                                print("  🤖 空白页 + iframe 持续 2 轮，按挑战页处理"
+                                      "（非 Cloudflare 的验证框走这条）")
+                                await _report_iframe_sources(ws)
+                    else:
+                        blank_iframe_rounds = 0
+
                     if is_challenge:
                         challenge_detected = True
                         challenge_rounds += 1

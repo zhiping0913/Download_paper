@@ -238,6 +238,7 @@ DEFAULT_API_HARVEST = (
     '/fulltext/10.',         # APS: the reading view's own JSON
     '/supplemental/10.',     # APS: the supplemental listing
     '/article/fulltexthtml', # SPIE: the body the landing page fetches itself
+    '/article/supplemental', # SPIE: its supplemental listing, same idea
 )
 
 
@@ -1203,6 +1204,9 @@ async def block_mathjax(page) -> None:
 #:                  lines (121 x-tex annotations)
 #:   ieee           10.1109/TPS.2010.2064310      byte-identical, 41 formula
 #:                  lines (its math is <tex-math> from the REST endpoint)
+#:   aip            10.1063/5.0326077             byte-identical, 46 formula
+#:                  lines; also verified that reading the capture instead of
+#:                  page.content() leaves paper.md unchanged
 #:   spie           10.1117/12.2038680 (2014 proceedings),
 #:                  10.1117/1.oe.62.8.086102 (2023) and
 #:                  10.1117/1.OE.64.11.115106 (2025): all byte-identical,
@@ -1226,7 +1230,7 @@ async def block_mathjax(page) -> None:
 #: per-request ids, so that fetch is now a rescue rather than a routine step.
 RAW_HTML_PUBLISHERS = frozenset({
     'iop', 'sciencedirect', 'aps', 'optica', 'cambridge',
-    'acs', 'wiley', 'ieee', 'spie',
+    'acs', 'wiley', 'ieee', 'spie', 'aip',
 })
 
 
