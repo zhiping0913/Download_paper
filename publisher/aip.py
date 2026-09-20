@@ -511,6 +511,7 @@ class AIPHandler(PublisherHandler):
             return '', ''
 
         soup = BeautifulSoup(html_content, 'html.parser')
+        cls._inline_images(soup, rewrite=True)
         abstract_parts = []
         body_parts = []
 
@@ -654,6 +655,52 @@ class AIPHandler(PublisherHandler):
 
         return references
 
+    # Images that are not figures: AIP's appendices ship code listings and
+    # screenshots as a bare <p><img class="content-image">, with no
+    # div.fig-section, no label and no caption (10.1063/5.0294656 has three,
+    # ".figures.online.dN.jpeg", in "APPENDIX: EXAMPLES ON THE MAIN STEPS
+    # USED IN PYTHON CODING"). They were never collected, so pandoc left the
+    # publisher's **signed** CloudFront URL in the Markdown -- a link that
+    # stops working when the signature expires, in a document whose whole
+    # point is to still be readable later.
+    #
+    # Numbered from a base well above any figure number so the two key spaces
+    # cannot collide: the downloader derives its number with
+    # re.search(r'(\d+)$', fig_id), so "fig_d1" would come back as 1 and
+    # overwrite Figure 1.
+    _INLINE_IMG_BASE = 900
+
+    @classmethod
+    def _inline_images(cls, soup, rewrite: bool = False) -> list:
+        """``[(index, url)]`` for every content image outside a figure.
+
+        The figure scan and the body walk parse the page separately, so the
+        index has to come from document order -- the one thing both passes
+        agree on. With *rewrite* the ``src`` is replaced by the placeholder
+        ``convert_to_markdown`` later resolves, and the duplicate
+        ``data-src`` / ``path-from-xml`` attributes are dropped so pandoc
+        emits a plain ``![](token)`` instead of trailing a second copy of the
+        URL in an attribute block.
+        """
+        found = []
+        index = cls._INLINE_IMG_BASE
+        for img in soup.select('img.content-image'):
+            if img.find_parent('div', class_='fig-section') is not None:
+                continue
+            if img.find_parent(class_=re.compile('fig-modal|reveal-modal')):
+                continue
+            url = (img.get('src') or img.get('data-src') or '').strip()
+            if not url:
+                continue
+            index += 1
+            found.append((index, url))
+            if rewrite:
+                img['src'] = f'__AIP_IMG_{index}__'
+                for attr in ('data-src', 'path-from-xml', 'srcset'):
+                    if attr in img.attrs:
+                        del img[attr]
+        return found
+
     @classmethod
     def extract_figures_from_html(cls, html_content: str) -> dict:
         """Extract AIP figure URLs and captions from HTML."""
@@ -713,6 +760,9 @@ class AIPHandler(PublisherHandler):
             if hi_res_url and thumb_url and hi_res_url != thumb_url:
                 entry['original_url'] = thumb_url
             figures[key] = entry
+
+        for index, url in cls._inline_images(soup):
+            figures[f'fig_{index}'] = {'url': url, 'caption': ''}
 
         return figures
 
@@ -1055,6 +1105,22 @@ class AIPHandler(PublisherHandler):
                 abstract,
                 "",
             ])
+
+        # Resolve the appendix/inline images: the local file if it came
+        # down, otherwise the publisher's URL, which at least still points
+        # somewhere until its signature expires.
+        _filenames = kwargs.get('figure_filenames') or {}
+        _urls = kwargs.get('figure_urls') or {}
+
+        def _resolve_inline(match: 're.Match') -> str:
+            index = match.group(1)
+            local = _filenames.get(index) or _filenames.get(int(index))
+            if local:
+                return str(local)
+            info = _urls.get(f'fig_{index}') or {}
+            return info.get('url', '') if isinstance(info, dict) else str(info)
+
+        body_md = re.sub(r'__AIP_IMG_(\d+)__', _resolve_inline, body_md)
 
         # Insert downloaded figure images after each caption.
         if kwargs.get('add_figure_refs') and kwargs.get('figure_filenames'):
