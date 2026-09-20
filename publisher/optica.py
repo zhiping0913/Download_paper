@@ -1136,15 +1136,10 @@ class OpticaHandler(PublisherHandler):
 
         try:
             # raw_html  = original server response (pre-MathJax, has $...$ TeX)
-            # page_html = post-JS rendered DOM saved to page.html for debugging
             try:
                 raw_html = await self.get_page_html(page)   # raw if captured, else rendered
             except Exception:
                 raw_html = ''
-            try:
-                rendered_html = await page.content()        # always the post-JS DOM
-            except Exception:
-                rendered_html = raw_html
 
             # All extraction uses raw_html (proper TeX math, not SVG)
             fulltext_html = raw_html
@@ -1202,7 +1197,10 @@ class OpticaHandler(PublisherHandler):
                 # fulltext_data = rendered DOM → saved to page.html by process_with_handler
                 # _raw_server_html = raw HTML → saved to page_raw.html; also used by
                 # convert_to_markdown to regenerate body text with proper LaTeX
-                'fulltext_data': rendered_html,
+                # The raw response; the post-JS copy was fetched only to be
+                # archived as page.html and nothing read it. See the same
+                # change in sciencedirect.py.
+                'fulltext_data': raw_html,
                 'journal_name': 'optica',
             }
 

@@ -638,6 +638,14 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
 ### 一份 HTML 只落一次
 
 - `page_raw.html` = 原始 HTTP 响应；`page.html` = 渲染后 DOM，**只在与原始响应不同时才写**
+- 📌 **已改造的 handler 不再专门取一份渲染后 DOM 来归档**。ScienceDirect 和 Optica 原本
+  为此调一次 `page.content()`，产出的 `page.html` 与 `page_raw.html` 字节相同、而且没人读。
+  现在 `fulltext_data` 直接交回原始响应，`page.html` 自然不再出现
+- ⚠️ **也不再有"退回渲染后 DOM"的最后手段**（Cambridge、Wiley 原本有，且是声明过的）。
+  那份 DOM 上 MathJax 已经把公式换掉，产出**看着完整、公式全丢**；现在返回**空正文**
+  并打印，理由同「宁可保留一个空正文的 md」
+- ⚠️ 旧目录里残留的 `page.html` / `source.html` 不会被自动清理 —— 看时间戳，别把上次运行的
+  产物当成本次的
 - ⚠️ handler 大多把原始响应原样交回当 `fulltext_data`，于是两个名字装同样的字节 ——
   实测存档 **57 篇里 30 篇** `page.html` 与 `page_raw.html` 逐字节相同。现在"有 page.html"
   才真的意味着存在第二个视图

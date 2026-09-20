@@ -1027,10 +1027,6 @@ class WileyHandler(PublisherHandler):
                 pass
 
         try:
-            try:
-                rendered = await page.content()
-            except Exception:
-                rendered = ''
 
             # The raw server response, captured while the page loaded. MathJax
             # strips both the TeX annotation and the MathML from the DOM once
@@ -1064,7 +1060,13 @@ class WileyHandler(PublisherHandler):
                           f"{self._count_math_source(source)} 个公式源)")
                     html = source
                 else:
-                    html = rendered
+                    # ⚠️ No rendered-DOM fallback. MathJax strips both the TeX
+                    # annotation and the MathML once it runs, so a markdown
+                    # built from that copy looks complete with every formula
+                    # gone. An empty body is the failure that can be traced.
+                    print("  ⚠️  未取到原始响应 —— 保留空正文以便溯源，"
+                          "不从渲染后 DOM 重建")
+                    html = ''
 
             metadata = self.extract_metadata_from_html(html)
             metadata['doi'] = doi or metadata.get('doi', '')
