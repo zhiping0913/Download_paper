@@ -1055,6 +1055,67 @@ class CambridgeHandler(PublisherHandler):
         except Exception as exc:
             print(f"  ⚠️  page_shell.html 保存失败: {str(exc)[:80]}")
 
+    async def _capture_one_document(self, page, action, label: str) -> str:
+        """Run *action* with a document listener attached; return the biggest body."""
+        docs: list = []
+
+        async def _capture(response):
+            try:
+                if (response.request.resource_type == 'document'
+                        and response.ok
+                        and 'text/html' in response.headers.get('content-type', '')):
+                    docs.append(await response.text())
+            except Exception:
+                pass
+
+        page.on('response', _capture)
+        try:
+            await action()
+        except Exception as exc:
+            print(f"  ⚠️  {label}失败: {type(exc).__name__}: {str(exc)[:80]}")
+        finally:
+            try:
+                page.remove_listener('response', _capture)
+            except Exception:
+                pass
+        return max(docs, key=len) if docs else ''
+
+    async def _click_language_switch(self, page) -> bool:
+        """Click Cambridge's Français toggle. False when it is not on the page."""
+        try:
+            el = await page.query_selector('span[lang="fr"], li[aria-label="Français"] span')
+        except Exception:
+            el = None
+        if el is None:
+            return False
+        # ⚠️ Wait for the navigation the click starts, not just for the network
+        # to go quiet. Measured: with only a wait_for_load_state('networkidle')
+        # the helper returned before the new document arrived and captured
+        # nothing at all (0 bytes), while the same click observed with a fixed
+        # settle produced 2,259,529 bytes. networkidle can be satisfied by the
+        # page as it stands, because the click navigates asynchronously.
+        timeout_ms = int(env_seconds('DP_PAGE_LOAD_TIMEOUT', 60) * 1000)
+        try:
+            async with page.expect_navigation(wait_until='domcontentloaded',
+                                              timeout=timeout_ms):
+                await el.click()
+        except Exception:
+            # Not every build navigates on this click; the listener may still
+            # have caught a document, so do not treat it as a failure.
+            pass
+        try:
+            await page.wait_for_load_state('networkidle', timeout=timeout_ms)
+        except Exception:
+            pass
+        # The document response can land a moment after the load state
+        # settles; this is the window that measured as the difference between
+        # capturing 0 bytes and capturing the article.
+        try:
+            await page.wait_for_timeout(3000)
+        except Exception:
+            pass
+        return True
+
     async def _refetch_if_shell(self, page, html: str, tries: int = 2) -> str:
         """Re-request the article when the response came back without a body.
 
@@ -1063,63 +1124,70 @@ class CambridgeHandler(PublisherHandler):
         apart: 813,314 bytes with no ``<div class="body">`` (0 figures, 913
         markdown lines) and 2,259,335 bytes with it (43 figures, 1,683 lines).
         Nothing in the request differs -- not the URL, not the method, not a
-        single header; a diff of the two requests shows only referer,
-        cache-control and the session cookies. Eight loads in a row later
-        returned the full document, so the shell is intermittent rather than a
-        mode we are being put in.
+        single header; a diff shows only referer, cache-control and the
+        session cookies.
 
-        The user noticed it as "the English page has no body but the French
-        one does". Clicking that switch does produce the full text -- but only
-        because it issues a *second* GET of the same URL. There is no language
-        in the request, and a first load is just as likely to be the full
-        document, so this asks again instead of imitating the switch: it does
-        not depend on that button existing or on Cambridge's front end.
+        A user sees it deterministically on Windows: the English view has no
+        body, clicking *Français* shows it, switching back hides it again.
+        Four Accept-Language values (en/fr/zh/none) all return the full
+        document from here, so the language is not the variable -- what the
+        switch does is issue a *second* GET, and that request carries
+        ``cache-control: max-age=0``.
+
+        📌 That header is the whole point, and it is why the rungs are in this
+        order. Measured on the live site:
+
+            goto(same url)    no cache-control     ← may be served from cache
+            reload()          cache-control: max-age=0
+            click Français    cache-control: max-age=0
+
+        ``reload()`` reproduces the click's cache semantics exactly without
+        depending on that button existing, so it goes first. The click stays
+        as the second rung because it is the one a user has actually watched
+        work on an affected machine, and because it is a real user gesture
+        rather than a programmatic navigation.
 
         Returns the good HTML, or '' when every attempt was still a shell.
         """
         if self._looks_like_full_article(html):
             return html
         print(f"  ⚠️  Cambridge 响应里没有正文容器（{len(html):,} 字符）"
-              f" —— 同一 URL 重新请求")
+              f" —— 重新请求")
         # Keep the shell. It is the only artefact that can answer *why* it was
         # served -- the response headers are gone by now, but a later diff of
         # shell vs full page is still worth having, and the shell would
         # otherwise be overwritten by the good response.
         self._save_shell_html(html)
-        for attempt in range(1, tries + 1):
-            docs: list = []
 
-            async def _capture(response):
-                try:
-                    if (response.request.resource_type == 'document'
-                            and response.ok
-                            and 'text/html' in response.headers.get('content-type', '')):
-                        docs.append(await response.text())
-                except Exception:
-                    pass
-
-            page.on('response', _capture)
+        async def _reload():
+            await page.reload(wait_until='domcontentloaded',
+                              timeout=int(env_seconds('DP_PAGE_LOAD_TIMEOUT', 60) * 1000))
             try:
-                await page.goto(page.url, wait_until='domcontentloaded',
-                                timeout=int(env_seconds('DP_PAGE_LOAD_TIMEOUT', 60) * 1000))
-                try:
-                    await page.wait_for_load_state('networkidle',
-                                                   timeout=int(env_seconds('DP_PAGE_LOAD_TIMEOUT', 60) * 1000))
-                except Exception:
-                    pass
-            except Exception as exc:
-                print(f"  ⚠️  第 {attempt} 次重取失败: {type(exc).__name__}: {str(exc)[:80]}")
-            finally:
-                try:
-                    page.remove_listener('response', _capture)
-                except Exception:
-                    pass
+                await page.wait_for_load_state('networkidle',
+                                               timeout=int(env_seconds('DP_PAGE_LOAD_TIMEOUT', 60) * 1000))
+            except Exception:
+                pass
 
-            best = max(docs, key=len) if docs else ''
+        for attempt in range(1, tries + 1):
+            best = await self._capture_one_document(page, _reload, f"第 {attempt} 次重新加载")
             if self._looks_like_full_article(best):
-                print(f"  ✓ 第 {attempt} 次重取拿到正文（{len(best):,} 字符）")
+                print(f"  ✓ 第 {attempt} 次重新加载拿到正文（{len(best):,} 字符）")
                 return best
-            print(f"  ⚠️  第 {attempt} 次重取仍无正文（{len(best):,} 字符）")
+            print(f"  ⚠️  第 {attempt} 次重新加载仍无正文（{len(best):,} 字符）")
+
+        clicked = [False]
+
+        async def _click():
+            clicked[0] = await self._click_language_switch(page)
+
+        best = await self._capture_one_document(page, _click, "点击语言切换")
+        if not clicked[0]:
+            print("  ⚠️  页面上没有语言切换按钮")
+            return ''
+        if self._looks_like_full_article(best):
+            print(f"  ✓ 点击语言切换后拿到正文（{len(best):,} 字符）")
+            return best
+        print(f"  ⚠️  点击语言切换后仍无正文（{len(best):,} 字符）")
         return ''
 
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
