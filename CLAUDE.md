@@ -137,10 +137,15 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
 - ⚠️ **必须限定是本文的**：`supp_doi.startswith(本文DOI + '.s')`。参考文献里若引用了别人
   论文的 `.sNN`，不加这条就会把别人的补充材料当成我们的下下来
 - ⚠️ 同一份文件正文里引用多次，**要去重**
-- 📌 另有 `/api/{family}/article/supplemental` 端点（POST 参数与正文相同）。代码里
-  **捕获到就优先用**（并落 `supplemental.json`），但**三次运行一次都没捕到**，
-  三次的预载都被 Imperva 拦下、走了 Fallback，所以这个端点是否会在干净加载时出现
-  **尚未证实**。正文里的 `.sNN` 链接才是实测有效的那条
+- 📌 另有 `/api/{family}/article/supplemental` 端点，**页面加载时自己会调**。实测
+  `10.1117/12.3071462` 预载成功那次捕到了，`supplemental.json` 正常落盘：
+  `{"hasAccess":true,"data":{"urlId":"…","supplementalFiles":[]}}`
+- ❌ **我一度以为"从没捕到过"，那是错的** —— 那几次的预载都被 Imperva 拦下走了
+  Fallback，而 **Fallback 的 `result["responses"]` 当时被直接丢弃**（`absorb_cdp`
+  只在第一次预载那个分支里调用）。所以不是页面没发，是我们没收。已修
+- ⚠️ 条目在 `data.supplementalFiles`（**不是** `data` 本身、也不是 `data.items`）。
+  但至今**没见过非空的**那一份（唯一捕到的那篇补充材料是海报），所以每个条目的字段名
+  仍是猜的；代码在**认不出链接字段时会把键名打印出来**，下一份捕获就能定下来
 - 📌 **SPIE 有两种补充材料，可以同时存在**：正文里的 `.sNN` DOI，以及**会议海报**
 - **海报的判据在 landing page 的内嵌 JSON：`"hasPoster":true`**。36 篇存档零例外 ——
   26 篇会议论文是 `false`、2 篇是 `true`（`12.3071462`、`12.2668643`）、4 篇期刊论文
