@@ -564,15 +564,24 @@ async def navigate_with_capture(page, urls, *, capture: PageCapture,
             last_error = e
             print(f"  ⚠️  访问失败: {type(e).__name__}: {str(e)[:100]}")
 
-    rendered = await content_with_timeout(page, what='导航后读取 DOM')
+    # ⚠️ The captured response, not page.content(). This used to read the
+    # rendered DOM on every navigation -- to detect a challenge, and then to
+    # be archived as page.html. Neither needs it: a Cloudflare interstitial
+    # carries its markers in the served document (_cf_chl_opt, the "Just a
+    # moment" title, the challenge-platform script path, all measured in
+    # page_raw.html), and page_raw.html is the archive. So the flow now holds
+    # no rendered copy of the article page at all.
+    latest = capture.documents[-1] if capture.documents else ''
 
     if solve_challenge and last_error is None:
-        rendered = await _clear_challenge_if_present(page, rendered, timeout_ms)
+        latest = await _clear_challenge_if_present(page, latest, timeout_ms,
+                                                   capture=capture)
 
-    return (page.url if page else ''), rendered, last_error
+    return (page.url if page else ''), latest, last_error
 
 
-async def _clear_challenge_if_present(page, rendered_html: str, timeout_ms: int) -> str:
+async def _clear_challenge_if_present(page, rendered_html: str, timeout_ms: int,
+                                      capture=None) -> str:
     """Click through a Cloudflare checkbox if this page is one. Returns the HTML.
 
     ⚠️ Gated on detection rather than run unconditionally. auto_solve_bot_challenge
@@ -605,11 +614,16 @@ async def _clear_challenge_if_present(page, rendered_html: str, timeout_ms: int)
     # A JS-only challenge answers the same URL 403 then 200 once the cookie is
     # set, so the listener never saw the article. Reload to capture it.
     print("  🔄 挑战已通过，重新加载页面以获取论文内容...")
+    before = len(capture.documents) if capture is not None else 0
     try:
         await page.goto(page.url, wait_until='networkidle', timeout=timeout_ms)
     except Exception as e:
         print(f"     ⚠️  重新加载异常: {e}")
-    return await content_with_timeout(page, what='挑战通过后读取 DOM') or rendered_html
+    # The reload's own document, straight from the listener that is still
+    # attached -- no page.content() here either.
+    if capture is not None and len(capture.documents) > before:
+        return capture.documents[-1]
+    return rendered_html
 
 
 def save_html_snapshot(path, content: str, label: str = "HTML") -> bool:
@@ -3373,9 +3387,20 @@ async def complete_extraction_workflow(
             save_html_snapshot(captured_data_dir / "page_raw.html",
                                raw_server_html, "原始HTML")
 
+        # ⚠️ Still needed, but only for the publishers not converted yet.
+        # A converted handler returns the raw response as fulltext_data, so
+        # the two are equal and page.html is never written -- the check is a
+        # no-op that always fires. The eight still reading the rendered DOM
+        # (acm, mdpi, oup, oup_book, opticsjournal, researching, science,
+        # springer_book) are why it is here; when the last of them is
+        # converted, this whole branch can go with it.
+        #
+        # The comparison itself touches nothing: fulltext_data arrives from
+        # the handler and raw_server_html from the capture, so it cannot
+        # leak anything back to the page.
         if isinstance(fulltext_data, str) and fulltext_data:
             if fulltext_data == raw_server_html:
-                print("  ↪ 渲染后 DOM 与原始响应相同，不另存 page.html")
+                print("  ↪ handler 交回的就是原始响应，不另存 page.html")
             else:
                 save_html_snapshot(captured_data_dir / "page.html",
                                    fulltext_data, "HTML")
@@ -3898,7 +3923,7 @@ async def complete_extraction_workflow(
                 # headers, the response listener, the navigation and the
                 # Cloudflare checkbox. See navigate_with_capture.
                 _capture = PageCapture(doi)
-                _final_url, headless_rendered_html, last_precheck_error = \
+                _final_url, headless_article_html, last_precheck_error = \
                     await navigate_with_capture(
                         headless_page,
                         build_headless_precheck_urls(),
@@ -3920,9 +3945,12 @@ async def complete_extraction_workflow(
                     # 里 5/5 与 page_raw.html 逐字节相同。它当初是"预检阶段
                     # 看到的那一份"，而现在那两个名字已经把这件事说清楚了，
                     # 第三个名字只会让目录看起来有三个视图。
-                    headless_html = headless_rendered_html  # used for bot-detection below
-                    headless_raw_html = _capture.land(
-                        captured_data_dir, headless_rendered_html) or None
+                    # The served document, not a rendered copy -- an
+                    # interstitial carries its markers in what the server
+                    # sent, and nothing here wants the post-JS DOM.
+                    headless_html = headless_article_html
+                    # No rendered copy to land: page_raw.html is the archive.
+                    headless_raw_html = _capture.land(captured_data_dir) or None
 
                     # 检测最终URL
                     final_headless_url = headless_page.url
