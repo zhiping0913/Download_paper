@@ -6,6 +6,7 @@ from Cambridge Core article pages (cambridge.org).
 """
 
 import re
+from pathlib import Path
 
 from bs4 import BeautifulSoup, NavigableString
 from playwright.async_api import async_playwright
@@ -16,6 +17,7 @@ from html_to_md_converter import (
     mathml_to_latex_pandoc,
     remove_newlines_in_paragraph,
 )
+from core.utilities import env_seconds
 from publisher.base import PublisherHandler
 from publisher.wildcard import set_actual_base_url, init_extract_all_page, generate_reference_text_from_crossref, render_heading_md
 
@@ -1033,6 +1035,93 @@ class CambridgeHandler(PublisherHandler):
     async def get_figures(self, json_data: dict) -> dict:
         return {}
 
+    #: A full Cambridge article page carries exactly one ``<div class="body">``.
+    #: The shell described in _refetch_if_shell has none.
+    _BODY_MARKER_RE = re.compile(r'<div[^>]+class="[^"]*\bbody\b[^"]*"', re.I)
+
+    @classmethod
+    def _looks_like_full_article(cls, html: str) -> bool:
+        return bool(html) and bool(cls._BODY_MARKER_RE.search(html))
+
+    def _save_shell_html(self, html: str) -> None:
+        """Land a body-less response as page_shell.html for later diagnosis."""
+        if not html or not self.captured_data_dir:
+            return
+        try:
+            out = Path(self.captured_data_dir) / 'page_shell.html'
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(html, encoding='utf-8')
+            print(f"  ✓ page_shell.html 已保存 ({out.stat().st_size:,} bytes)")
+        except Exception as exc:
+            print(f"  ⚠️  page_shell.html 保存失败: {str(exc)[:80]}")
+
+    async def _refetch_if_shell(self, page, html: str, tries: int = 2) -> str:
+        """Re-request the article when the response came back without a body.
+
+        ⚠️ Cambridge answers the *same* URL with two different documents.
+        Measured on 10.1017/hpl.2019.36, same code, same profile, minutes
+        apart: 813,314 bytes with no ``<div class="body">`` (0 figures, 913
+        markdown lines) and 2,259,335 bytes with it (43 figures, 1,683 lines).
+        Nothing in the request differs -- not the URL, not the method, not a
+        single header; a diff of the two requests shows only referer,
+        cache-control and the session cookies. Eight loads in a row later
+        returned the full document, so the shell is intermittent rather than a
+        mode we are being put in.
+
+        The user noticed it as "the English page has no body but the French
+        one does". Clicking that switch does produce the full text -- but only
+        because it issues a *second* GET of the same URL. There is no language
+        in the request, and a first load is just as likely to be the full
+        document, so this asks again instead of imitating the switch: it does
+        not depend on that button existing or on Cambridge's front end.
+
+        Returns the good HTML, or '' when every attempt was still a shell.
+        """
+        if self._looks_like_full_article(html):
+            return html
+        print(f"  ⚠️  Cambridge 响应里没有正文容器（{len(html):,} 字符）"
+              f" —— 同一 URL 重新请求")
+        # Keep the shell. It is the only artefact that can answer *why* it was
+        # served -- the response headers are gone by now, but a later diff of
+        # shell vs full page is still worth having, and the shell would
+        # otherwise be overwritten by the good response.
+        self._save_shell_html(html)
+        for attempt in range(1, tries + 1):
+            docs: list = []
+
+            async def _capture(response):
+                try:
+                    if (response.request.resource_type == 'document'
+                            and response.ok
+                            and 'text/html' in response.headers.get('content-type', '')):
+                        docs.append(await response.text())
+                except Exception:
+                    pass
+
+            page.on('response', _capture)
+            try:
+                await page.goto(page.url, wait_until='domcontentloaded',
+                                timeout=int(env_seconds('DP_PAGE_LOAD_TIMEOUT', 60) * 1000))
+                try:
+                    await page.wait_for_load_state('networkidle',
+                                                   timeout=int(env_seconds('DP_PAGE_LOAD_TIMEOUT', 60) * 1000))
+                except Exception:
+                    pass
+            except Exception as exc:
+                print(f"  ⚠️  第 {attempt} 次重取失败: {type(exc).__name__}: {str(exc)[:80]}")
+            finally:
+                try:
+                    page.remove_listener('response', _capture)
+                except Exception:
+                    pass
+
+            best = max(docs, key=len) if docs else ''
+            if self._looks_like_full_article(best):
+                print(f"  ✓ 第 {attempt} 次重取拿到正文（{len(best):,} 字符）")
+                return best
+            print(f"  ⚠️  第 {attempt} 次重取仍无正文（{len(best):,} 字符）")
+        return ''
+
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
         """Run the Cambridge handler through the unified publisher contract."""
         # Initialize page and managed resources using shared function
@@ -1063,6 +1152,16 @@ class CambridgeHandler(PublisherHandler):
             except Exception:
                 rendered_html = ''
             fulltext_html = raw_html or rendered_html
+
+            # Cambridge sometimes answers with a body-less shell; ask again.
+            # Keeping the better document on _raw_server_html means
+            # page_raw.html is overwritten with it too (save_html_snapshot
+            # writes when the bytes differ), so the capture directory records
+            # what the extraction actually used.
+            _better = await self._refetch_if_shell(page, fulltext_html)
+            if _better and _better is not fulltext_html:
+                fulltext_html = _better
+                self._raw_server_html = _better
 
             if fulltext_html and not metadata.get('abstract'):
                 metadata['abstract'] = self.extract_main_abstract_from_html(fulltext_html)

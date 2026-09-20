@@ -829,6 +829,32 @@ iframe 就点它，找不到才走兜底。
 - ⚠️ APS 的 `fulltext_data` 是 dict 不是 str，所以主流程**不写 `page.html`**，
   目录里只有 `page_raw.html`
 
+### Cambridge (`10.1017`, cambridge.org)
+
+- ⚠️ **同一个 URL 会答出两份不同的文档，而请求里看不出区别**。实测
+  `10.1017/hpl.2019.36`，同样代码、同样 profile、相隔几分钟：
+  **813,314 字符（无 `<div class="body">`，0 张图，md 913 行）** 与
+  **2,259,335 字符（43 张图，md 1,683 行）**。逐项 diff 两次请求，只差 `referer`、
+  `cache-control` 和 session cookie —— **URL、方法、`Accept-Language` 全都一样**
+- ❌ **"切到 Français 才有正文"是个假线索**。那个切换按钮是
+  `<span role="button" lang="fr">`，点它会**对同一 URL 再发一次 GET**，拿到的
+  就是完整那份；实测四种 `Accept-Language`（en/fr/zh/不发）**全部返回完整正文**，
+  切法语再切回英文，`div.body` 始终在、正文文本始终是 235,190 字符。
+  所以真正起作用的是"**再要一次**"，不是语言
+- 📌 因此 `_refetch_if_shell()` 的做法是**对同一 URL 重新导航**（最多 2 次），
+  不模拟那个按钮 —— 不依赖它存在，也不依赖 Cambridge 前端的实现。拿到带
+  `<div class="body">` 的那份就替换 `_raw_server_html`，`page_raw.html` 随之
+  被覆盖成实际用于提取的那一份
+- ⚠️ 判据是 `<div class="body">`（完整页恰好 1 个），正是
+  `extract_article_text_from_html` 找不到它就返回空正文的那个容器。用词边界匹配，
+  `class="bodycopy"` 不算
+- 撞上壳时会把它存成 `page_shell.html`：响应头那时已经没了，但壳与完整页的 diff
+  仍然值得留着，否则它会被好的那份直接覆盖掉
+- 📌 有用户在 Windows 上报告英文视图**确定性地**看不到正文、切法语就有 ——
+  本机复现不出来（见上），怀疑是**所在节点缓存了那份壳**（法语那次点击带
+  `cache-control: max-age=0`，等于强制回源）。要坐实得看那个文档请求的
+  `cf-cache-status` / `age` / `x-cache` / `vary`
+
 ### IEEE (`10.1109`, ieeexplore.ieee.org)
 
 - 页面是 Angular 客户端渲染，**正文不在 DOM 里**。全部内容走 REST 接口，键是数字
