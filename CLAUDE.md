@@ -644,6 +644,16 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
 - ⚠️ **也不再有"退回渲染后 DOM"的最后手段**（Cambridge、Wiley 原本有，且是声明过的）。
   那份 DOM 上 MathJax 已经把公式换掉，产出**看着完整、公式全丢**；现在返回**空正文**
   并打印，理由同「宁可保留一个空正文的 md」
+- 📌 **主流程也不再读渲染后 DOM**。`navigate_with_capture` 原本每次导航后都
+  `page.content()` 一次（喂挑战检测、并在无头路径上落 `page.html`），两件都不需要它：
+  挑战页的标记就在**服务器发的那份**里（`_cf_chl_opt`、`Just a moment` 标题、
+  `challenge-platform` 路径，均实测于 `page_raw.html`），而 `page_raw.html` 就是归档。
+  挑战通过后的重载同理，直接取监听器新收到的那份文档
+- 📌 **全流程只剩一处 `content()`**：`_looks_like_article_page`，且**只在捕获里没有文章时**
+  才调用 —— 那时问页面正是唯一的办法
+- ⚠️ `fulltext_data == raw_server_html` 这个判断**不泄露**（纯字符串比较，两个值分别来自
+  handler 和捕获）。它现在只为**尚未改造的 8 家**存在；对已改造的 11 家恒真、永远走
+  "不另存"。**最后一家改完时，这个分支连同 `page.html` 一起删掉**
 - ⚠️ 旧目录里残留的 `page.html` / `source.html` 不会被自动清理 —— 看时间戳，别把上次运行的
   产物当成本次的
 - ⚠️ handler 大多把原始响应原样交回当 `fulltext_data`，于是两个名字装同样的字节 ——
