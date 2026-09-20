@@ -16,9 +16,10 @@ Math is the reason this handler asks for the page *source* rather than the
 rendered DOM. Wiley ships every formula as MathML with a
 ``<annotation encoding="application/x-tex">`` holding the original LaTeX --
 ``$$ \\boldsymbol{T}=\\left(\\begin{array}{lll}...\\end{array}\\right) $$`` --
-but MathJax replaces the lot once it runs. :func:`fetch_view_source_html`
+but MathJax replaces the lot once it runs. The raw response captured
+during page load carries them; :func:`fetch_view_source_html`
 (the same approach the Optica handler uses) gets the untouched markup, and
-the result is cached as ``source.html`` beside ``page.html``. Where an
+is only a rescue, and its result is cached as ``source.html``. Where an
 annotation is missing, the MathML itself is converted, so a formula is never
 dropped.
 
@@ -974,7 +975,13 @@ class WileyHandler(PublisherHandler):
         return self.extract_metadata_from_html(await self.get_page_html(page))
 
     def _save_source(self, html: str) -> None:
-        """Keep the un-rendered page beside the other captures."""
+        """Land a *re-fetched* page source as source.html.
+
+        Only the view-source rescue writes this. The routine path reads the
+        captured response, which the workflow already lands as page_raw.html,
+        so writing it again here produced two identical files under different
+        names.
+        """
         if not self.captured_data_dir or not html:
             return
         try:
@@ -1039,8 +1046,11 @@ class WileyHandler(PublisherHandler):
             # of that shape). So the fetch is now a rescue for when nothing
             # was captured, not a routine step on the article page.
             html = await self.get_page_html(page)
-            if html:
-                self._save_source(html)
+            # Not saved as source.html: it is the same capture the workflow
+            # already lands as page_raw.html, and a second copy under another
+            # name only makes the directory look like it holds two views of
+            # the page. source.html now means one thing -- "this run had to
+            # re-fetch the source itself".
             if not html:
                 try:
                     source = await fetch_view_source_html(page)
