@@ -77,6 +77,7 @@ from core.utilities import (
     read_body_with_timeout,
     pick_raw_article_html,
     should_block_mathjax,
+    content_with_timeout,
     url_looks_like_bot_challenge,
     url_wants_api_harvest,
     DP_HTTP_TOTAL_TIMEOUT,
@@ -563,11 +564,7 @@ async def navigate_with_capture(page, urls, *, capture: PageCapture,
             last_error = e
             print(f"  ⚠️  访问失败: {type(e).__name__}: {str(e)[:100]}")
 
-    rendered = ''
-    try:
-        rendered = await page.content()
-    except Exception:
-        pass
+    rendered = await content_with_timeout(page, what='导航后读取 DOM')
 
     if solve_challenge and last_error is None:
         rendered = await _clear_challenge_if_present(page, rendered, timeout_ms)
@@ -1550,10 +1547,14 @@ def original_image_filename(image_url: str, fig_num: int, default_ext: str = '.p
 # ============================================================================
 
 async def _looks_like_article_page(pw_page, url: str, doi: str) -> bool:
-    """True if *pw_page* actually holds the article, not a helper document."""
-    try:
-        html = await pw_page.content()
-    except Exception:
+    """True if *pw_page* actually holds the article, not a helper document.
+
+    ⚠️ The content() call is wrapped: a crashed renderer answers neither
+    success nor failure, and this function used to be where a run stopped
+    forever with its capture already complete on disk.
+    """
+    html = await content_with_timeout(pw_page, what='预载页面检查')
+    if not html:
         return False
     if not html or len(html) < 2000:
         return False
@@ -1570,6 +1571,49 @@ async def _looks_like_article_page(pw_page, url: str, doi: str) -> bool:
                 and len(html) > 20000)
     except Exception:
         return False
+
+
+def _pick_page_by_url(browser, candidate, url: str, doi: str):
+    """The open page whose URL looks like the article, preferring *candidate*.
+
+    Deliberately reads nothing but ``page.url``, which Playwright answers from
+    its own state: no round trip to the renderer, so it cannot hang on a tab
+    that has crashed. That is the difference from _pick_article_page, which
+    asks each page for its HTML and is only worth paying for when the capture
+    has no article to offer.
+    """
+    try:
+        from urllib.parse import urlparse
+        want_host = urlparse(url).netloc.lower()
+    except Exception:
+        want_host = ''
+    doi_l = (doi or '').lower()
+
+    def looks_right(pg) -> bool:
+        try:
+            pg_url = (pg.url or '').lower()
+        except Exception:
+            return False
+        if not pg_url or pg_url.startswith(('about:', 'chrome://')):
+            return False
+        if doi_l and doi_l in pg_url:
+            return True
+        try:
+            return bool(want_host) and urlparse(pg_url).netloc.lower() == want_host
+        except Exception:
+            return False
+
+    if candidate is not None and looks_right(candidate):
+        return candidate
+    for ctx in browser.contexts:
+        for pg in ctx.pages:
+            if pg is not candidate and looks_right(pg):
+                try:
+                    print(f"  ✓ 按 URL 选定页面: {pg.url[:90]}")
+                except Exception:
+                    pass
+                return pg
+    return candidate
 
 
 async def _pick_article_page(browser, candidate, url: str, doi: str):
@@ -4227,23 +4271,43 @@ async def complete_extraction_workflow(
                                 break
                         if _cf_page_obj:
                             break
-                # The preloaded target is not always the article. Publisher
-                # pages spawn out-of-process iframes (Wiley's ad "User-Sync"
-                # document is one) that Chrome exposes as separate CDP page
-                # targets, and picking one of those yields a 235-byte stub:
-                # extraction then finds no authors, no figures and no body,
-                # and an in-page fetch from it fails CORS. Verify the page
-                # actually holds the article before committing to it.
-                _cf_page_obj = await _pick_article_page(browser, _cf_page_obj,
-                                                        url, doi)
-                # When no open page holds the article, do not settle for the
-                # stub: leaving _cf_loaded False makes the flow fall through
-                # to an ordinary Playwright navigation, which works because
-                # the Cloudflare clearance is already in the profile.
-                if _cf_page_obj is not None and not await _looks_like_article_page(
-                        _cf_page_obj, url, doi):
-                    print("  ⚠️  预载页面不可用，改为 Playwright 直接导航")
-                    _cf_page_obj = None
+                # ⚠️ What is already in hand decides, not the live page.
+                #
+                # The capture holds the article's raw response and the
+                # endpoints the page fetched, and the workflow has already
+                # landed page_raw.html. Everything the extraction reads comes
+                # from there. Asking the live page to prove itself first --
+                # which meant page.content() on it -- is both a step on the
+                # article page we said we would stop taking, and a way to
+                # throw away a complete capture because the tab happened to
+                # die: measured on ScienceDirect 10.1016/j.jcpx.2019.100006,
+                # where the preload captured 10 API responses and a
+                # 170,587-character document and the tab then crashed with
+                # "Error code: 9".
+                #
+                # So: pick the likeliest page by URL (Playwright's own state,
+                # which cannot hang), and if the capture has the article,
+                # commit. The page object is still wanted -- page.url pins
+                # _landing_url, and handlers that open a table or a chapter
+                # navigate with it -- but it no longer has to be interrogated.
+                _cf_page_obj = _pick_page_by_url(browser, _cf_page_obj, url, doi)
+                if _capture.raw_html():
+                    print("  ✓ 捕获里已有文章原始响应，离线继续（不校验实时页面）")
+                    _cf_loaded = True
+                else:
+                    # No article in the capture: now the live page is the only
+                    # thing that could supply one, so it is worth the check.
+                    # The preloaded target is not always the article -- a
+                    # publisher's out-of-process ad iframe (Wiley's "User-Sync"
+                    # document) is exposed as its own CDP page target and
+                    # yields a 235-byte stub.
+                    _cf_page_obj = await _pick_article_page(browser, _cf_page_obj,
+                                                            url, doi)
+                    if _cf_page_obj is not None and not await _looks_like_article_page(
+                            _cf_page_obj, url, doi):
+                        print("  ⚠️  预载页面不可用，且捕获里没有文章 —— 改为 Playwright 直接导航")
+                        _cf_page_obj = None
+
                 if _cf_page_obj is not None:
                     print(f"  ✓ 找到预载页面，直接复用")
                     # Nothing to close: the page is created below only when

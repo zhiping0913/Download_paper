@@ -508,6 +508,19 @@ Playwright 里这几个调用**都不接受 `timeout=`**，也不受 `set_defaul
 而它们恰好在最热的路径上：每一张图、每一次页面内 API 取数、每一个补充材料、
 每一个 PDF。防线在 `core/utilities.py`（publisher 也要用，依赖方向单向）。
 
+⚠️ **`page.content()` 是第五个**，一样没有 `timeout=`。渲染进程崩溃时（Chrome 显示
+"Something went wrong while displaying this page. **Error code: 9**"）它既不成功也不失败，
+就一直等。实测 ScienceDirect `10.1016/j.jcpx.2019.100006`：预载已经捕到 10 条 API
+响应、`page_raw.html` 也已落盘，随后标签页崩溃，整次运行**停在
+`🛡️ 复用预载页面…` 再也不动** —— 需要的东西全在磁盘上。用 `content_with_timeout()`
+（超时返回 `''`，不抛异常，因为所有调用点本来就把空 HTML 当"这页不行"）。
+
+📌 **但真正的修法不是加超时，是别去问那个页面**。原来的流程是"先让实时页面自证
+（`page.content()`），失败了才回头看捕获" —— 顺序反了：捕获是**已经在手、已经落盘**的。
+现在是：`_pick_page_by_url()` 只读 `page.url`（Playwright 自己的状态，不往渲染进程发请求，
+**不可能卡**）选出页面，**捕获里有文章就直接离线继续**，只有捕获拿不出文章时才值得去问
+实时页面。常规路径上主流程对正文页**一次 `content()` 都不调**。
+
 ⚠️ 其中 `download.path()` **本仓已不再使用**，`download_path_with_timeout()` 也随之
 删除 —— 不是因为它会卡（那一层早就包住了），而是因为它交出的路径指向随页面消失的
 临时产物，见下面那条。要落盘就用 `save_as()`，别把 `path()` 请回来。
