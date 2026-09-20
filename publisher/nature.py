@@ -156,6 +156,99 @@ class NatureHandler(PublisherHandler):
     # than it did there -- the dict it filled was read by nothing, and step 7
     # of extract_all only printed that the capture had saved the HTML. The
     # workflow's capture holds the article response on _raw_server_html.
+
+    # ------------------------------------------------------------------
+    # Reading the page without scripting it
+    # ------------------------------------------------------------------
+    # Everything below used to run as page.evaluate() against the live DOM.
+    # All four read things the server already sent -- <meta> tags, the
+    # ld+json block, the supplementary section's links -- so the captured
+    # response answers them, and the article page is left with navigation
+    # and the passive listener.
+
+    @staticmethod
+    def _meta_map(html: str) -> dict:
+        """``{name: content}`` for every meta tag that has both.
+
+        Later duplicates overwrite earlier ones, which is what the JS did
+        (``data[name] = content`` in a forEach) -- Nature emits one
+        ``citation_author`` per author, so this keeps the last of them.
+        Changing that here would quietly change the output.
+        """
+        data = {}
+        if not html:
+            return data
+        for meta in BeautifulSoup(html, 'html.parser').find_all('meta'):
+            name = (meta.get('name') or meta.get('property') or '').strip()
+            content = (meta.get('content') or '').strip()
+            if name and content:
+                data[name] = content
+        return data
+
+    @staticmethod
+    def _json_ld_entity(html: str):
+        """The first ld+json entity carrying a description or an image."""
+        if not html:
+            return None
+        for script in BeautifulSoup(html, 'html.parser').find_all(
+                'script', attrs={'type': 'application/ld+json'}):
+            try:
+                data = json.loads(script.string or script.get_text() or '')
+            except Exception:
+                continue
+            entity = data.get('mainEntity') if isinstance(data, dict) else None
+            entity = entity or data
+            if isinstance(entity, dict) and (entity.get('description')
+                                             or entity.get('image')):
+                return entity
+        return None
+
+    @staticmethod
+    def _supplemental_candidates(html: str) -> list:
+        """``[{href, label, section_title}]`` -- the links the JS collected."""
+        if not html:
+            return []
+        soup = BeautifulSoup(html, 'html.parser')
+        keywords = ('supplementary', 'supporting', 'supplemental', 'extended')
+        links = []
+
+        for section in soup.find_all('section', attrs={'data-title': True}):
+            title = (section.get('data-title') or '')
+            if not any(k in title.lower() for k in keywords):
+                continue
+            for link in section.find_all('a', href=True):
+                links.append({
+                    'href': link.get('href') or '',
+                    'label': re.sub(r'\s+', ' ',
+                                    link.get_text(' ', strip=True)).strip(),
+                    'section_title': title,
+                })
+
+        selectors = ('a[data-test="supp-info-link"], '
+                     'a[href*="static-content.springer.com/esm"], '
+                     'a[href*="/esm/"], a[href*="MOESM"]')
+        for link in soup.select(selectors):
+            href = link.get('href') or ''
+            label = re.sub(r'\s+', ' ',
+                           link.get_text(' ', strip=True)).strip()
+            if any(l['href'] == href and l['label'] == label for l in links):
+                continue
+            links.append({'href': href, 'label': label,
+                          'section_title': 'Direct link'})
+        return links
+
+    @staticmethod
+    def _citation_references(html: str) -> list:
+        """The ``citation_reference`` meta contents, in document order."""
+        if not html:
+            return []
+        return [
+            (meta.get('content') or '').strip()
+            for meta in BeautifulSoup(html, 'html.parser').find_all(
+                'meta', attrs={'name': 'citation_reference'})
+            if (meta.get('content') or '').strip()
+        ]
+
     async def extract_metadata(self, page) -> dict:
         """Extract metadata from Nature article page
 
@@ -186,18 +279,10 @@ class NatureHandler(PublisherHandler):
 
         print("  🔍 Extracting metadata from Nature article...")
 
-        # Extract all meta tags
-        meta_data = await page.evaluate("""() => {
-            const data = {};
-            document.querySelectorAll('meta').forEach(meta => {
-                const name = meta.getAttribute('name') || meta.getAttribute('property') || '';
-                const content = meta.getAttribute('content') || '';
-                if (name && content) {
-                    data[name] = content;
-                }
-            });
-            return data;
-        }""")
+        # The captured server response, read once and reused below -- meta
+        # tags, ld+json and the abstract all come out of the same string.
+        html_content = await self.get_page_html(page)
+        meta_data = self._meta_map(html_content)
 
         # Map meta tags to metadata fields
         metadata['title'] = meta_data.get('citation_title') or meta_data.get('dc.title')
@@ -221,23 +306,10 @@ class NatureHandler(PublisherHandler):
         print(f"  ✅ Journal: {metadata['journal']}")
         print(f"  ✅ DOI: {metadata['doi']}")
 
-        # Extract JSON-LD for non-abstract metadata such as image URLs.
-        json_ld_data = await page.evaluate("""() => {
-            const scripts = document.querySelectorAll('script[type="application/ld+json"]');
-            for (let script of scripts) {
-                try {
-                    const data = JSON.parse(script.textContent);
-                    const entity = data.mainEntity || data;
-                    if (entity && (entity.description || entity.image)) {
-                        return entity;
-                    }
-                } catch (e) {}
-            }
-            return null;
-        }""")
+        # JSON-LD, for non-abstract metadata such as image URLs.
+        json_ld_data = self._json_ld_entity(html_content)
 
         try:
-            html_content = await self.get_page_html(page)
             metadata['abstract'] = self.extract_abstract_from_html_content(html_content)
         except Exception as e:
             print(f"  ⚠️  Abstract HTML extraction failed: {str(e)[:80]}")
@@ -395,44 +467,8 @@ class NatureHandler(PublisherHandler):
 
         actual_base_url = self.actual_base_url
 
-        candidates = await page.evaluate("""() => {
-            const links = [];
-            const keywords = ['supplementary', 'supporting', 'supplemental', 'extended'];
-
-            // Strategy 1: Find sections with matching title keywords
-            const sections = document.querySelectorAll('section[data-title]');
-            sections.forEach(section => {
-                const title = (section.getAttribute('data-title') || '').toLowerCase();
-                const isSupplementary = keywords.some(keyword => title.includes(keyword));
-                if (isSupplementary) {
-                    section.querySelectorAll('a[href]').forEach(link => {
-                        const href = link.getAttribute('href') || '';
-                        const label = (link.textContent || '').replace(/\\s+/g, ' ').trim();
-                        links.push({href, label, section_title: section.getAttribute('data-title')});
-                    });
-                }
-            });
-
-            // Strategy 2: Direct selectors (fallback)
-            const selectors = [
-                'a[data-test="supp-info-link"]',
-                'a[href*="static-content.springer.com/esm"]',
-                'a[href*="/esm/"]',
-                'a[href*="MOESM"]'
-            ];
-
-            document.querySelectorAll(selectors.join(',')).forEach(link => {
-                const href = link.getAttribute('href') || '';
-                const label = (link.textContent || '').replace(/\\s+/g, ' ').trim();
-                // Check if not already added via section search
-                const isDuplicate = links.some(l => l.href === href && l.label === label);
-                if (!isDuplicate) {
-                    links.push({href, label, section_title: 'Direct link'});
-                }
-            });
-
-            return links;
-        }""")
+        candidates = self._supplemental_candidates(
+            await self.get_page_html(page))
 
         supplemental_urls = []
         supplemental_descriptions = {}
@@ -504,11 +540,7 @@ class NatureHandler(PublisherHandler):
         """
         print("  🔍 Extracting references...")
 
-        raw_refs = await page.evaluate("""() => {
-            return Array.from(document.querySelectorAll('meta[name="citation_reference"]'))
-                .map(meta => meta.getAttribute('content') || '')
-                .filter(content => content.trim().length > 0);
-        }""")
+        raw_refs = self._citation_references(await self.get_page_html(page))
 
         bibtex_refs = [
             self.format_citation_reference(ref)

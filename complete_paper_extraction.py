@@ -483,12 +483,15 @@ class PageCapture:
         else:
             print(f"  ⚠️  {where}未捕到文档响应")
 
-    def land(self, captured_data_dir, rendered_html: str = '') -> str:
-        """Write page_raw.html (and page.html when a rendered DOM is given).
+    def land(self, captured_data_dir) -> str:
+        """Write page_raw.html -- the response the server sent.
 
         Landing happens here, as soon as the bytes exist, rather than after
         extract_all: waiting meant page_raw.html appeared only once the whole
         extraction had run, and not at all if anything in between raised.
+
+        ⚠️ There is no second file. This used to take a rendered DOM and
+        write it as page.html; both callers had already stopped passing one.
         """
         raw = self.raw_html()
         if not captured_data_dir:
@@ -497,8 +500,6 @@ class PageCapture:
             captured_data_dir.mkdir(parents=True, exist_ok=True)
             if raw:
                 save_html_snapshot(captured_data_dir / "page_raw.html", raw, "原始HTML")
-            if rendered_html:
-                save_html_snapshot(captured_data_dir / "page.html", rendered_html, "HTML")
         except Exception as e:
             print(f"  ⚠️  HTML 落盘失败: {e}")
         return raw
@@ -633,9 +634,8 @@ def save_html_snapshot(path, content: str, label: str = "HTML") -> bool:
     """Write *content* to *path*, unless the file already holds exactly that.
 
     Several places land the same snapshot: the preload writes page_raw.html as
-    soon as it has the body, the headless precheck writes page.html and
-    page_raw.html, and process_with_handler writes both again once extraction
-    finishes. The later write is not simply redundant -- the response listener
+    soon as it has the body, the headless precheck writes it too, and
+    process_with_handler writes it again once extraction finishes. The later write is not simply redundant -- the response listener
     keeps appending during the handler's own navigations, so the final pick can
     legitimately differ -- but when it does not, rewriting identical bytes only
     produces a second "已保存" line that reads like two different snapshots.
@@ -3389,38 +3389,24 @@ async def complete_extraction_workflow(
         if landing_url:
             metadata['_landing_url'] = landing_url
 
-        # Save HTML to the per-DOI capture directory.
-        # page_raw.html = raw server HTTP response (pre-JS, captured by interceptor)
-        # page.html     = post-JS rendered DOM, and ONLY when it differs
-        #
-        # ⚠️ Two names promise two views of the page. Now that the handlers
-        # read the raw response, most of them hand it straight back as
-        # fulltext_data, and the directory ended up with the same bytes twice:
-        # measured across the archive, 30 of 57 papers had page.html
-        # byte-identical to page_raw.html. Landing it once keeps the names
-        # honest -- page.html present means there really is a second view.
+        # Save HTML to the per-DOI capture directory: page_raw.html, the
+        # raw server HTTP response, and nothing else. See below for why
+        # there is no longer a second file.
         raw_server_html = getattr(handler, '_raw_server_html', None) or ''
         if raw_server_html:
             save_html_snapshot(captured_data_dir / "page_raw.html",
                                raw_server_html, "原始HTML")
 
-        # ⚠️ Still needed, but only for the publishers not converted yet.
-        # A converted handler returns the raw response as fulltext_data, so
-        # the two are equal and page.html is never written -- the check is a
-        # no-op that always fires. The eight still reading the rendered DOM
-        # (acm, mdpi, oup, oup_book, opticsjournal, researching, science,
-        # springer_book) are why it is here; when the last of them is
-        # converted, this whole branch can go with it.
-        #
-        # The comparison itself touches nothing: fulltext_data arrives from
-        # the handler and raw_server_html from the capture, so it cannot
-        # leak anything back to the page.
-        if isinstance(fulltext_data, str) and fulltext_data:
-            if fulltext_data == raw_server_html:
-                print("  ↪ handler 交回的就是原始响应，不另存 page.html")
-            else:
-                save_html_snapshot(captured_data_dir / "page.html",
-                                   fulltext_data, "HTML")
+        # ⚠️ No page.html any more. It was "the rendered DOM, when it
+        # differs from the raw response" -- and now that every handler reads
+        # the capture, nothing produces a differing *and* new view:
+        #   * most hand the raw response straight back, so it was a no-op;
+        #   * IEEE hands back the REST body -- measured byte-identical to the
+        #     rest.html it already lands;
+        #   * SPIE hands back the fulltext HTML -- the same 62 lines as the
+        #     fullTextHtml inside the fulltexthtml.json it already lands.
+        # So the only thing left to write was a second copy of a file already
+        # in the directory under a name that promised a second *view*.
 
         # Merge with Crossref data (fill in missing fields)
         if crossref_data:
@@ -3956,8 +3942,7 @@ async def complete_extraction_workflow(
                         raise last_precheck_error
 
                     # 保存无头浏览器访问结果
-                    # page_raw.html = 原始HTTP响应（JS运行前）
-                    # page.html     = 渲染后DOM，且只在与原始响应不同时才写
+                    # page_raw.html = 原始HTTP响应（JS运行前）；不再写 page.html
                     #
                     # ⚠️ headless_initial.html 不再写：它存的是
                     # `raw or rendered`，也就是这两个之中的一个 —— 实测存档

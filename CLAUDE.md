@@ -673,9 +673,22 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
   第一版把预留写成 96 而最坏尾部是 100 —— **差 4 个字符，等于把要修的 bug 放回去**，
   是逐项相加才发现的，不是看出来的
 
-### 一份 HTML 只落一次
+### 一份 HTML 只落一次（`page.html` 已删除）
 
-- `page_raw.html` = 原始 HTTP 响应；`page.html` = 渲染后 DOM，**只在与原始响应不同时才写**
+- 产出目录里正文页只有 **`page_raw.html`** —— 服务器发的那份。**不再写 `page.html`**
+- ❌ 它原本是"渲染后 DOM，且只在与原始响应不同时才写"。全部 handler 转完后，
+  **没有任何东西能产出既不同、又是新视图的那份**，实测：
+
+  | handler | 会写进 page.html 的是 | 实测 |
+  |---|---|---|
+  | 其余 17 家 | 与原始响应相同 | 分支恒为 no-op |
+  | IEEE | REST body | 与它已落盘的 `rest.html` **逐字节相同**（68,270 B）|
+  | SPIE | fulltext HTML | 与 `fulltexthtml.json` 里的 `fullTextHtml` **62 行逐行相同** |
+
+  也就是说它只是把目录里已有的文件再抄一份，名字却承诺"第二个视图"
+- 同时删掉的还有 `PageCapture.land()` 的 `rendered_html` 参数 —— 两个调用者早就不传了
+- ⚠️ 旧目录里残留的 `page.html` / `source.html` 不会被自动清理（实测存档里有 74 个），
+  看时间戳，别把上次运行的产物当成本次的
 - 📌 **已改造的 handler 不再专门取一份渲染后 DOM 来归档**。ScienceDirect 和 Optica 原本
   为此调一次 `page.content()`，产出的 `page.html` 与 `page_raw.html` 字节相同、而且没人读。
   现在 `fulltext_data` 直接交回原始响应，`page.html` 自然不再出现
@@ -755,6 +768,11 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
 被中止的子资源请求在页面里看得见。读原始响应的 handler 不需要它——它们的公式源从来
 就没进过 DOM。目标是逐步摘干净，而不是全局开关一刀切。
 
+- 📌 **它还不能整个删掉，现在守的是"我们不认识的页面"**。决策点在**导航之前**，
+  那时只有 DOI。实测 19 个前缀：16 家已转的都能从 DOI 认出来 → 不拦；
+  **`10.1007`（Springer）、`10.1515`（De Gruyter）以及任何未知出版商答 `unknown` → 照旧拦**。
+  未知页面长什么样我们不知道，拦掉 MathJax 是唯一能保住 LaTeX 源的办法，
+  代价不对称（见下）。所以**保留**
 - 判据只有一处：`core/utilities.RAW_HTML_PUBLISHERS` + `should_block_mathjax(publisher)`。
   **未知/空一律照旧拦截** —— 错误的跳过会静默丢掉 LaTeX 源，错误的拦截只多一次被中止的
   请求，两种代价不对称
@@ -820,6 +838,20 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
   静默劣化比失败更难查
 - 📌 **预载阶段现在自己捕获响应，所以这条回落基本不再触发**。见下面「预载期间的
   响应捕获」。它仍然留着，作为捕获落空时的保险
+
+### Nature：元数据也改读捕获了
+
+`extract_all` 的正文/表格上一轮就改完了，但 `extract_metadata` 等四处
+`page.evaluate` 当时漏了 —— 它们读的是 meta 标签、`ld+json`、补充材料链接、
+`citation_reference`，**全都在服务器发的那份里**。现在走
+`_meta_map` / `_json_ld_entity` / `_supplemental_candidates` / `_citation_references`，
+正文页上一处 `evaluate` 都没有了。
+
+- ⚠️ **复刻语义时别顺手"修正"**：JS 里是 `data[name] = content`，后面的**覆盖**前面的，
+  而 Nature 每个作者发一个 `citation_author` —— 所以源码注释写的"第一个作者"
+  实际取的是**最后一个**。改成"第一个"会让产出悄悄变
+- ✅ 实测 `10.1038/s41566-023-01311-z` 端到端重跑，`paper.md` 与归档**逐字节相同**；
+  四篇归档离线验证 metas 65/71/71、refs 45/23/49、supp 11/0/1
 
 ### 有头 / 无头必须行为一致
 
