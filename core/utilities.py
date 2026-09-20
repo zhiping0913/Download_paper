@@ -133,6 +133,31 @@ async def download_save_as_with_timeout(download, dest, *, timeout_s: float,
         return False
 
 
+async def content_with_timeout(page, *, timeout_s: float = 20.0,
+                               what: str = 'page.content()') -> str:
+    """``page.content()`` that cannot hang. Returns '' instead of blocking.
+
+    ⚠️ Another Playwright call with no ``timeout=`` of its own, and one that
+    was missing from this module's list. It does not fail when the renderer
+    dies -- it waits for a process that is never going to answer. Measured on
+    ScienceDirect 10.1016/j.jcpx.2019.100006: the preload finished, landed
+    page_raw.html and captured 10 API responses, then the tab crashed
+    ("Something went wrong while displaying this page. Error code: 9") and the
+    run stopped forever at the next content() call, with everything it needed
+    already on disk.
+
+    Returns '' rather than raising, because every caller here already treats
+    empty HTML as "this page is no good" and moves on.
+    """
+    try:
+        return await asyncio.wait_for(page.content(), timeout=float(timeout_s))
+    except asyncio.TimeoutError:
+        print(f"    ⏱️  {what} 超过 {timeout_s:g}s 未返回（渲染进程可能已崩溃），放弃该页面")
+        return ''
+    except Exception:
+        return ''
+
+
 async def evaluate_with_timeout(page, expression, arg=None, *,
                                 timeout_s: float = None, what: str = 'in-page fetch'):
     """``page.evaluate`` that cannot hang. Raises on timeout.
