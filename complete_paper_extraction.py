@@ -645,7 +645,9 @@ def save_html_snapshot(path, content: str, label: str = "HTML") -> bool:
     payload = content.encode('utf-8')
     try:
         if path.exists() and path.read_bytes() == payload:
-            print(f"  ↪ {label} 未变，跳过重写: {path.name} ({len(content):,} 字符)")
+            # Silent: the bytes are already on disk and the line that landed
+            # them has already been printed. Saying so again reads like a
+            # second, different snapshot was considered.
             return False
     except Exception:
         pass
@@ -4396,7 +4398,13 @@ async def complete_extraction_workflow(
                         print(f"  ⚠️  纯CDP挑战未通过，仍将尝试Playwright路径")
                 except Exception as _e:
                     print(f"  ⚠️  纯CDP挑战模块异常: {_e}")
-            else:
+            elif not _CF_BYPASS_AVAILABLE:
+                # ⚠️ Only when the module really is missing. This branch used
+                # to be a bare else, so the ordinary *successful* case -- the
+                # preload already loaded the page, _cf_loaded is True, the
+                # Fallback is simply not needed -- printed "模块不可用" on
+                # every single run. The message named the one cause that was
+                # almost never the actual one.
                 print("  ℹ️  chrome_session 模块不可用，跳过纯CDP预检查")
 
             # Neither CDP path produced a usable page, so make one now and let
