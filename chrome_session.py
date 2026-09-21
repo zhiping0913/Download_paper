@@ -89,6 +89,7 @@ from core.utilities import (
     DEFAULT_API_HARVEST,
     api_harvest_patterns,
     env_seconds,
+    looks_like_html_bytes,
     url_looks_like_bot_challenge,
 )
 
@@ -1782,6 +1783,46 @@ async def bypass_cloudflare_cdp(
                     print(f"  ⚠️  下载目录初始化异常: {_e}")
 
             while True:
+                # ── 文件目标：捕获里已经出现目标 URL 的非网页响应就收工 ──
+                #
+                # ⚠️ 只在 pdf_mode 下成立。正文页的目标**就是** HTML，
+                # "收到 HTML 响应"既可能是文章也可能是挑战页，拿它当成功
+                # 会让预载在挑战页刚到达时就宣布通过 —— 正文页的判据
+                # （DOI 出现、body 稳定、标题非挑战）一个字节都不动。
+                #
+                # 而文件目标反过来：PDF / 图片不可能是 HTML，所以一条
+                # 「目标 URL、200、类型不是网页」的响应事件就是文件到手了。
+                # 省掉的是一整轮空等 —— 图片的 body 恒为 0，下面那套判据
+                # 永远不可能通过，每张图都要白付满 DP_CLOUDFLARE_TIMEOUT。
+                #
+                # 只读事件里已有的 mimeType，不额外发 getResponseBody：真正
+                # 的把关在 _save_captured_body 落盘前按**字节**做
+                # （looks_like_html_bytes），这里早退最坏只是早一点进入同
+                # 一个校验。
+                if pdf_mode:
+                    for _e in (result.get("responses") or {}).values():
+                        if (_e.get("url") or '') != url:
+                            continue
+                        if _e.get("status") not in (200, 206):
+                            continue
+                        _m = (_e.get("mimeType") or '').lower()
+                        if _m and not _m.startswith(
+                                ('text/html', 'application/xhtml', 'text/xml',
+                                 'application/xml')):
+                            print(f"  ✓ 捕获到目标文件响应（{_m}），"
+                                  f"无需继续等待挑战")
+                            result["success"] = True
+                            result["target_id"] = _current_ws_url.rstrip(
+                                "/").split("/")[-1]
+                            result["ws_url"] = _current_ws_url
+                            break
+                    if result.get("success"):
+                        # Return rather than break: falling out of the loop
+                        # lands in the timeout branch, which would print
+                        # "挑战未在 Ns 内通过" over a success.
+                        await _harvest_document_bodies(ws, result["responses"])
+                        return result
+
                 if asyncio.get_event_loop().time() >= deadline:
                     # Still on a challenge and never got a chance to act on it?
                     # Give it one more window instead of handing the whole load
@@ -2834,17 +2875,14 @@ def _save_captured_body(result: dict, url: str, download_dir: str) -> str:
         # would report success and leave a .pdf that is really a web page --
         # measured: an Optics Journal PDF came back as 15,999 bytes of
         # "Verification" interstitial and this function happily stored it.
-        # Judge the bytes, not the status: this rung only ever fetches
-        # binaries, so HTML here means we did not get the file.
-        mime = (entry.get('mimeType') or '').lower()
-        if mime.startswith(('text/html', 'application/xhtml')):
-            continue
+        # The declared type is not enough either; the check on the bytes
+        # below is the one that decides.
         raw = entry.get('body_bytes')
         if raw is None and isinstance(entry.get('body'), str):
             # A textual document (SVG, say) never went through base64.
             raw = entry['body'].encode('utf-8', 'replace')
-        if raw and raw.lstrip()[:1] in (b'<',):
-            continue          # HTML/XML without a matching mimeType
+        if raw and looks_like_html_bytes(raw):
+            continue          # a page, not the file we came for
         if raw and len(raw) > len(best):
             best = raw
     if not best:
