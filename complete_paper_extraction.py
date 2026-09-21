@@ -2483,7 +2483,13 @@ async def download_supplemental_materials(
                 # article session's cookies. Most publishers serve supplements
                 # from a CDN that needs nothing more than a browser-like
                 # User-Agent and the article as Referer.
-                supp_ladder = _fetch_ladder('supplement')
+                #
+                # ⚠️ The default has to name 'request' explicitly. It used to
+                # be the bare ('tab', 'fresh'), so this branch -- and the
+                # project's stated rule that supplements go over plain HTTP
+                # first -- never ran unless someone set DP_FETCH_SUPPLEMENT.
+                supp_ladder = _fetch_ladder('supplement',
+                                            default=('request', 'tab', 'fresh'))
                 if 'request' in supp_ladder:
                     supp_cookies = await _cookies_for_requests(
                         url, context=context, page=page)
