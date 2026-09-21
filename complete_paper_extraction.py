@@ -566,7 +566,23 @@ async def navigate_with_capture(page, urls, *, capture: PageCapture,
     # moment" title, the challenge-platform script path, all measured in
     # page_raw.html), and page_raw.html is the archive. So the flow now holds
     # no rendered copy of the article page at all.
-    latest = capture.documents[-1] if capture.documents else ''
+    # ⚠️ Not documents[-1]. The listener records *every* ok HTML document:
+    # the doi.org hop, a challenge page, and every iframe document the
+    # article pulls in (an AIP article page has ten). Taking the last one
+    # hands the caller whichever of those finished last -- and the caller
+    # feeds it to is_bot_challenge_page, so a consent or ad iframe carrying
+    # the word "perfdrive" makes a perfectly good article look like an
+    # interstitial. Measured on AIP 10.1063/5.0326077: the served article
+    # (416,589 chars) contains none of the markers and the URL check passes,
+    # yet the precheck reported "检测到反爬虫拦截页面" and fell back to a
+    # headed browser on every AIP paper.
+    #
+    # pick_raw_article_html is the same chooser page_raw.html uses, so the
+    # HTML the caller judges is the one that gets archived. The [-1] fallback
+    # stays for the case where nothing looks like an article -- a real
+    # challenge, where the caller *should* see the interstitial.
+    latest = capture.raw_html() or (capture.documents[-1]
+                                    if capture.documents else '')
 
     if solve_challenge and last_error is None:
         latest = await _clear_challenge_if_present(page, latest, timeout_ms,
