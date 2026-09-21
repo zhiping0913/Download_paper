@@ -2717,7 +2717,7 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
                                    headless: bool = False,
                                    want_html: bool = False,
                                    referer_url: str = '',
-                                   fast_path_wait_s: float = 3.0
+                                   fast_path_wait_s: float = 0.0
                                    ) -> FreshChromeSession:
     """Launch a clean Chrome, open *url* in it, and hand back the session.
 
@@ -2728,17 +2728,35 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
 
     On launch failure the session comes back with an empty ``result``; the
     caller should fall back to its normal path rather than assume success.
+
+    ``fast_path_wait_s`` is accepted and ignored -- it timed the startup
+    navigation that no longer happens. Kept so callers (and
+    ``DP_PDF_FASTPATH_WAIT``) do not have to change in the same commit.
     """
     session = FreshChromeSession(port=port, download_dir=download_dir,
                                  headless=headless)
-    # Launch straight at the URL: Chrome's own startup navigation fetches the
-    # page, so nothing automated participates in the load. Attaching happens
-    # afterwards, only to watch the challenge and click it through.
+    # Launch on a blank page and navigate only after CDP is attached and
+    # Network.enable has been sent.
+    #
+    # ❌ This reverses the original design, which launched Chrome straight at
+    # the URL so that "nothing automated participates in the load". That
+    # property is real but worthless here: measured across this session's
+    # logs, the startup navigation landed on validate.perfdrive.com 12 times,
+    # and on EPL 10.1209/0295-5075/122/14004 all four throwaway-Chrome
+    # attempts were blocked while the *Playwright-driven* shared browser got
+    # the PDF with no challenge at all. What the bot manager scores is
+    # session continuity, not whether a debugger is attached.
+    #
+    # What launching blank buys is the capture. Attaching after the load
+    # means the response events for the thing we came for can fire before
+    # Network.enable, and then result["responses"] has nothing -- which is
+    # exactly what the inline-image path depends on (an image is displayed,
+    # never downloaded, so its bytes can only come from the capture).
     #
     # With referer_url the browser starts on the referring page instead, and
     # reaches the target by a click from there -- see
     # _download_via_referer_click for why that changes what the server sees.
-    if not await session.start(start_url=referer_url or url):
+    if not await session.start(start_url=referer_url or 'about:blank'):
         await session.close()
         return session
 
@@ -2747,67 +2765,16 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
             session, referer_url, url, download_dir, timeout_s)
         return session
 
-    # Fast path: a PDF that is served without a challenge is already on disk
-    # moments after startup. Returning here means no CDP command ever ran
-    # against the page at all.
-    #
-    # This has to come first for correctness: the download starts before we
-    # could attach, so the challenge watcher would take its "baseline" of the
-    # directory *after* the file landed, see nothing new, and report failure
-    # for a download that had already succeeded.
-    #
-    # The window no longer has to be short. It races the finished download
-    # against a real page target appearing, and a publisher that challenges the
-    # PDF produces that page within a second or so, which ends the wait -- the
-    # Turnstile box is looked for just as promptly as before. Only the
-    # unchallenged case spends the full budget, and there spending it is the
-    # entire point: the file lands and no CDP command ever touches the tab.
-    #
-    # Three seconds was too little for that to happen. A ~1 MB PDF does not
-    # finish in the window, so IOP fell through to the CDP path every time and
-    # met a Radware captcha there -- on a link that downloads perfectly well
-    # when left alone.
-    if pdf_mode and download_dir:
-        kind, value = await _await_download_or_tab(
-            download_dir, session.port,
-            timeout_s=min(fast_path_wait_s, timeout_s))
-        if kind == 'file':
-            print(f"  ✓ 文件已下载（未经 CDP 交互）: {value}")
-            session.result = {'success': True, 'downloaded_file': value,
-                              'target_id': None, 'ws_url': None}
-            return session
-        if kind == 'page':
-            # A real page instead of a download: a challenge, a paywall, or a
-            # viewer. Stop waiting -- the rest of the budget would be spent on
-            # a file that is never coming. The URL is printed because what the
-            # startup navigation actually turns into on a PDF link has never
-            # been observed directly; this is the log line that will say.
-            print(f"  ↪ 启动导航停在页面而非下载: {value[:90]}")
-
-            # ⚠️ An interstitial ends this rung. Going on to the CDP flow
-            # cannot help and actively hurts: that flow finds the startup tab
-            # by matching HOST against the target's, the interstitial's host is
-            # not the target's, so the match fails ("未找到启动时打开的 tab")
-            # and it falls through to opening a NEW tab straight at the target
-            # -- a second, Referer-less request from a browser the bot manager
-            # has just flagged. Measured on IOP: three consecutive attempts
-            # each paid a Chrome launch plus a 20 s captcha wait here, and not
-            # one of them could have succeeded.
-            #
-            # Returning with session.result left empty is the documented
-            # "this rung produced nothing" shape; the caller's finally closes
-            # the browser, so nothing leaks by not closing it here.
-            if url_looks_like_bot_challenge(value):
-                print("  ⛔ 落在拦截器页面 —— 放弃本层"
-                      "（继续只会从已被标记的浏览器再发一次无 Referer 的请求）")
-                return session
-
-            print("  ↪ 转 CDP 流程")
+    # ❌ The "fast path" that used to sit here is gone with the startup
+    # navigation it watched: launching blank fetches nothing, so there is no
+    # download that could beat the attach, and no startup tab to inspect for
+    # an interstitial. Both jobs now belong to the navigation below, which
+    # owns the tab from before the first byte.
 
     try:
         await session.open_url(url, expected_doi=expected_doi,
                                pdf_mode=pdf_mode, timeout_s=timeout_s,
-                               already_open=True)
+                               already_open=False)
     except Exception as exc:
         print(f"  ⚠️  独立 Chrome 打开页面失败: {type(exc).__name__}: {exc}")
 
@@ -2863,10 +2830,21 @@ def _save_captured_body(result: dict, url: str, download_dir: str) -> str:
             continue
         if entry.get('status') not in (200, 206):
             continue
+        # ⚠️ A challenge page answers 200 at the file's own URL. Saving it
+        # would report success and leave a .pdf that is really a web page --
+        # measured: an Optics Journal PDF came back as 15,999 bytes of
+        # "Verification" interstitial and this function happily stored it.
+        # Judge the bytes, not the status: this rung only ever fetches
+        # binaries, so HTML here means we did not get the file.
+        mime = (entry.get('mimeType') or '').lower()
+        if mime.startswith(('text/html', 'application/xhtml')):
+            continue
         raw = entry.get('body_bytes')
         if raw is None and isinstance(entry.get('body'), str):
             # A textual document (SVG, say) never went through base64.
             raw = entry['body'].encode('utf-8', 'replace')
+        if raw and raw.lstrip()[:1] in (b'<',):
+            continue          # HTML/XML without a matching mimeType
         if raw and len(raw) > len(best):
             best = raw
     if not best:
