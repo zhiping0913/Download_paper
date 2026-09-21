@@ -759,6 +759,29 @@ Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
   是个要查的信号）；Cambridge 的 `page_shell.html` / `page_fr.html` 是重取阶梯的证据；
   IOP / APS 写的是**补充材料页**
 
+### 预载的 DOI 判定看捕获，不看页面
+
+- ❌ 旧判据只读 `document.body.innerText`。**客户端渲染的页面永远过不了**：
+  IEEE 把书目元数据以 JSON 塞在 `<script>`（`xplGlobal.document.metadata`）里，
+  Angular 之后才填 DOM。实测 `10.1109/pac.1997.752724`：标题正确、`cf=✗`、
+  `body=2465` —— DOI 判据和 `>5000 字` 兜底**都不可能触发**，于是每篇 IEEE
+  都空等满 60 秒，最后报一句根本没发生的「挑战未在 60s 内通过」
+- ❌ **第一版修复是在页面里查 `outerHTML`，那是错的方向**：它要让渲染进程把整份
+  DOM 序列化成几百 KB 再传出来 —— 又重又不像真人浏览器的动作，而要找的 DOI
+  本来就在**已经到手的响应**里
+- 📌 现在**先看捕获**（`Network.getResponseBody`，纯 CDP 命令，渲染进程里什么
+  都不跑、页面无从观察），捕获里没有文档时才问页面，且**只问 `innerText`**
+  —— 循环本来每轮就在读它。实测 IEEE：`✅ DOI […] 见于捕获的响应，挑战通过
+  （页面 3793 字）`，仍远低于 5000 的兜底门槛
+- ⚠️ 日志要说清**哪一份**答的。旧措辞「已出现在页面」配上 `（0 字）` 看着像 bug，
+  其实是服务器发的那份在说话 —— 而那正是好情况
+- 📌 同一条原则也用到了 `want_html`（取数阶梯 `fresh` 层取 HTML 页面）：一次性
+  Chrome 既然已经先附着再导航，响应就在手，优先从捕获里取（用
+  `pick_raw_article_html` 选，不是 `[-1]`），取不到才回落
+  `fetch_page_html_via_cdp()` 的 `outerHTML`
+- ⚠️ **轮询循环里仍有页面内调用**，去不掉：`document.title`、`body.innerText`、
+  挑战 DOM 标记 —— 挑战 widget 是脚本**注入**的，服务器发的那份里没有它
+
 ### 交给调用方判定的那份 HTML，也必须用 `pick_raw_article_html()`
 
 ❌ **实测踩过（2026-09-20）**：把预检从"读渲染后 DOM"改成"读捕获的文档"时，

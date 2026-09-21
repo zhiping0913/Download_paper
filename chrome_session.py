@@ -90,6 +90,7 @@ from core.utilities import (
     api_harvest_patterns,
     env_seconds,
     looks_like_html_bytes,
+    pick_raw_article_html,
     url_looks_like_bot_challenge,
 )
 
@@ -1998,17 +1999,60 @@ async def bypass_cloudflare_cdp(
                     # 全部转小写比较，避免大小写不一致
                     doi_passed = False
                     if expected_doi:
+                        doi_lower = expected_doi.lower()
+                        # Look in the response we already hold, not in the
+                        # page. Network.getResponseBody is a CDP command --
+                        # it runs nothing inside the renderer and leaves no
+                        # trace a page could time or observe, unlike asking
+                        # the document to serialise itself.
+                        #
+                        # ⚠️ It is also the only thing that works on a
+                        # client-rendered shell. IEEE ships the article's
+                        # metadata as a JSON blob in a <script>
+                        # (xplGlobal.document.metadata) and Angular fills the
+                        # DOM afterwards. Measured on 10.1109/pac.1997.752724:
+                        # title correct, cf=✗, body=2465 -- the innerText test
+                        # and the >5000-character fallback could neither fire,
+                        # so the preload sat out its full 60 s and reported
+                        # "挑战未在 60s 内通过" for a page that had loaded
+                        # fine. The served document carries the DOI all along.
+                        doi_where = ''
                         try:
-                            doi_lower = expected_doi.lower()
-                            doi_r = await _send(ws, "Runtime.evaluate", {
-                                "expression": f"(document.body?.innerText || '').toLowerCase().includes({json.dumps(doi_lower)})"
-                            })
-                            doi_passed = doi_r.get("result", {}).get("value", False)
+                            await _harvest_document_bodies(ws, result["responses"])
+                            for _entry in (result.get("responses") or {}).values():
+                                _b = _entry.get("body")
+                                if isinstance(_b, str) and doi_lower in _b.lower():
+                                    doi_passed = True
+                                    doi_where = '捕获的响应'
+                                    break
                         except Exception:
                             doi_passed = False
 
+                        if not doi_passed:
+                            # Nothing captured (the document can finish before
+                            # Network.enable on the already_open path), so ask
+                            # the page -- innerText only, which is what the
+                            # loop reads for every other test anyway.
+                            try:
+                                doi_r = await _send(ws, "Runtime.evaluate", {
+                                    "expression": (
+                                        "(document.body?.innerText || '')"
+                                        ".toLowerCase().includes("
+                                        + json.dumps(doi_lower) + ")"
+                                    )
+                                })
+                                doi_passed = doi_r.get("result", {}).get("value", False)
+                                if doi_passed:
+                                    doi_where = '页面正文'
+                            except Exception:
+                                doi_passed = False
+
                     if doi_passed:
-                        print(f"  ✅ DOI [{expected_doi}] 已出现在页面，挑战通过（{len(body_text)} 字）")
+                        # Say which copy answered. "已出现在页面" over a body
+                        # of 0 characters reads like a bug; it is the served
+                        # document talking, and that is the good case.
+                        print(f"  ✅ DOI [{expected_doi}] 见于{doi_where}，"
+                              f"挑战通过（页面 {len(body_text)} 字）")
                         # DOI 出现说明正文已加载，等内容稳定
                         if wait_for_content:
                             print(f"  ⏳ 等待页面内容渲染完成（body 稳定检测，最多 60s）...")
@@ -2819,12 +2863,25 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
     except Exception as exc:
         print(f"  ⚠️  独立 Chrome 打开页面失败: {type(exc).__name__}: {exc}")
 
-    # Pages (a publisher's supplemental listing, an API response) are wanted as
-    # markup, not as a file on disk. The tab is still open and already past any
-    # challenge, so one CDP round-trip is all it takes.
+    # Pages (a publisher's supplemental listing, an API response) are wanted
+    # as markup, not as a file on disk.
+    #
+    # 📌 Prefer the served document from the capture: now that this browser
+    # attaches before it navigates, the response is already in hand, and
+    # reading it costs the page nothing. Asking the document to serialise
+    # itself (fetch_page_html_via_cdp -> outerHTML) is an in-page operation
+    # on a site that is watching, and it returns the rendered DOM rather than
+    # what the server sent -- the same distinction every handler now cares
+    # about. It stays as the fallback for when nothing was captured.
     if want_html and not (session.result or {}).get('html'):
-        html = await fetch_page_html_via_cdp(
-            (session.result or {}).get('ws_url') or '', port=session.port)
+        html = pick_raw_article_html(
+            [e.get('body') for e in
+             ((session.result or {}).get('responses') or {}).values()
+             if isinstance(e.get('body'), str) and e.get('body')],
+            expected_doi)
+        if not html:
+            html = await fetch_page_html_via_cdp(
+                (session.result or {}).get('ws_url') or '', port=session.port)
         if html:
             session.result = dict(session.result or {}, html=html)
 
