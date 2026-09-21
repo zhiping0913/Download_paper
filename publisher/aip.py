@@ -897,26 +897,41 @@ class AIPHandler(PublisherHandler):
                 if 'figstatic.com' in href or 'ndownloader' in href:
                     links.append(href)
 
-            # If no direct download links, discover via figshare API
+            # If no direct download links, discover via the figshare API.
+            #
+            # ⚠️ This used to be gated on finding an article id in one of the
+            # widget's anchors -- an id ``_fetch_figshare_collection`` does
+            # not even use (it re-derives the *collection* id from the page
+            # text). The gate was therefore testing the wrong thing, and it
+            # only ever passed because the widget's JavaScript had injected
+            # those anchors into the rendered DOM. Reading the server
+            # response instead left the wrapper empty, the gate shut, and
+            # 10.1063/5.0321661 reported "补充材料: 0 个" while the paper
+            # actually has 6 videos plus a DOCX on figshare.
             if not links:
-                article_id = None
-                for a_tag in figshare_wrapper.find_all('a', href=True):
-                    href = a_tag['href'].strip()
-                    match = re.search(r'/articles/(?:media/)?[^/]+/(\d+)', href)
-                    if match:
-                        article_id = match.group(1)
-                        break
-
-                if article_id:
-                    links, descriptions = (
-                        AIPHandler._fetch_figshare_collection(article_id, html_content)
-                    )
+                links, descriptions = (
+                    AIPHandler._fetch_figshare_collection('', html_content)
+                )
 
         return links, descriptions
 
     @staticmethod
     def _fetch_figshare_collection(article_id: str, full_html: str) -> tuple:
-        """Discover all files in a figshare collection via the figshare API."""
+        """Discover all files in a figshare collection via the figshare API.
+
+        *article_id* is unused and kept only so existing callers do not have
+        to change: what identifies the collection is the ``10.60893/figshare
+        .<journal>.c.<id>`` DOI printed in the article text, which is read
+        from *full_html* below.
+
+        📌 The article page also fetches
+        ``widgets.figshare.com/public/files?articleResourceDOI=<doi>``, which
+        answers with the same list plus sizes. It is not used: that request
+        belongs to the figshare widget's cross-origin iframe, which is a
+        separate CDP target from the page we attach to, so it is not reliably
+        in our capture. The links it hands out for video are also the signed,
+        one-hour S3 *previews* -- this API gives the originals.
+        """
         import json
         import urllib.request
 
@@ -1140,6 +1155,28 @@ class AIPHandler(PublisherHandler):
             body_md or "[AIP article text not found.]",
             "",
         ])
+
+        # Supplemental material. ⚠️ AIP had no such section: the files landed
+        # on disk and the Markdown never mentioned them -- "downloaded, and
+        # nobody knows". Same gap SPIE had. Emitted only when there is
+        # something to list, so papers without supplements gain no empty
+        # heading.
+        supp_downloads = kwargs.get('supplemental_downloads') or []
+        supp_urls = kwargs.get('supplemental_urls') or []
+        supp_desc = kwargs.get('supplemental_descriptions') or {}
+        if supp_downloads or supp_urls:
+            md_parts.extend(["---", "", "## Supplementary Material", ""])
+            if supp_downloads:
+                # The saved name comes from the URL (figshare serves
+                # /files/<id>), so pair it with the publisher's own title --
+                # "63831630.mp4" alone says nothing about which video it is.
+                for item in supp_downloads:
+                    label = supp_desc.get(item) or ''
+                    md_parts.append(f"- `{item}`" + (f" — {label}" if label else ""))
+            else:
+                for url in supp_urls:
+                    md_parts.append(f"- [{supp_desc.get(url, url)}]({url})")
+            md_parts.append("")
 
         if metadata.get('references'):
             md_parts.extend([

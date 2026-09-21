@@ -396,6 +396,48 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
   出版商，文件永远不会落盘，那 20 秒纯粹是在推迟点框（其后附着还要最多 10 秒找 tab + 固定 2 秒）。
   未被挑战的 PDF 在启动后 1~2 秒内就落盘，短探测不会有损失
 
+### 图片 / 补充材料默认走 `request` 层（2026-09-21）
+
+核心原则里「图片和补充材料先用 requests 直接下」**一直没生效**：
+`_fetch_ladder('figure')` 和 `_fetch_ladder('supplement')` 取的都是**裸默认**
+`('tab','fresh')`，`'request'` 不在里面，于是那两个 `if 'request' in ladder`
+分支除非有人设 `DP_FETCH_FIGURE` / `DP_FETCH_SUPPLEMENT` 否则**从不执行**。
+现在两者默认都是 `('request','tab','fresh')`。
+
+- ⚠️ 顺带补上 `DP_HTTP_FIRST` 的作用域：它原本只在**显式配置**那条路上被检查，
+  默认值里的 `'request'` 不受它管 —— 不补的话它会变成一个说了不算的开关
+- ✅ 实测三篇带 mp4 的：APS `10.1103/PhysRevX.7.041003`（pdf 812,331 B +
+  video.mp4 37,477,380 B / ffprobe 31.28 s）、IOP `10.1088/1361-6587/aaa57d`
+  （1,140,156 B / 20.58 s）、AIP `10.1063/5.0321661`（6 视频 + 1 docx）。
+  无截断、无 0 字节，magic 嗅探全部正确
+- 📌 **这一层不只是省个标签页，它还带着正文页会话的 cookie**：实测 APS 那个
+  mp4 的**冷请求是 403**（不带 cookie 的 HEAD 回 `text/html`），程序这层能拿到
+  是因为 `_cookies_for_requests` 按 host 把 cookie 带上了
+- ✅ 回退机制在真实场景里生效过：figshare 的 `ndownloader.../files/<id>` 对裸
+  请求回的是网页，日志打印「直接请求拿到的是网页（text/html），回退到浏览器」，
+  随后浏览器层拿到真文件 —— 没有这条判据就会得到 7 个其实是网页的 `.mp4`
+
+### AIP 的 figshare 补充材料
+
+- ❌ **闸门判错了东西**：`_extract_supplemental_links_from_html` 的第二条路要求
+  先从 `div#articlefulltext_figshare` 的 `<a>` 里找出 article id 才肯调
+  `_fetch_figshare_collection` —— 而那个函数**根本不用这个 id**，它自己从页面
+  正文的 `10.60893/figshare.<刊>.c.<id>` 正则出 **collection id**。
+  这道闸门以前能过，仅仅因为 figshare 的 JS 已经把那些 `<a>` 注入进了渲染后
+  DOM；改读服务器响应后 wrapper 是空的，于是 `10.1063/5.0321661` 报
+  「补充材料: 0 个」，而它实际有 **6 个视频 + 1 个 DOCX**
+- 📌 **不要用那个 widget XHR**：`widgets.figshare.com/public/files?articleResourceDOI=…`
+  确实回同一份清单（还带 `size`），但它是 figshare widget **跨域 iframe** 发的，
+  而我们只附着主页面的 CDP target，OOPIF 的网络事件不在这个 session 里 ——
+  靠它会时有时无。而且它给视频的是 `s3-…/video_preview.mp4?X-Amz-Expires=3600`
+  的**预览版**（降质、1 小时过期），collection API 给的 `ndownloader` 才是原件
+- ⚠️ figshare 按 `/files/<id>` 发文件，落盘名只有一串数字。出版商自己的标题
+  （"Supplement Video 1"）只存在于 descriptions 里，而那份 descriptions 是按
+  **URL** 建索引的、与落盘名对不上 —— 所以 `downloads['supplemental_descriptions']`
+  另存一份**按落盘名**索引的，md 才配得上号
+- ⚠️ AIP 的 `convert_to_markdown` 原本**没有补充材料段**（同 SPIE 旧病）：
+  文件下到磁盘、md 里只字不提。已补，且只在真有内容时才输出标题
+
 ### 取数阶梯（所有资源共用一套回退顺序）
 
 PDF、图片、补充材料、API/页面（如 IOP 的 `/data`）走的是**同一条三层阶梯**：
