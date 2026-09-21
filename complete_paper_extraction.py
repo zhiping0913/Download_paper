@@ -128,7 +128,8 @@ OUTPUT_DIR = OUTPUT_DIR_DEFAULT
 #                              the challenge (short: a challenged PDF never
 #                              lands, so this only delays the click)
 #   DP_SUPPLEMENTAL_TIMEOUT    supplemental download navigation +
-#                              download-event wait
+#                              download-event wait (default 300 s: this is
+#                              where the multi-MB videos are)
 #   DP_FIGURE_TIMEOUT          figure navigation (both primary and
 #                              fallback img re-fetch)
 #   DP_INPAGE_FETCH_TIMEOUT    hard cap on one in-page fetch() or one
@@ -190,16 +191,28 @@ DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT = _env_seconds('DP_PDF_DOWNLOAD_COMPLETE_TIMEOU
 
 # Supplemental download family — both the initial page.goto(url) and the
 # download-event wait for each supplemental link. Also covers inline-audio
-# body-fetch waits. Default: 60 s.
-DP_SUPPLEMENTAL_TIMEOUT = _env_seconds('DP_SUPPLEMENTAL_TIMEOUT', 60)
+# body-fetch waits. Default: 300 s.
+#
+# ⚠️ Not 60. Supplements are where the big files live: measured in this
+# repo's own runs, APS 10.1103/PhysRevX.7.041003 ships a 37 MB video and
+# AIP 10.1063/5.0321661 six videos of 7-10 MB each, and a 200+ MB video has
+# been seen (10.1103/PhysRevLett.127.114801). A minute is enough for a PDF
+# and nowhere near enough for those on an ordinary link, so the browser rung
+# used to give up on a download that was progressing perfectly well.
+#
+# This is a *budget*, not a deadlock breaker: it bounds how long one
+# supplement may take. The circuit breakers that catch a transfer which will
+# never finish are separate and unchanged -- DP_HTTP_TOTAL_TIMEOUT for the
+# plain-request rung and the watchdog that shuts the socket on a trickle.
+DP_SUPPLEMENTAL_TIMEOUT = _env_seconds('DP_SUPPLEMENTAL_TIMEOUT', 300)
 
 # Supplemental download completion wait — after the download event fires
 # (file transfer in progress), how long to let download.save_as() finish
-# writing before giving up. Default: 120 s. A large DOCX/MP4 on a slow link
-# can need 10+ minutes; that is what raising
-# DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT is for, rather than making every
-# run wait that long by default.
-DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT = _env_seconds('DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT', 120)
+# writing before giving up. Default: 300 s, the same budget as the wait that
+# precedes it: once the transfer has actually started, cutting it off at two
+# minutes throws away a download that was working. A really large file on a
+# slow link can still need more, which is what raising this is for.
+DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT = _env_seconds('DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT', 300)
 
 # Figure download family — the CDN goto for each figure image (and the
 # fallback img_src re-fetch if the first response wasn't image/*).
