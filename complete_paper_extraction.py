@@ -1947,7 +1947,8 @@ async def _download_all_resources(
 async def _try_fresh_chrome_download(url: str, output_dir: Path,
                                      filename: str,
                                      headless: bool = False,
-                                     referer_url: str = '') -> Optional[str]:
+                                     referer_url: str = '',
+                                     complete_timeout: float = None) -> Optional[str]:
     """Download *url* with a throwaway Chrome seeded from the real profile.
 
     The bottom rung of the fetch ladder, for any kind of file: it watches a
@@ -1995,7 +1996,8 @@ async def _try_fresh_chrome_download(url: str, output_dir: Path,
                 print("  ⚠️  独立 Chrome 未拿到文件")
             return None
         print(f"  ✓ 独立 Chrome 已触发下载: {landed}")
-        return _finalize_downloaded_pdf(landed, output_dir, filename)
+        return _finalize_downloaded_pdf(landed, output_dir, filename,
+                                        complete_timeout)
     except Exception as exc:
         print(f"  ⚠️  独立 Chrome 下载异常: {exc}")
         return None
@@ -2004,14 +2006,27 @@ async def _try_fresh_chrome_download(url: str, output_dir: Path,
 
 
 def _finalize_downloaded_pdf(src: str, output_dir: Path,
-                             filename: str) -> Optional[str]:
-    """Wait for a .crdownload to settle, then copy the file into place."""
+                             filename: str,
+                             complete_timeout: float = None) -> Optional[str]:
+    """Wait for a .crdownload to settle, then copy the file into place.
+
+    ⚠️ *complete_timeout* is not optional in spirit. This function serves
+    every kind of file the throwaway Chrome fetches, and it used to hard-code
+    ``DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT`` -- so a supplemental ZIP that takes
+    a minute or two was cut off by the *PDF* budget, no matter what
+    ``DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT`` said. Reported on
+    10.1126/sciadv.abn7627: the download had started (Chrome was writing
+    .crdownload) and was abandoned at 45 s with the supplemental budget set
+    to 500. Callers pass the budget for the kind of file they are fetching.
+    """
+    budget = (complete_timeout if complete_timeout is not None
+              else DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT)
     final_pdf = Path(output_dir) / filename
     waited = 0
     base, _ = os.path.splitext(src)
     if src.endswith('.crdownload'):
-        print("  ⏳ 等待下载完成（源文件仍为 .crdownload）...")
-        while src.endswith('.crdownload') and waited < DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT:
+        print(f"  ⏳ 等待下载完成（源文件仍为 .crdownload，上限 {budget:.0f}s）...")
+        while src.endswith('.crdownload') and waited < budget:
             time.sleep(2)
             waited += 2
             if os.path.isfile(base):
@@ -2020,7 +2035,7 @@ def _finalize_downloaded_pdf(src: str, output_dir: Path,
             if not os.path.isfile(src):
                 break
         if src.endswith('.crdownload'):
-            print(f"    ⏰  下载在 {DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT}s 内未完成")
+            print(f"    ⏰  下载在 {budget:.0f}s 内未完成")
             return None
     if not (os.path.isfile(src) and not src.endswith('.crdownload')):
         print("    ⚠️  下载文件异常")
@@ -2819,7 +2834,8 @@ async def download_supplemental_materials(
                 if downloaded_count == count_before and 'fresh' in supp_ladder:
                     fresh_saved = await _try_fresh_chrome_download(
                         url, output_path.parent, output_path.name,
-                        headless=not force_headed)
+                        headless=not force_headed,
+                        complete_timeout=DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT)
                     if fresh_saved:
                         output_path = _detect_and_rename(
                             output_path.parent / fresh_saved)
@@ -3192,7 +3208,8 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
     if 'fresh' in fig_ladder and fig_url:
         fresh_name = original_image_filename(fig_url, fig_num)
         saved = await _try_fresh_chrome_download(
-            fig_url, output_dir, fresh_name, headless=not force_headed)
+            fig_url, output_dir, fresh_name, headless=not force_headed,
+            complete_timeout=DP_FIGURE_TIMEOUT * 3)
         if saved:
             print(f"    ✓ 保存: {saved} [一次性 Chrome]")
             return saved
