@@ -3003,7 +3003,16 @@ async def download_figure(page, fig_url: str, fig_num: int, output_dir: Path, co
     """下载高分辨率图片：按取数阶梯 request → tab → fresh 依次尝试。"""
     # Resolved before the try: the last rung runs after the except/finally, so
     # an exception raised before this point must not leave it undefined.
-    fig_ladder = _fetch_ladder('figure')
+    # Figures start with a plain HTTP request, as the project's core rule
+    # says they should: they sit on CDNs that do not gate them (even
+    # ScienceDirect's ars.els-cdn.com serves them straight), and a paper has
+    # dozens, so opening a tab each is pure waste.
+    #
+    # ⚠️ The default used to be the bare ('tab', 'fresh'), which left the
+    # 'request' branch below unreachable unless someone set DP_FETCH_FIGURE
+    # -- the documented behaviour was not the actual one.
+    fig_ladder = _fetch_ladder('figure',
+                               default=('request', 'tab', 'fresh'))
     try:
         if not fig_url:
             return None

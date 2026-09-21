@@ -552,6 +552,11 @@ def fetch_ladder(kind: str, default: tuple = ('tab', 'fresh')) -> tuple:
         tiers = FETCH_TIERS[FETCH_TIERS.index(start):]
     else:
         tiers = tuple(default)
+        # DP_HTTP_FIRST=0 means "never the plain request", and it has to hold
+        # for a default that names that rung too -- the guard above only sees
+        # explicitly configured values.
+        if not DP_HTTP_FIRST:
+            tiers = tuple(t for t in tiers if t != 'request')
     if not fresh_chrome_enabled():
         tiers = tuple(t for t in tiers if t != 'fresh')
     return tiers or ('tab',)
