@@ -1884,6 +1884,11 @@ async def _download_all_resources(
                 article_url=_article_url,
             )
             downloads['supplemental'] = list(descriptions.keys())
+            # Keep the labels too, keyed by the name on disk. figshare serves
+            # its files as /files/<id>, so "63831630.mp4" is all the filename
+            # says; the publisher's own title ("Supplement Video 1") only
+            # exists here.
+            downloads['supplemental_descriptions'] = descriptions
 
     finally:
         if download_page is not page:
@@ -3563,7 +3568,10 @@ async def complete_extraction_workflow(
                 figure_filenames=downloads['figures'],
                 figure_urls=links.get('figure_urls', {}),
                 supplemental_urls=links.get('supplemental_urls', []),
-                supplemental_descriptions=links.get('supplemental_descriptions', {}),
+                supplemental_descriptions={
+                    **(links.get('supplemental_descriptions') or {}),
+                    **(downloads.get('supplemental_descriptions') or {}),
+                },
                 supplemental_downloads=downloads.get('supplemental', []),
                 key_image_filename=downloads.get('key_image'),
                 table_data=links.get('table_data', {}),
