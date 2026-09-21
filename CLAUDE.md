@@ -438,6 +438,23 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
 `auto_solve_bot_challenge`（在空白页上找验证框）、内联音频的 body 等待。
 统统跟着 `_use_tab` 一起关。
 
+### `.crdownload` 的完成预算按文件种类给
+
+❌ **实测踩过（用户报告，10.1126/sciadv.abn7627）**：`DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT=500`
+设了却不生效，一个需要 1–2 分钟的补充材料 ZIP 在 **45 秒**被放弃 —— 那 45 秒来自
+`DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT`。
+
+- 成因：一次性 Chrome 拿到文件后统一走 `_finalize_downloaded_pdf()`，而它把 PDF
+  的预算**写死**在函数里。讽刺的是它自己的 docstring 早就写着
+  「Nothing here is PDF-specific, and the messages must not claim otherwise」——
+  名字和注释都提醒过，预算却还是 PDF 的
+- 📌 现在预算由**调用方按种类**传：PDF → `DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT`；
+  补充材料 → `DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT`；图片 →
+  `DP_FIGURE_TIMEOUT * 3`（**保持收紧**：一张图拖这么久就不会来了，而一篇有几十张，
+  这个上限要反复付）
+- ⚠️ 日志把上限打出来（`上限 500s`），否则"设了没生效"这种事只能靠读源码发现
+- ✅ 用户实测：改后那个 ZIP 完整落盘
+
 ### 补充材料的两个等待都默认 300 秒
 
 补充材料是大文件所在：实测 APS `10.1103/PhysRevX.7.041003` 一个 37 MB 视频、
