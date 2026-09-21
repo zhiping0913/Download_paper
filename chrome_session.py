@@ -962,8 +962,43 @@ _CHALLENGE_CLICK_TARGET_JS = r"""(function () {
 #: asyncio they can be separate tasks in flight at once. A global would mix one
 #: page's responses into the other's dict, which is worse than capturing
 #: nothing because the mixture still looks like a valid capture.
+#: Biggest response body worth pulling out of the renderer over CDP. A
+#: base64 round-trip is a poor way to move a large file, and the download
+#: watcher handles those; this only exists for files the browser *displays*
+#: instead of downloading (images, and short videos).
+_CAPTURE_BODY_MAX_BYTES = int(env_seconds('DP_CAPTURE_BODY_MAX_BYTES',
+                                          80 * 1024 * 1024))
+
 _CDP_EVENT_SINK: contextvars.ContextVar = contextvars.ContextVar(
     '_cdp_event_sink', default=None)
+
+
+def _is_partial(resp: dict) -> bool:
+    """True when this response carries only part of the resource.
+
+    ⚠️ Navigating to a video does not download it: Chrome opens its media
+    player, and the player fetches **ranges**. Measured on IOP's
+    ppcf045005_suppdata.mp4 (1,140,156 bytes): the first response is a
+    complete, finished, Content-Length-consistent 26,044-byte chunk. Every
+    integrity check short of this one passes it, and the file lands on disk
+    looking exactly like a good one.
+    """
+    if int(resp.get("status") or 0) == 206:
+        return True
+    headers = resp.get("headers") or {}
+    return any(str(k).lower() == "content-range" for k in headers)
+
+
+def _content_length(resp: dict) -> int:
+    """``Content-Length`` as an int, or -1 when absent/unparseable."""
+    headers = resp.get("headers") or {}
+    for key, value in headers.items():
+        if str(key).lower() == "content-length":
+            try:
+                return int(str(value).strip())
+            except (TypeError, ValueError):
+                return -1
+    return -1
 
 
 def _record_cdp_event(sink: dict, msg: dict) -> None:
@@ -975,10 +1010,27 @@ def _record_cdp_event(sink: dict, msg: dict) -> None:
     protected publisher sends for the same URL (one before its bot check, one
     after) as two distinct entries instead of one overwriting the other.
     """
-    if (msg.get("method") or "") != "Network.responseReceived":
-        return
+    method = msg.get("method") or ""
     params = msg.get("params") or {}
     rid = params.get("requestId")
+
+    # ⚠️ A response event means the *headers* arrived, not the body. Asking
+    # for the body then hands back whatever is buffered so far: measured on
+    # IOP's ppcf045005_suppdata.mp4, a 1,140,156-byte video came back as
+    # 26,044 bytes and was saved as a complete file. loadingFinished is the
+    # event that says the transfer is done.
+    if method == "Network.loadingFinished":
+        if rid and rid in sink:
+            sink[rid]["finished"] = True
+            try:
+                sink[rid]["encodedLength"] = int(
+                    params.get("encodedDataLength") or 0)
+            except (TypeError, ValueError):
+                pass
+        return
+
+    if method != "Network.responseReceived":
+        return
     if not rid:
         return
     resp = params.get("response") or {}
@@ -987,6 +1039,17 @@ def _record_cdp_event(sink: dict, msg: dict) -> None:
         "type": params.get("type") or "",
         "status": resp.get("status"),
         "mimeType": resp.get("mimeType") or "",
+        # Declared size, when the server gave one. Used to decide whether a
+        # body is small enough to be worth pulling over the CDP socket --
+        # base64 over a WebSocket is the wrong way to move 200 MB.
+        "length": _content_length(resp),
+        # True when the server answered a *range* rather than the whole
+        # file. Chrome's media player asks for ranges, so a navigated-to
+        # video produces a perfectly valid response that is one chunk of the
+        # file -- see the partial-content guard where these are consumed.
+        "partial": _is_partial(resp),
+        # Set by Network.loadingFinished; until then the body is incomplete.
+        "finished": False,
         # Which page load this response belongs to. Chrome issues a new
         # loaderId for every main-frame navigation, so this is the same thing
         # DevTools uses when it clears the Network panel on navigation: the
@@ -1801,7 +1864,12 @@ async def bypass_cloudflare_cdp(
                 # （looks_like_html_bytes），这里早退最坏只是早一点进入同
                 # 一个校验。
                 if pdf_mode:
-                    for _e in (result.get("responses") or {}).values():
+                    # ⚠️ Snapshot the items. The body fetch below awaits
+                    # _send, and _send is what records new response events
+                    # into this very dict -- iterating it live raises
+                    # "dictionary changed size during iteration", which
+                    # surfaces as "CDP 连接异常" and loses the file.
+                    for _rid, _e in list((result.get("responses") or {}).items()):
                         if (_e.get("url") or '') != url:
                             continue
                         if _e.get("status") not in (200, 206):
@@ -1810,8 +1878,57 @@ async def bypass_cloudflare_cdp(
                         if _m and not _m.startswith(
                                 ('text/html', 'application/xhtml', 'text/xml',
                                  'application/xml')):
-                            print(f"  ✓ 捕获到目标文件响应（{_m}），"
-                                  f"无需继续等待挑战")
+                            # ⚠️ Pull this body *now*, explicitly. The generic
+                            # harvest only fetches responses Chrome typed as
+                            # "Document", and a navigated-to video is not one
+                            # of those -- Chrome types it Media and builds a
+                            # player around it. Measured on IOP's
+                            # ppcf045005_suppdata.mp4: the early exit fired,
+                            # the harvest skipped it, and the rung reported
+                            # "挑战已通过，但未检测到下载文件" for a file it
+                            # was holding.
+                            _len = _e.get("length", -1)
+                            if 0 <= _len > _CAPTURE_BODY_MAX_BYTES:
+                                # Too big to base64 over the socket; leave it
+                                # to the download watcher.
+                                continue
+                            if _e.get("partial"):
+                                # One range of a larger file: the browser is
+                                # playing it, not downloading it. Nothing
+                                # useful can come from the capture here.
+                                continue
+                            if not _e.get("finished"):
+                                continue     # headers only; body still coming
+                            if _e.get("body_bytes") is None:
+                                try:
+                                    _got = await _send(
+                                        ws, "Network.getResponseBody",
+                                        {"requestId": _rid})
+                                except Exception:
+                                    continue
+                                _raw = _got.get("body")
+                                if _raw is None:
+                                    continue
+                                if _got.get("base64Encoded"):
+                                    try:
+                                        _e["body_bytes"] = base64.b64decode(_raw)
+                                    except Exception:
+                                        continue
+                                else:
+                                    _e["body_bytes"] = _raw.encode(
+                                        "utf-8", "replace")
+                            _got_len = len(_e['body_bytes'])
+                            if 0 <= _len != _got_len:
+                                # Declared and delivered disagree: incomplete,
+                                # however "finished" it claims to be. Say so
+                                # and keep waiting rather than save a
+                                # truncated file that looks like a good one.
+                                print(f"  ⚠️  捕获到的 {_m} 只有 {_got_len:,} 字节，"
+                                      f"声明 {_len:,} —— 不完整，继续等待")
+                                _e["body_bytes"] = None
+                                continue
+                            print(f"  ✓ 捕获到目标文件响应（{_m}，"
+                                  f"{_got_len:,} 字节）")
                             result["success"] = True
                             result["target_id"] = _current_ws_url.rstrip(
                                 "/").split("/")[-1]
@@ -2313,6 +2430,18 @@ async def bypass_cloudflare_cdp(
             # test can still have delivered a perfectly good document, and the
             # caller may prefer it to nothing.
             await _harvest_document_bodies(ws, result["responses"])
+            # ⚠️ Hand back the socket even on the failure path. The caller's
+            # last resort -- download_via_cdp_stream -- needs it, and the
+            # case where the verdict failed is exactly the case where that
+            # rung matters: a page that renders its media instead of
+            # downloading it never satisfies the pass test.
+            # ⚠️ Assign, do not setdefault: the key already exists (the
+            # result dict is built with ws_url=None up front), so
+            # setdefault is a no-op and the caller gets None.
+            if not result.get("ws_url"):
+                result["ws_url"] = _current_ws_url
+                result["target_id"] = (
+                    (_current_ws_url or '').rstrip("/").split("/")[-1])
             return result
 
     except Exception as e:
@@ -2794,6 +2923,105 @@ async def _download_via_referer_click(session, referer_url: str, target_url: str
     return result
 
 
+async def download_via_cdp_stream(ws_url: str, url: str, dest_dir: str,
+                                  filename: str = '') -> str:
+    """Fetch *url* with the browser's network stack and write it to disk.
+
+    Returns the path written, or '' on failure.
+
+    ⚠️ This is the answer to "the browser displays it instead of downloading
+    it". Navigating to an image, a video or an audio file makes Chrome render
+    it: no download event ever fires, and for media the player fetches
+    **ranges**, so even the capture holds only a chunk (measured: 26,044
+    bytes of a 1,140,156-byte IOP mp4, complete and Content-Length-consistent
+    for its range -- a truncated file that passes every other check).
+
+    ``Network.loadNetworkResource`` sidesteps all of that: the browser
+    fetches the whole resource the way it fetches a subresource, and hands
+    back a stream. It runs entirely over CDP -- nothing executes inside the
+    renderer, so a page watching for automation sees no script -- while still
+    using this browser's cookies, IP and TLS fingerprint, which is the whole
+    reason for reaching for the throwaway Chrome in the first place.
+    """
+    if not (ws_url and url and dest_dir):
+        return ''
+    try:
+        async with websockets.connect(ws_url, max_size=None,
+                                      open_timeout=10) as ws:
+            tree = await _send(ws, "Page.getFrameTree")
+            frame_id = (((tree.get("frameTree") or {}).get("frame") or {})
+                        .get("id"))
+            if not frame_id:
+                return ''
+            got = await _send(ws, "Network.loadNetworkResource", {
+                "frameId": frame_id,
+                "url": url,
+                "options": {"disableCache": False, "includeCredentials": True},
+            })
+            resource = got.get("resource") or {}
+            if not resource.get("success"):
+                print(f"  ⚠️  浏览器取流失败: "
+                      f"{resource.get('netError') or resource.get('netErrorName') or '未知'}")
+                return ''
+            handle = resource.get("stream")
+            if not handle:
+                return ''
+
+            declared = -1
+            for key, value in (resource.get("headers") or {}).items():
+                if str(key).lower() == "content-length":
+                    try:
+                        declared = int(str(value).strip())
+                    except (TypeError, ValueError):
+                        declared = -1
+
+            chunks = []
+            total = 0
+            try:
+                while True:
+                    piece = await _send(ws, "IO.read",
+                                        {"handle": handle, "size": 1 << 20})
+                    data = piece.get("data")
+                    if data:
+                        raw = (base64.b64decode(data)
+                               if piece.get("base64Encoded")
+                               else data.encode("utf-8", "replace"))
+                        chunks.append(raw)
+                        total += len(raw)
+                    if piece.get("eof"):
+                        break
+            finally:
+                try:
+                    await _send(ws, "IO.close", {"handle": handle})
+                except Exception:
+                    pass
+
+            body = b"".join(chunks)
+            if not body:
+                return ''
+            if looks_like_html_bytes(body):
+                print("  ⚠️  浏览器取流拿回的是网页，不是文件")
+                return ''
+            # Same rule the direct-request rung applies: a short body is a
+            # truncated transfer, and on disk it is indistinguishable from a
+            # good file.
+            if 0 <= declared != len(body):
+                print(f"  ⚠️  浏览器取流只拿到 {len(body):,} 字节，"
+                      f"声明 {declared:,} —— 不完整，丢弃")
+                return ''
+
+            name = filename or os.path.basename(
+                urllib.parse.urlparse(url).path) or 'download.bin'
+            dest = os.path.join(dest_dir, name)
+            with open(dest, 'wb') as fh:
+                fh.write(body)
+            print(f"  ✓ 浏览器取流已拿到文件（{len(body):,} 字节）")
+            return dest
+    except Exception as exc:
+        print(f"  ⚠️  浏览器取流异常: {type(exc).__name__}: {str(exc)[:80]}")
+        return ''
+
+
 async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
                                    pdf_mode: bool = False,
                                    download_dir: str = '',
@@ -2905,6 +3133,16 @@ async def open_url_in_fresh_chrome(url: str, *, expected_doi: str = '',
     # But the bytes are already in hand: the image is the tab's *document*,
     # so the CDP harvest captured its body. Write that out instead of waiting
     # for an event that structurally cannot happen.
+    # Still nothing? Ask the browser to fetch the resource as a stream.
+    # This is what gets images, video and audio -- the three things Chrome
+    # renders instead of downloading, so no download event can ever fire.
+    if pdf_mode and download_dir and not (session.result or {}).get('downloaded_file'):
+        landed = await download_via_cdp_stream(
+            (session.result or {}).get('ws_url') or '', url, download_dir)
+        if landed:
+            session.result = dict(session.result or {},
+                                  success=True, downloaded_file=landed)
+
     if pdf_mode and download_dir and not (session.result or {}).get('downloaded_file'):
         landed = _save_captured_body(session.result or {}, url, download_dir)
         if landed:
@@ -2940,6 +3178,14 @@ def _save_captured_body(result: dict, url: str, download_dir: str) -> str:
             raw = entry['body'].encode('utf-8', 'replace')
         if raw and looks_like_html_bytes(raw):
             continue          # a page, not the file we came for
+        if entry.get('partial'):
+            continue          # one range of the file, not the file
+        declared = entry.get('length', -1)
+        if raw is not None and 0 <= declared != len(raw):
+            # requests does not verify Content-Length and neither does CDP;
+            # a short body here is a truncated transfer, which on disk is
+            # indistinguishable from a good file.
+            continue
         if raw and len(raw) > len(best):
             best = raw
     if not best:
