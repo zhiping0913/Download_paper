@@ -451,6 +451,39 @@ DP_HTTP_FIRST = os.environ.get('DP_HTTP_FIRST', '1').strip().lower() not in (
     '0', 'false', 'no', 'off')
 
 
+def sniffed_mime(data: bytes) -> str:
+    """The media type of *data* according to its own bytes, or ''.
+
+    "Servers mislabel constantly; trust the bytes" -- the rule
+    ``_http_download_to`` already applies to every direct download. Shared so
+    the browser rungs judge a payload the same way instead of growing their
+    own, weaker test (a substring check for a leading ``<`` misses a PDF-
+    looking challenge page and anything served with a BOM).
+    """
+    if not data:
+        return ''
+    try:
+        import magic
+        return magic.from_buffer(data[:4096], mime=True) or ''
+    except Exception:
+        return ''
+
+
+def looks_like_html_bytes(data: bytes) -> bool:
+    """True when *data* is a web page rather than the file we asked for.
+
+    ⚠️ Used where the target is known to be a binary (a PDF, an image, a
+    supplement). A challenge page answers 200 at the file's own URL, so the
+    status code proves nothing -- measured: an Optics Journal PDF came back
+    as 15,999 bytes of "Verification" interstitial.
+    """
+    mime = sniffed_mime(data)
+    if mime:
+        return mime in ('text/html', 'application/xhtml+xml', 'text/xml',
+                        'application/xml')
+    return data.lstrip()[:1] == b'<'
+
+
 def env_off(name: str, default: str = '1') -> bool:
     """True when *name* is set to one of the usual "no" spellings."""
     return os.environ.get(name, default).strip().lower() in (
