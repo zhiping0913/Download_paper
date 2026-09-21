@@ -396,6 +396,48 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
   出版商，文件永远不会落盘，那 20 秒纯粹是在推迟点框（其后附着还要最多 10 秒找 tab + 固定 2 秒）。
   未被挑战的 PDF 在启动后 1~2 秒内就落盘，短探测不会有损失
 
+### 浏览器会「播放/显示」的文件，用 `Network.loadNetworkResource` 取
+
+图片、视频、音频导航过去时 Chrome **渲染**它们，不下载：download 事件永不触发。
+视频更糟 —— 播放器只按需取 **range**，所以连捕获里都只有第一块。
+
+- ❌ **实测踩过的最坏形态**：IOP 的 `ppcf045005_suppdata.mp4`（1,140,156 字节）
+  从捕获里取到 **26,044 字节**，而且那一份**完整、`loadingFinished` 已触发、
+  与自己的 `Content-Length` 一致** —— 除了「它是 206 分片」之外每一项检查都通过，
+  存到磁盘和好文件一模一样。判据是 `status == 206` 或带 `Content-Range`
+- 📌 **正解是 `Network.loadNetworkResource` + `IO.read`**（`download_via_cdp_stream`）：
+  让浏览器的网络栈整个取一遍，不经播放器 → 没有 range；带这个 tab 的 cookie、IP
+  和 TLS 指纹 → 正是 `fresh` 层想要的身份；**纯 CDP 命令，渲染进程里什么都不跑**
+  → 页面看不到脚本痕迹。实测：mp4 **1,140,156 字节**、jpg **96,193 字节**，与
+  期望逐字节一致
+- 📌 顺序是「等下载事件 → 取流 → 从捕获取字节」，且**取流必须排在挑战流程之后**：
+  点击过了，clearance cookie 就在这个 profile 里，`includeCredentials` 会带上
+- ⚠️ 取流照样过三道校验：拿回 HTML（挑战页/登录页）→ 拒绝；声明长度对不上 → 拒绝；
+  空 body → 拒绝
+- ⚠️ **`result.setdefault("ws_url", …)` 是空操作**：那个 dict 构造时就带着
+  `ws_url=None`，`setdefault` 只在**键不存在**时才写。取流因此一直拿到空 socket、
+  静默失败。要显式赋值
+- ⚠️ **别在 `result["responses"]` 上边迭代边 `await _send`**：`_send` 是本模块唯一
+  读 socket 的地方，它会把新事件写进同一个字典 → `dictionary changed size during
+  iteration`，被外层吞成一句「CDP 连接异常」。遍历快照
+
+### `DP_FETCH_SUPPLEMENT` 曾经不生效（两条没看阶梯的路）
+
+设 `fresh` 却仍从 request 开始，因为补充材料下载有**四条路，只有两条看了阶梯**：
+
+| 顺序 | 做什么 | 原来 |
+|---|---|---|
+| ① | `_http_download_to`（裸 HTTP + 会话 cookie） | ✅ `'request' in ladder` |
+| ② | `context.request.get()`（Playwright APIRequestContext） | ❌ **无条件执行** |
+| ③ | `download_page.goto(url)`（开标签页） | ❌ **无条件执行** |
+| ④ | 一次性 Chrome | ✅ `'fresh' in ladder` |
+
+②归入 `request` 档（无标签页、无导航，就是一次 fetch），③归入 `tab` 档。
+⚠️ ③ **不能只拦住那句 `goto`**：后面还有三处在等它的结果 —— 等 `download` 事件
+（没有导航就永远等不到，会白烧满 `DP_SUPPLEMENTAL_TIMEOUT`）、
+`auto_solve_bot_challenge`（在空白页上找验证框）、内联音频的 body 等待。
+统统跟着 `_use_tab` 一起关。
+
 ### 补充材料的两个等待都默认 300 秒
 
 补充材料是大文件所在：实测 APS `10.1103/PhysRevX.7.041003` 一个 37 MB 视频、

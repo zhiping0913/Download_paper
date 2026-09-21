@@ -152,8 +152,13 @@ export CHROME_PROFILE_ROOT="${CHROME_PROFILE_ROOT:-/tmp/dp_profiles}"
 
 # export DP_FETCH_ORDER=tab              # 全局：四类资源统一从这一层开始
 # export DP_FETCH_PDF=tab                # 单类覆盖，优先级高于 DP_FETCH_ORDER
-# export DP_FETCH_FIGURE=request
-# export DP_FETCH_SUPPLEMENT=request
+# export DP_FETCH_FIGURE=request         # 图片默认就是 request 开头，无需设置
+# export DP_FETCH_SUPPLEMENT=request     # 补充材料同上
+#   ⚠️ DP_FETCH_SUPPLEMENT=fresh 对「浏览器会播放而不是下载」的内容（视频/音频/
+#   图片）曾经拿不到文件：一次性 Chrome 等不到 download 事件，而播放器只按需取
+#   range，捕获里只有第一块。现在这一层最后会用 Network.loadNetworkResource
+#   把整个资源取回来（纯 CDP，页面里不跑脚本），实测 IOP 那个 mp4 完整拿到
+#   1,140,156 字节（此前只有 26,044）
 # export DP_FETCH_API=tab                # IOP 的 /data 这类页面
 
 # 第 4 层的「来路页」从哪来：
@@ -200,9 +205,11 @@ export DP_PDF_DOWNLOAD_TIMEOUT=30        # 默认 30
 # PDF「下载已完成」判据：已开始后允许它慢慢下多久（慢网速调大这个）
 export DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT=600       # 默认 60；慢网/超大 PDF 再调大
 
-# 补充材料：每个链接的 goto + download 事件等待
-export DP_SUPPLEMENTAL_TIMEOUT=60                # 默认 60
-export DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT=120  # 默认 120；大 DOCX/MP4 再调大
+# 补充材料：补充材料是大文件所在（实测一个 37 MB 的视频、六个 7–10 MB 的视频，
+# 还见过 200+ MB 的），两个等待都放宽到 600。
+#   ⚠️ 两个要一起放宽：只放宽前一个，大视频会在「传输正在进行」时被后一个砍掉
+export DP_SUPPLEMENTAL_TIMEOUT=600                # 默认 300：goto + 等 download 事件
+export DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT=600  # 默认 300：已开始后等它写完
 
 # 图片 / 补充材料：先直接 HTTP 请求（UA + Referer），拿不到网页以外的真文件才回退浏览器。
 # export DP_HTTP_FIRST=0                 # 设 0 = 跳过直接请求，全部走浏览器。默认 1

@@ -2524,6 +2524,7 @@ async def download_supplemental_materials(
                 # first -- never ran unless someone set DP_FETCH_SUPPLEMENT.
                 supp_ladder = _fetch_ladder('supplement',
                                             default=('request', 'tab', 'fresh'))
+                _use_tab = 'tab' in supp_ladder
                 if 'request' in supp_ladder:
                     supp_cookies = await _cookies_for_requests(
                         url, context=context, page=page)
@@ -2539,7 +2540,15 @@ async def download_supplemental_materials(
                         success = True
                         break
 
-                if _is_direct_download_url(url):
+                # Second request-class rung: Playwright's APIRequestContext.
+                # No tab, no navigation -- it is a plain fetch that happens to
+                # go through the browser's network stack, so it belongs to the
+                # same 'request' tier as _http_download_to above.
+                #
+                # ⚠️ It used to run unconditionally, which is why
+                # DP_FETCH_SUPPLEMENT=fresh looked like it did nothing: the
+                # first rung was skipped and this one still fetched the file.
+                if 'request' in supp_ladder and _is_direct_download_url(url):
                     direct_ok = False
                     try:
                         extra_headers = {}
@@ -2657,25 +2666,34 @@ async def download_supplemental_materials(
                 download_page.on("download", on_download)
 
                 # 导航到链接（会自动触发下载）
+                #
+                # ⚠️ This is the 'tab' rung, so it has to honour the ladder
+                # too. Without the guard, DP_FETCH_SUPPLEMENT=fresh still
+                # opened a tab at the file before the throwaway browser ever
+                # got its turn.
                 response = None
-                try:
-                    response = await download_page.goto(url, timeout=int(DP_SUPPLEMENTAL_TIMEOUT * 1000), wait_until='commit')
-                except:
-                    # 下载开始时页面加载会中断，这是正常的
-                    pass
+                if 'tab' in supp_ladder:
+                    try:
+                        response = await download_page.goto(url, timeout=int(DP_SUPPLEMENTAL_TIMEOUT * 1000), wait_until='commit')
+                    except:
+                        # 下载开始时页面加载会中断，这是正常的
+                        pass
+                else:
+                    print(f"    ⏭  跳过标签页下载（DP_FETCH_SUPPLEMENT）")
 
                 # Same Cloudflare-Turnstile guard as for the main article
                 # and PDF paths — some publishers wall supplemental
                 # downloads behind the same "verify you are human" checkbox.
-                try:
-                    await auto_solve_bot_challenge(download_page, timeout_s=DP_CLOUDFLARE_TIMEOUT, initial_poll_s=DP_CLOUDFLARE_INITIAL_POLL)
-                except Exception as e:
-                    print(f"    ⚠️  auto_solve_bot_challenge (supp): {e}")
+                if _use_tab:
+                    try:
+                        await auto_solve_bot_challenge(download_page, timeout_s=DP_CLOUDFLARE_TIMEOUT, initial_poll_s=DP_CLOUDFLARE_INITIAL_POLL)
+                    except Exception as e:
+                        print(f"    ⚠️  auto_solve_bot_challenge (supp): {e}")
 
                 # For inline audio: wait for the response listener to finish
                 # reading the body (up to 60 s for large files).  Then save
                 # directly and skip the download-event path entirely.
-                if _is_inline_audio and not downloaded_file:
+                if _is_inline_audio and not downloaded_file and _use_tab:
                     try:
                         await asyncio.wait_for(_audio_done.wait(), timeout=DP_SUPPLEMENTAL_TIMEOUT)
                     except asyncio.TimeoutError:
@@ -2704,7 +2722,12 @@ async def download_supplemental_materials(
                 # 对于 Cloudflare 等反爬挑战页面，需要给 JS 几秒钟时间通过 challenge
                 # 后才会触发实际的下载，所以等待时间放宽到 ~20 秒。
                 try:
-                    if not downloaded_file:
+                    # ⚠️ ``_use_tab`` matters here as much as at the goto:
+                    # nothing was navigated, so no download event can ever
+                    # fire, and waiting for one would burn the full
+                    # DP_SUPPLEMENTAL_TIMEOUT (300 s) per supplement before
+                    # the fresh rung gets its turn.
+                    if not downloaded_file and _use_tab:
                         # 期望下载事件在 DP_SUPPLEMENTAL_TIMEOUT 内触发；
                         # 外层 asyncio.wait_for 额外多 2 s 让 Playwright 有余量正常抛超时。
                         _dl_ms = int(DP_SUPPLEMENTAL_TIMEOUT * 1000)
