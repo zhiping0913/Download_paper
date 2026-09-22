@@ -70,17 +70,16 @@ export CHROME_PROFILE_ROOT="${CHROME_PROFILE_ROOT:-/tmp/dp_profiles}"
 # ❌ USE_CHROME_MODE / HEADLESS 已删除：没有任何代码读它们。有头还是无头由
 #    Phase 0 按出版商和预检结果自己判（HEADLESS_ACCESSIBLE_PUBLISHERS /
 #    --force-headed）；profile 也从不复用，每篇先删再建。
-# export HEADLESS=false                  # true/false。Cloudflare 站点建议 false
 
-# ★ 反检测补丁（注入 headed 每个页面的 _stealth_js）。默认开 = 现状。
-# ⚠️ 实测它基本是无效的，且可能适得其反：伪造 plugins / languages 的两段都带
-#    `.length === 0` 前置条件，而真实 Chrome 报告 5 个插件、2 种语言，**永不执行**；
-#    `delete window.cdc_…` 删的是 ChromeDriver 的痕迹，Playwright 根本没有这个全局。
-#    真正生效的两条反而制造出真人浏览器不可能出现的状态：
-#      navigator.webdriver 变成 undefined（真人是 false），且成了实例上的 getter，
-#      而真属性是原型上的数据属性；permissions.query.toString() 不再是 [native code]。
-#    本程序不读这三者，关掉不损失任何能力。设 0 做 A/B。
-# export DP_STEALTH_JS=0
+# ★ 反检测补丁 _stealth_js 与 DP_STEALTH_JS：❌ 已整个删除。
+# 实测（纯 CDP 读，不注入任何补丁）我们自己启动的 Chrome 本来就报
+#   navigator.webdriver === false，boolean，实例无自有属性，
+#   Navigator.prototype 上是 [native code] getter —— 与真人逐项一致。
+# webdriver=true 只出现在带 --enable-automation 启动的 Chrome（Playwright 自己
+# 启动浏览器时才加），本仓是自己起 Chrome、Playwright 只 CDP 连上来。
+# 补丁反而把这个正常的 false 改成真人不可能的 undefined，并（实测 plugins=0，
+# 所以那个分支一直在跑）注入 3 个假 plugin 对象。
+# 加 --disable-blink-features=AutomationControlled 也没有任何区别，实测两者输出完全相同。
 
 # ---------------------------------------------------------------------------
 # 2. 抓取 profile 的来源

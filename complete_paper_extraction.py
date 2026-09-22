@@ -243,29 +243,13 @@ DP_RETRY_DELAY = _env_seconds('DP_RETRY_DELAY', 90)              # seconds betwe
 # them, so the PDF's anti-bot pacing would be paid over and over for nothing.
 DP_IMG_RETRY_DELAY = _env_seconds('DP_IMG_RETRY_DELAY', 10)      # seconds between figure retries
 
-# Whether to inject the anti-detection patches into headed pages.
-#
-# Default on = current behaviour; DP_STEALTH_JS=0 turns it off so the two can be
-# compared. Measured against the real Chrome binary, the script is mostly inert
-# and the rest is arguably counterproductive:
-#
-#   plugins / languages branches   never run -- both are guarded on
-#                                  `.length === 0`, and Chrome reports 5 plugins
-#                                  and 2 languages, so they are dead code here
-#   delete window.cdc_…            no-op -- cdc_ is a ChromeDriver artifact and
-#                                  Playwright/CDP never injects it
-#   navigator.webdriver = undefined  a value no real browser ever reports
-#                                  (real Chrome says false), created as an
-#                                  instance-level GETTER while the genuine
-#                                  property is a data property on the prototype
-#   permissions.query override     toString() stops saying [native code], and
-#                                  the function moves onto the instance
-#
-# Nothing in this program reads any of those, so switching it off costs us no
-# capability. Whether it helps against a bot manager is unproven -- that is what
-# the switch is for.
-DP_STEALTH_JS = os.environ.get('DP_STEALTH_JS', '1').strip().lower() not in (
-    '0', 'false', 'no', 'off')
+# ❌ DP_STEALTH_JS 与整段 _stealth_js 已删除。实测（纯 CDP 读，不注入任何补丁）：
+# 我们自己启动的 Chrome 报 `navigator.webdriver === false`，boolean，实例上无
+# 自有属性，Navigator.prototype 上是 [native code] getter —— 和真人浏览器逐项
+# 一致。`true` 只出现在带 --enable-automation 启动的 Chrome 上，那是 Playwright
+# 自己启动浏览器时加的；这里我们起 Chrome、Playwright 只 CDP 连上来。
+# 补丁把这个正常的 false 改成 undefined（真人不可能的取值）。详见
+# ensure_headed_context 里的注释。
 DP_IMG_MAX_RETRIES = int(_env_seconds('DP_IMG_MAX_RETRIES', 3))  # figure/image downloads
 DP_SUPP_MAX_RETRIES = int(_env_seconds('DP_SUPP_MAX_RETRIES', 5)) # supplemental downloads
 
@@ -1292,46 +1276,29 @@ class SharedBrowserSession:
                 self.headed_context = None
         if not await self.ensure_headed_chrome():
             return None
-        _stealth_js = """
-            // Hide webdriver flag
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined,
-            });
-            // Restore missing plugins (headless/automated Chrome has 0)
-            if (navigator.plugins && navigator.plugins.length === 0) {
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [
-                        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-                        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
-                        { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
-                    ],
-                });
-            }
-            if (navigator.languages && navigator.languages.length === 0) {
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['en-US', 'en'],
-                });
-            }
-            // Fix permissions query
-            const originalQuery = window.navigator.permissions.query;
-            if (originalQuery) {
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications'
-                        ? Promise.resolve({ state: Notification.permission })
-                        : originalQuery(parameters)
-                );
-            }
-            // Hide CDP-specific global
-            delete window.cdc_adoQpoasnfa76pfcZLmcfl_;
-        """
+        # ❌ _stealth_js 已删除。实测（本机 Chrome，纯 CDP 读，不注入任何补丁）：
+        #
+        #   navigator.webdriver = false, typeof boolean,
+        #   实例上无自有属性, Navigator.prototype 上是 [native code] getter
+        #
+        # 也就是说我们自己启动的 Chrome **本来就报 false** —— 和真人浏览器逐项
+        # 一致。webdriver=true 只出现在带 --enable-automation 启动的 Chrome 上，
+        # 而那是 Playwright 自己启动浏览器时加的；这里是我们起 Chrome、
+        # Playwright 只用 CDP 连上来，所以从来没有过。
+        #
+        # ⚠️ 而那个补丁把这个正常的 false 改成了 undefined —— 真人浏览器**不可能**
+        # 的取值，并且是在实例上新建 getter（原型上有、实例上也有，且实例那个是
+        # 访问器），一行 Object.getOwnPropertyDescriptor(navigator,'webdriver')
+        # 就能看出来。用户在真实 Cloudflare 拦截页上读到的正是这个 undefined。
+        #
+        # 其余几支实测都是死代码或同类问题：plugins/languages 的条件是
+        # `.length === 0`，真实 Chrome 报 5 个和 2 种，永不执行；
+        # delete window.cdc_… 是 ChromeDriver 的痕迹，Playwright/CDP 不注入；
+        # permissions.query 的改写让 toString() 不再是 [native code]，
+        # 并把函数从原型挪到实例自有属性 —— 最经典的一条检测。
 
         if self.headed_browser.contexts:
             self.headed_context = self.headed_browser.contexts[0]
-            # Inject stealth into the default context too
-            if DP_STEALTH_JS:
-                await self.headed_context.add_init_script(_stealth_js)
-            else:
-                print("  🫥 DP_STEALTH_JS=0 — 不注入反检测补丁")
         else:
             self.headed_context = await self.headed_browser.new_context(
                 accept_downloads=True,
@@ -1342,10 +1309,6 @@ class SharedBrowserSession:
                 viewport={"width": 1440, "height": 900},
                 locale="en-US",
             )
-            if DP_STEALTH_JS:
-                await self.headed_context.add_init_script(_stealth_js)
-            else:
-                print("  🫥 DP_STEALTH_JS=0 — 不注入反检测补丁")
 
         return self.headed_browser, self.headed_context
 
