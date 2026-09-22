@@ -25,7 +25,7 @@ cd /home/zhiping/Projects/Download_paper
 python complete_paper_extraction.py --doi "<DOI>"
 python complete_paper_extraction.py --doi "<DOI>" --force-headed  # 有头模式
 python complete_paper_extraction.py --doi "<DOI>" --pdf-only      # 只下 PDF，不生成 md
-python batch_process.py --file dois.txt                     # 批量
+python complete_paper_extraction.py --file dois.txt         # 批量（主程序自己就会批处理）
 ```
 
 ## 跳过补充材料（`--supplemental=False` / `DP_SUPPLEMENTAL=0`）
@@ -396,6 +396,14 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
   出版商，文件永远不会落盘，那 20 秒纯粹是在推迟点框（其后附着还要最多 10 秒找 tab + 固定 2 秒）。
   未被挑战的 PDF 在启动后 1~2 秒内就落盘，短探测不会有损失
 
+### 批量处理就用主程序的 `--file`（`batch_process.py` 已删除）
+
+`--file` 和那个脚本走的不是同一套：主程序的批次循环**整批共享一个
+`BrowserSession`**，并在每篇之间 `retire_headed_browser()` 重建 profile；
+而 `batch_process.py` 是逐篇调 `complete_extraction_workflow()` 且**不传
+`browser_session`**，两条都绕过去了 —— 也就是说它跑长批次时 profile 不会逐篇重建，
+与「抓取 profile 永不复用」正好相反。`BATCH_SLEEP` 防拉黑休眠本来也在主程序里。
+
 ### 两个 context 之间不再搬运 cookie（已整条删除）
 
 - 📌 **不靠搬运也有登录态**：无头 context（整批建一次）和有头浏览器（每篇重建）
@@ -409,8 +417,11 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
 - ❌ 早先 headed→headless 那一侧还用 `storage_state()`：它为了收集 localStorage 会
   开一个页面**挨个导航到这个 context 碰过的每一个 origin**（一篇下来几十个），
   表现为关浏览器前闪过一个飞速滚屏的新 tab。那是整篇干完之后又回去批量触碰各站点
-- 📌 `latest_headed_state` 一并删除。无头 context 的外部 cookie 现在只有一个来源：
-  **`--refresh-headless-auth` 写的那个文件**，显式、语义清楚
+- 📌 `latest_headed_state` 一并删除。**`--refresh-headless-auth`、
+  `.auth/headless_storage_state.json`、`DOWNLOAD_PAPER_HEADLESS_AUTH_STATE`
+  也全部删除** —— 导出的 storage_state 没有比播种的 profile 多任何东西，却要为此
+  连一次用户自己的 Chrome，而 `storage_state()` 的实现正是把一个页面导航到该浏览器
+  碰过的每一个 origin。登录态现在只有一条路：**播种的 profile**
 - ✅ 实测：AIP `10.1063/5.0326077` 仍走 `🟢 无头直连路径`（无头预检靠的就是订阅态），
   43 条参考文献、12 图、367 行；Optica `10.1364/OE.444043` md5 仍是 `7d3143c4`；
   两篇的 `cookie同步` 日志行均为 0

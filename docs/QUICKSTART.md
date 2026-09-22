@@ -141,7 +141,7 @@ A: 已自动配置。脚本使用 `~/.config/google-chrome` 目录的现有登�
 A: 可以，有三种方式，不需要自己写循环：
 - `--file dois.txt`（每行一个 DOI）
 - `--json articles.json`（每篇可带 `link`、`pdf_link`、`referer` 等）
-- `python batch_process.py --file dois.txt`（另带防拉黑休眠）
+- `python complete_paper_extraction.py --file dois.txt`（批处理与防拉黑休眠都在主程序里）
 
 ### Q: 补充材料为什么有时下载失败？
 A: 网络问题或文件过大。脚本会在错误处继续，不会中断。

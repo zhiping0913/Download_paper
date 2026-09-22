@@ -1131,13 +1131,6 @@ async def auto_solve_bot_challenge(
 
 
 
-HEADLESS_AUTH_STATE_FILE = Path(
-    os.environ.get(
-        "DOWNLOAD_PAPER_HEADLESS_AUTH_STATE",
-        Path(__file__).resolve().parent / ".auth" / "headless_storage_state.json",
-    )
-).expanduser()
-
 # 全局变量仅用于兼容信号处理；实际生命周期由 SharedBrowserSession 管理。
 _active_browser_session = None
 
@@ -1254,7 +1247,7 @@ class SharedBrowserSession:
             return False
         return await self.connect_headed_browser()
 
-    async def ensure_headless_context(self, storage_state=None):
+    async def ensure_headless_context(self):
         if self.headless_context is not None:
             return self.headless_context
 
@@ -1278,17 +1271,11 @@ class SharedBrowserSession:
         self.headless_context = await self.playwright.chromium.launch_persistent_context(
             str(user_data_dir), **launch_kwargs)
 
-        # storage_state is a launch()-only option; a persistent context takes
-        # its cookies afterwards. The only source now is the file
-        # --refresh-headless-auth writes -- the profile seeding above has
-        # already put the real browser's cookies in place.
-        cookies = (storage_state or {}).get("cookies") or []
-        if cookies:
-            try:
-                await self.headless_context.add_cookies(cookies)
-            except Exception as exc:
-                print(f"  ⚠️  无头context载入cookies失败: {str(exc)[:80]}")
-        print(f"  ↔ 共享无头context已创建，载入 {len(cookies)} 个cookies")
+        # ❌ No storage_state, no add_cookies. prepare_profile_dir above has
+        # already seeded this profile from the real Chrome one -- the Cookies
+        # database is copied wholesale (minus the bot-manager rows), which is
+        # both more complete than an exported storage_state and free.
+        print("  ↔ 共享无头context已创建（cookie 来自播种的 profile）")
         return self.headless_context
 
     async def ensure_headed_context(self):
@@ -1382,8 +1369,7 @@ class SharedBrowserSession:
     #     run had touched -- a visible burst of requests to publishers after
     #     the work was already done.
     #
-    # ``--refresh-headless-auth`` remains the supported way to hand a login
-    # state to the headless precheck, and it is explicit.
+    # Login state reaches both browsers one way now: the seeded profile.
 
     def cleanup_owned_chrome_sync(self):
         proc = self.headed_process
@@ -3339,7 +3325,6 @@ async def complete_extraction_workflow(
     doi: str,
     output_file: str = None,
     force_headed: bool = False,
-    refresh_headless_auth: bool = False,
     browser_session: SharedBrowserSession = None,
     link: str = None,
     extra_headers: dict = None,
@@ -3355,7 +3340,6 @@ async def complete_extraction_workflow(
         force_headed: 是否强制使用有头浏览器，跳过无头预检 (默认: False)
                        - True: 跳过Phase 0，直接使用有头Chrome
                        - False: 先用无头浏览器预检，根据结果决定是否需要有头
-        refresh_headless_auth: 是否通过CDP从真实Chrome刷新无头浏览器登录态
         link: 可选。若提供，会绕过 https://doi.org/{doi} 重定向，直接访问该 URL
               (headless 预检和有头访问都以此为主 URL)。对于绕过 doi.org
               redirect 时才会弹的反 bot 校验很有用。
@@ -3825,36 +3809,6 @@ async def complete_extraction_workflow(
         print("⚠️  Chrome 启动超时，无法读取真实浏览器登录态\n")
         return False
 
-    def summarize_storage_state(storage_state: dict) -> str:
-        cookie_count = len(storage_state.get('cookies', []))
-        origin_count = len(storage_state.get('origins', []))
-        return f"{cookie_count} cookies, {origin_count} origins"
-
-    def load_saved_headless_storage_state():
-        """Load persisted Playwright storage_state for the headless precheck."""
-        if not HEADLESS_AUTH_STATE_FILE.exists():
-            print(f"  ℹ️  未找到无头登录态文件: {HEADLESS_AUTH_STATE_FILE}")
-            return None
-
-        try:
-            with open(HEADLESS_AUTH_STATE_FILE, 'r', encoding='utf-8') as f:
-                storage_state = json.load(f)
-            print(f"  ✓ 已加载无头登录态: {summarize_storage_state(storage_state)}")
-            return storage_state
-        except Exception as e:
-            print(f"  ⚠️  读取无头登录态失败: {type(e).__name__}: {str(e)[:100]}")
-            return None
-
-    def save_headless_storage_state(storage_state: dict):
-        """Persist Playwright storage_state for future remote headless runs."""
-        try:
-            HEADLESS_AUTH_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(HEADLESS_AUTH_STATE_FILE, 'w', encoding='utf-8') as f:
-                json.dump(storage_state, f, ensure_ascii=False, indent=2)
-            print(f"  ✓ 无头登录态已保存: {HEADLESS_AUTH_STATE_FILE}")
-        except Exception as e:
-            print(f"  ⚠️  保存无头登录态失败: {type(e).__name__}: {str(e)[:100]}")
-
     @asynccontextmanager
     async def playwright_scope():
         """Reuse the batch Playwright driver when one was supplied."""
@@ -3891,43 +3845,14 @@ async def complete_extraction_workflow(
                 connection = None
             yield connection
 
-    async def export_headed_chrome_storage_state(playwright):
-        """Export cookies/localStorage from the headed Chrome profile for headless use."""
-        if not await ensure_headed_chrome_ready():
-            return None
-
-        try:
-            headed_browser = await playwright.chromium.connect_over_cdp(
-                f"http://localhost:{CHROME_DEBUG_PORT}"
-            )
-            if not headed_browser.contexts:
-                print("  ⚠️  有头Chrome没有可用context，Phase 0将使用干净无头context")
-                return None
-
-            headed_context = headed_browser.contexts[0]
-            storage_state = await headed_context.storage_state()
-            print(f"  ✓ 已从真实Chrome导出登录态: {summarize_storage_state(storage_state)}")
-            save_headless_storage_state(storage_state)
-            return storage_state
-        except Exception as e:
-            print(f"  ⚠️  读取真实Chrome登录态失败: {type(e).__name__}: {str(e)[:100]}")
-            return None
-
-    async def load_headless_storage_state(playwright):
-        """Resolve the storage_state used by Phase 0 without requiring CDP by default."""
-        if refresh_headless_auth:
-            print("  🔄 正在从真实Chrome刷新无头登录态...")
-            storage_state = await export_headed_chrome_storage_state(playwright)
-            if storage_state:
-                return storage_state
-            print("  → 刷新失败，将尝试读取已有无头登录态文件")
-
-        storage_state = load_saved_headless_storage_state()
-        if storage_state:
-            return storage_state
-
-        print("  → Phase 0将使用干净无头context继续预检")
-        return None
+    # ❌ The Phase 0 storage_state plumbing is gone, along with
+    # --refresh-headless-auth. Both contexts are seeded from the real Chrome
+    # profile by prepare_profile_dir -> seed_profile, which copies the
+    # Cookies database itself (and strips the bot-manager entries). A second,
+    # hand-exported copy of the same login state added nothing the profile
+    # did not already carry, while needing a CDP connection to the user's own
+    # Chrome to produce -- and storage_state() produces it by navigating a
+    # page to every origin that browser has ever touched.
 
     # ========== 预获取Crossref元数据（Phase 0之前）==========
     print("\nStep 0️⃣ (Pre)  获取Crossref元数据...")
@@ -3993,11 +3918,10 @@ async def complete_extraction_workflow(
 
         try:
             async with playwright_scope() as p:
-                storage_state = await load_headless_storage_state(p)
                 headless_owned_context = None
                 if browser_session is not None:
                     headless_browser = None
-                    headless_context = await browser_session.ensure_headless_context(storage_state)
+                    headless_context = await browser_session.ensure_headless_context()
                 else:
                     # Same reason as ensure_headless_context: the profile is
                     # what makes Chrome download a PDF instead of displaying it.
@@ -4012,11 +3936,6 @@ async def complete_extraction_workflow(
                     headless_context = await p.chromium.launch_persistent_context(
                         str(_hl_dir), **_hl_kwargs)
                     headless_owned_context = headless_context
-                    if storage_state and storage_state.get('cookies'):
-                        try:
-                            await headless_context.add_cookies(storage_state['cookies'])
-                        except Exception:
-                            pass
                 headless_page = await headless_context.new_page()
 
                 # One entry point for both modes: MathJax interception,
@@ -4858,13 +4777,6 @@ JSON 格式:
                  'OUP 的书把每一章都列成补充材料 PDF，整本下下来既慢又不是要的东西'
         )
 
-        parser.add_argument(
-            '--refresh-headless-auth',
-            action='store_true',
-            default=False,
-            help='通过本机Chrome CDP导出登录态到 .auth/headless_storage_state.json，供后续无头预检使用'
-        )
-
         args = parser.parse_args()
 
         # The flag wins over the environment variable; unset means keep
@@ -4953,9 +4865,6 @@ JSON 格式:
         force_headed_mode = args.force_headed
         if force_headed_mode:
             print(f"🔧 强制有头浏览器模式启用 - 将跳过无头浏览器预检\n")
-        if args.refresh_headless_auth:
-            print(f"🔄 将刷新无头浏览器登录态缓存: {HEADLESS_AUTH_STATE_FILE}\n")
-
         # 处理输出路径
         output_dir = str(Path(args.output).expanduser().resolve())
         output_path = Path(output_dir)
@@ -4988,7 +4897,6 @@ JSON 格式:
                             doi,
                             output_file=output_dir,
                             force_headed=force_headed_mode,
-                            refresh_headless_auth=args.refresh_headless_auth,
                             browser_session=browser_session,
                             link=article.get('link'),
                             extra_headers=article.get('header'),

@@ -32,8 +32,7 @@ python complete_paper_extraction.py --doi "10.1088/1361-6463/ae36b8" --force-hea
 ### 批量处理
 
 ```bash
-python batch_process.py --file dois.txt
-python batch_process.py --dois "10.1103/..." "10.1063/..."
+python complete_paper_extraction.py --file dois.txt
 ```
 
 ---
@@ -45,7 +44,6 @@ python batch_process.py --dois "10.1103/..." "10.1063/..."
 | 文件 | 用途 |
 |---|---|
 | `complete_paper_extraction.py` | 主入口，编排完整提取流程（浏览器→提取→下载→保存） |
-| `batch_process.py` | 批量 DOI 处理器 |
 
 ### 配置与基础设施
 

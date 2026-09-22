@@ -214,12 +214,10 @@ def check_filesystem(c: Checker):
     else:
         c.log_fail("config.py — missing")
 
-    # Headless auth state (optional, warn if missing but not fatal)
-    auth_file = project_root / ".auth" / "headless_storage_state.json"
-    if auth_file.is_file():
-        c.log_ok(".auth/headless_storage_state.json — exists")
-    else:
-        c.log_warn(".auth/headless_storage_state.json — missing (headless may trigger login)")
+    # ❌ No headless auth-state file any more. Both scraping profiles are
+    # seeded from the real Chrome profile, so a separate exported login
+    # state added nothing; warning about its absence sent people looking for
+    # a problem that did not exist.
 
 
 # ===================================================================
