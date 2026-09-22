@@ -90,6 +90,7 @@ from core.utilities import (
     api_harvest_patterns,
     env_seconds,
     looks_like_html_bytes,
+    safe_download_name,
     pick_raw_article_html,
     url_looks_like_bot_challenge,
 )
@@ -3010,8 +3011,11 @@ async def download_via_cdp_stream(ws_url: str, url: str, dest_dir: str,
                       f"声明 {declared:,} —— 不完整，丢弃")
                 return ''
 
-            name = filename or os.path.basename(
-                urllib.parse.urlparse(url).path) or 'download.bin'
+            # ⚠️ Not the raw basename. A URL path segment can hold a whole
+            # title; measured, one PDF's name blew past the filesystem limit
+            # and the write failed with Errno 36 *after* the bytes were
+            # already in hand.
+            name = filename or safe_download_name(url)
             dest = os.path.join(dest_dir, name)
             with open(dest, 'wb') as fh:
                 fh.write(body)
@@ -3190,7 +3194,7 @@ def _save_captured_body(result: dict, url: str, download_dir: str) -> str:
             best = raw
     if not best:
         return ''
-    name = os.path.basename(urllib.parse.urlparse(url).path) or 'download.bin'
+    name = safe_download_name(url)
     dest = os.path.join(download_dir, name)
     try:
         with open(dest, 'wb') as fh:

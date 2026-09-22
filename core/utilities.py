@@ -484,6 +484,55 @@ def looks_like_html_bytes(data: bytes) -> bool:
     return data.lstrip()[:1] == b'<'
 
 
+#: Per-component byte limit for a filename we invent ourselves. ext4 allows
+#: 255 bytes; 200 leaves room for the suffixes a download picks up on the way
+#: (``.crdownload``, a ``_1`` de-duplication tail).
+#:
+#: ⚠️ This is NOT the cap that governs the output directory. Those are
+#: MAX_STEM_BYTES (supplemental), the figure name cap, and
+#: WINDOWS_CHILD_RESERVE, and they are a matched set -- see CLAUDE.md. This
+#: one only bounds names derived from a URL inside a temporary download dir.
+SAFE_NAME_MAX_BYTES = 200
+
+
+def safe_download_name(url: str, fallback: str = 'download.bin',
+                       max_bytes: int = SAFE_NAME_MAX_BYTES) -> str:
+    """A filename for *url* that the filesystem will actually accept.
+
+    ⚠️ A URL path segment can be arbitrarily long, and some publishers put a
+    whole title in it. Measured: a PDF whose basename began
+    ``div-class-title-51-5-w-monol…`` made the browser-stream download die
+    with ``OSError: [Errno 36] File name too long`` -- after the bytes had
+    already been fetched, which is the worst moment to lose them.
+
+    The extension is preserved: it is what ``_detect_and_rename`` and the
+    media-type checks downstream look at.
+    """
+    from urllib.parse import unquote, urlparse
+    import os as _os
+
+    raw = _os.path.basename(urlparse(url or '').path)
+    raw = unquote(raw).strip().strip('.') or fallback
+    raw = raw.replace('/', '_').replace('\\', '_')
+
+    stem, ext = _os.path.splitext(raw)
+    ext_bytes = ext.encode('utf-8')
+    if len(ext_bytes) > 24:          # not an extension, just a long tail
+        stem, ext, ext_bytes = raw, '', b''
+
+    room = max_bytes - len(ext_bytes)
+    stem_bytes = stem.encode('utf-8')
+    if room <= 0:
+        return fallback
+    if len(stem_bytes) > room:
+        stem_bytes = stem_bytes[:room]
+        # Never split a multi-byte UTF-8 character.
+        while stem_bytes and (stem_bytes[-1] & 0xC0) == 0x80:
+            stem_bytes = stem_bytes[:-1]
+        stem = stem_bytes.decode('utf-8', errors='ignore')
+    return (stem + ext) or fallback
+
+
 def env_off(name: str, default: str = '1') -> bool:
     """True when *name* is set to one of the usual "no" spellings."""
     return os.environ.get(name, default).strip().lower() in (
