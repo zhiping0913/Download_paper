@@ -175,15 +175,16 @@ BATCH_SLEEP_MAX = int(os.environ.get("BATCH_SLEEP_MAX", 60))
 # 脚本配置
 # ============================================================================
 
-# 脚本是否使用有头浏览器
-HEADLESS = os.environ.get("HEADLESS", "false").lower() in ("1", "true", "yes", "on")
-
-# 默认使用持久化Chrome还是remote debugging
-# 可选值: "persistent" 或 "remote"
-USE_CHROME_MODE = os.environ.get("USE_CHROME_MODE", "persistent")  # 使用持久化用户数据目录
+# ❌ USE_CHROME_MODE 和 HEADLESS 已删除。两个都**没有任何代码读取** ——
+# 只是被定义、被打印。而且那行 `Chrome模式: persistent` 还在说反话：
+# "persistent = 复用现有 profile"，可抓取 profile 是**每篇论文先删再建**的
+# （chrome_session.prepare_profile_dir），从不复用。有头/无头也不由环境变量
+# 决定，而是 Phase 0 按出版商和预检结果自己判（见 HEADLESS_ACCESSIBLE_PUBLISHERS
+# 与 --force-headed）。
+#
+# 一个打印出来、看着像在生效、实际谁都不读的开关，比没有更糟。
 
 print("✓ 配置已加载")
 print(f"  - Chrome: {CHROME_PATH}")
 print(f"  - Chrome 真实 profile: {CHROME_USER_DATA_DIR}")
-print(f"  - Chrome模式: {USE_CHROME_MODE}")
 print(f"  - 平台: {'Windows' if IS_WINDOWS else 'Linux'}")

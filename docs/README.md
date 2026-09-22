@@ -40,7 +40,9 @@ export CHROME_AUX_DEBUG_PORT=9333                      # 辅助（一次性）�
                                                        # 旧名 CHROME_PDF_DEBUG_PORT 仍可用
 export DP_PDF_FRESH_CHROME=1                           # 0 = 禁用一次性实例
 export CHROME_DOWNLOAD_DIR=/root/Downloads             # Chrome 默认下载目录
-export HEADLESS=false                                  # true/false；Cloudflare 站点建议 false
+# ❌ HEADLESS / USE_CHROME_MODE 已删除：没有任何代码读它们。有头还是无头由
+#    Phase 0 按出版商和预检结果自己判（HEADLESS_ACCESSIBLE_PUBLISHERS），
+#    要强制有头用 --force-headed
 export DP_HTTP_USER_AGENT="Mozilla/5.0 ..."            # 直接请求用的 UA（可选）
 
 # 取数阶梯：request（带 cookies 的裸 HTTP）→ tab（现有浏览器新标签页）
