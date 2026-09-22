@@ -245,8 +245,10 @@ export BATCH_SLEEP_MAX=60                # 默认 60
 # ---------------------------------------------------------------------------
 # 7. 无头登录态缓存
 # ---------------------------------------------------------------------------
-# --refresh-headless-auth 会写这个文件，Phase 0 无头预检从这里加载 cookies。
-# export DOWNLOAD_PAPER_HEADLESS_AUTH_STATE="${PWD}/.auth/headless_storage_state.json"
+# ❌ DOWNLOAD_PAPER_HEADLESS_AUTH_STATE / --refresh-headless-auth 已删除：
+#    无头和有头的 profile 都由 prepare_profile_dir 从真实 Chrome profile 播种
+#    （整份 Cookies 库，剔除反爬条目），另存一份导出的 storage_state 没有增加
+#    任何东西，却要为此连一次用户自己的 Chrome。
 
 # ---------------------------------------------------------------------------
 # 8. 启用 venv（可选）
@@ -278,8 +280,7 @@ for v in CHROME_PATH CHROME_DEBUG_PORT CHROME_AUX_DEBUG_PORT \
          DP_FIGURE_TIMEOUT \
          DP_MAX_RETRIES DP_IMG_MAX_RETRIES DP_SUPP_MAX_RETRIES DP_RETRY_DELAY \
          BATCH_SLEEP_MIN BATCH_SLEEP_MAX \
-         CAPTURED_DATA_DIR OUTPUT_DIR_DEFAULT \
-         DOWNLOAD_PAPER_HEADLESS_AUTH_STATE; do
+         CAPTURED_DATA_DIR OUTPUT_DIR_DEFAULT; do
     printf "  %-42s = %s\n" "$v" "${!v:-<default>}"
 done
 echo "──────────────────────────────────────────────────────"
@@ -299,8 +300,7 @@ echo "────────────────────────�
 #   --force-headed            跳过无头预检，直接开有头 Chrome
 #   --pdf-only                只下 PDF：跳过图片/补充材料下载和 Markdown 生成，
 #                             metadata.json / crossref.json 照常写
-#   --refresh-headless-auth   通过本机 Chrome CDP 把登录态刷进
-#                             .auth/headless_storage_state.json
+#   --supplemental=False      跳过补充材料下载（书籍尤其有用）
 #
 # 无头 / 有头是自动判断的：Phase 0 先用无头访问，出版商在
 # HEADLESS_ACCESSIBLE_PUBLISHERS 里就全程无头（ACS、Nature、AIP、Cambridge、

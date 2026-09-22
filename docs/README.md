@@ -369,19 +369,14 @@ HEADLESS_ACCESSIBLE_PUBLISHERS = ["nature", "aip", "cambridge", "springer"]
 
 中，主流程直接把这个无头 `page` 传给对应 handler，然后进入统一处理阶段。
 
-无头预检可以使用持久化登录态文件：
+无头预检的登录态来自**播种的 profile**：`prepare_profile_dir()` 在建这个无头
+context 之前，已经把真实 Chrome profile 的整份 Cookies 库复制过来（并剔除反爬
+条目），所以订阅态本来就在。
 
-```text
-.auth/headless_storage_state.json
-```
-
-正常远程运行时，Phase 0 只读取这个文件，不会自动连接 `127.0.0.1:9222`。如果需要从真实 Chrome 刷新该文件，可以在方便使用本机 Chrome/CDP 时显式运行：
-
-```bash
-python complete_paper_extraction.py --doi <doi> --refresh-headless-auth
-```
-
-`.auth/` 不应提交到 git。
+❌ `.auth/headless_storage_state.json` 和 `--refresh-headless-auth` **已删除**：
+导出的 storage_state 没有比播种的 profile 多任何东西，却要为此连一次用户自己的
+Chrome，而 `storage_state()` 的实现是把一个页面导航到该浏览器碰过的每一个
+origin。
 
 ### 2. 无头 Handler 自主管理路径
 
@@ -855,16 +850,18 @@ md_path = asyncio.run(complete_extraction_workflow("10.1103/PhysRevLett.125.0150
 （⚠️ DOI 必须走 `--doi`，位置参数不被接受 —— `--doi/--file/--json` 是 `required=True`
 的互斥组，漏掉就是 argparse 直接 exit 2）
 
-### batch_process.py
+### 批量处理
 
-批量 DOI 处理器，支持从文件或命令行读取多个 DOI：
+❌ `batch_process.py` 已删除 —— 主程序自己就是批处理器：
 
 ```bash
-python batch_process.py --file dois.txt
-python batch_process.py --dois "10.1103/..." "10.1063/..."
+python complete_paper_extraction.py --file dois.txt
 ```
 
-内置随机睡眠防拉黑机制（通过 `config.py` 的 `BATCH_SLEEP_*` 配置），可用 `--no-sleep` 临时禁用。
+`--file` 走的是同一个循环，且**比那个脚本多做了两件要紧的事**：整批共享一个
+`BrowserSession`，以及每篇之间 `retire_headed_browser()` 重建 profile。
+那个脚本是逐篇调 `complete_extraction_workflow()` 而不传 `browser_session`，
+等于把这两条都绕过去了。随机睡眠防拉黑（`config.py` 的 `BATCH_SLEEP_*`）也在主程序里。
 
 ## 反爬虫检测
 

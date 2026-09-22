@@ -43,7 +43,7 @@ playwright install chromium
 - 可执行文件 `/opt/google/chrome/chrome`（或路径覆盖）
 - 用户数据目录 `~/.config/google-chrome`（持有登录态 cookies）
 - CDP 端口 `localhost:9222` 可用
-- 登录态文件 `.auth/headless_storage_state.json`（可选，由 `--refresh-headless-auth` 刷新）
+- 登录态：无需单独的文件。无头/有头的抓取 profile 都由 `prepare_profile_dir` 从真实 Chrome profile 播种（整份 Cookies 库，剔除反爬条目）
 
 ## 4. 网络资源
 
@@ -62,7 +62,6 @@ playwright install chromium
 | 路径 | 说明 |
 |------|------|
 | `captured_data/{doi}/` | 每个 DOI 的缓存目录（headless HTML、元数据） |
-| `.auth/headless_storage_state.json` | 无头 Chromium 登录态（不在 git 中） |
 | `output_dir/{year}--{title}/` | 最终输出目录（MD、PDF、图片、补充材料） |
 
 ## 6. 环境变量
