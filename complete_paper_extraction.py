@@ -1172,7 +1172,6 @@ class SharedBrowserSession:
         self.owns_headed_profile = False
         self.headed_browser = None
         self.headed_context = None
-        self.latest_headed_state = None
 
     @staticmethod
     def _chrome_ready() -> bool:
@@ -1280,9 +1279,10 @@ class SharedBrowserSession:
             str(user_data_dir), **launch_kwargs)
 
         # storage_state is a launch()-only option; a persistent context takes
-        # its cookies afterwards.
-        state = self.latest_headed_state or storage_state
-        cookies = (state or {}).get("cookies") or []
+        # its cookies afterwards. The only source now is the file
+        # --refresh-headless-auth writes -- the profile seeding above has
+        # already put the real browser's cookies in place.
+        cookies = (storage_state or {}).get("cookies") or []
         if cookies:
             try:
                 await self.headless_context.add_cookies(cookies)
@@ -1362,26 +1362,28 @@ class SharedBrowserSession:
 
         return self.headed_browser, self.headed_context
 
-    async def sync_headed_to_headless(self, headed_context):
-        # ⚠️ cookies(), not storage_state(). To collect localStorage,
-        # storage_state() opens a page and navigates it to **every origin the
-        # context has touched** -- which is why closing the browser after a
-        # paper flashed a new tab racing through a screenful of sites. It is
-        # also the one thing here that touches publisher origins again after
-        # the work is done. Only the cookies are ever read from it (see the
-        # line below, and the persistent-context seeding that consumes
-        # latest_headed_state), so the localStorage half was pure cost.
-        cookies = await headed_context.cookies()
-        self.latest_headed_state = {"cookies": cookies}
-        if self.headless_context is not None:
-            await self.headless_context.add_cookies(cookies)
-        print(f"  ↔ 有头→无头 cookie同步: {len(cookies)}")
-
-    async def sync_headless_to_headed(self, headed_context):
-        if self.headless_context is not None:
-            cookies = await self.headless_context.cookies()
-            await headed_context.add_cookies(cookies)
-            print(f"  ↔ 无头→有头 cookie同步: {len(cookies)}")
+    # ❌ The two cookie syncs that used to live here are gone. Kept as a note
+    # because removing them looks like losing login state, and it is not:
+    #
+    #   * Both contexts are seeded from the real Chrome profile when they are
+    #     built (prepare_profile_dir -> seed_profile), so each already holds
+    #     the subscription cookies. The headless context is built once per
+    #     batch; the headed browser is rebuilt per paper. Neither depended on
+    #     the other for entitlements.
+    #   * What the sync actually copied was every cookie the finished run had
+    #     *accumulated* -- measured at 1,291 after one paper -- including the
+    #     ShieldSquare / Radware / perfdrive reputation state that
+    #     _strip_bot_cookies deliberately removes at seeding time. It poured
+    #     that back into the one context that survives the whole batch, so
+    #     the case file the seeding step had just torn up was reassembled,
+    #     and grew with every paper.
+    #   * The headed->headless direction also used storage_state() until
+    #     recently, which opened a tab and navigated it to every origin the
+    #     run had touched -- a visible burst of requests to publishers after
+    #     the work was already done.
+    #
+    # ``--refresh-headless-auth`` remains the supported way to hand a login
+    # state to the headless precheck, and it is explicit.
 
     def cleanup_owned_chrome_sync(self):
         proc = self.headed_process
@@ -4248,8 +4250,11 @@ async def complete_extraction_workflow(
         try:
             print("✓ 使用批次共享context\n" if browser_session else "✓ 使用现有context\n")
 
-            if browser_session is not None:
-                await browser_session.sync_headless_to_headed(context)
+            # ❌ No cookie shuttling between the two contexts. Both are
+            # seeded from the real Chrome profile when they are built, so the
+            # subscription cookies are already in each; see the note on
+            # sync_headed_to_headless for why copying the *accumulated* ones
+            # across is actively harmful.
 
             # ⚠️ The page is NOT created here. When the preload succeeded it
             # already has the article open in its own tab, and creating one
@@ -4656,8 +4661,8 @@ async def complete_extraction_workflow(
                 print()
                 result = None
 
-            if browser_session is not None:
-                await browser_session.sync_headed_to_headless(context)
+            # ❌ Likewise on the way out. This used to push every cookie the
+            # headed run had accumulated into the headless context.
 
             # Clean up only this DOI's page when using a batch context. Closing
             # every page makes desktop Chrome exit and loses batch cookies.
