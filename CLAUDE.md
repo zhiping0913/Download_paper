@@ -396,6 +396,23 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
   出版商，文件永远不会落盘，那 20 秒纯粹是在推迟点框（其后附着还要最多 10 秒找 tab + 固定 2 秒）。
   未被挑战的 PDF 在启动后 1~2 秒内就落盘，短探测不会有损失
 
+### 收尾同步 cookie 用 `cookies()`，绝不用 `storage_state()`
+
+用户看到：一篇论文跑完、关浏览器之前，**新开一个 tab 飞快滚过一屏网址**，约一秒。
+
+- 成因是 `sync_headed_to_headless()` 里的 `context.storage_state()` —— 它为了收集
+  localStorage，会**开一个页面挨个导航到这个 context 碰过的每一个 origin**
+  （出版商、CDN、统计、广告，一篇下来几十个）
+- ⚠️ **这不只是慢和奇怪**：那是整篇干完之后，我们又主动回去**批量触碰各站点一轮**。
+  本仓一直在做的「把页面内动作降到最低、只读已到手的响应」，被这个收尾动作在最后
+  一步抵消掉；对按会话行为打分的 bot manager 来说这种模式相当显眼
+- 📌 而代码**只读它的 cookies**，localStorage 那一半从头到尾没人用。改成
+  `await headed_context.cookies()`：纯 CDP，不开页面、不导航
+- ✅ 实测 `10.1364/OE.444043`：cookie 同步仍是 1291 条，`paper.md` md5 不变
+  （`7d3143c4`）
+- 📌 `--refresh-headless-auth` 那处的 `storage_state()` **保留** —— 它是用户显式执行
+  的一次性导出，localStorage 确实要，且不在每篇论文的收尾路径上
+
 ### 浏览器会「播放/显示」的文件，用 `Network.loadNetworkResource` 取
 
 图片、视频、音频导航过去时 Chrome **渲染**它们，不下载：download 事件永不触发。

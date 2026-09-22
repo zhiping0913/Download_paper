@@ -1363,8 +1363,16 @@ class SharedBrowserSession:
         return self.headed_browser, self.headed_context
 
     async def sync_headed_to_headless(self, headed_context):
-        self.latest_headed_state = await headed_context.storage_state()
-        cookies = self.latest_headed_state.get("cookies", [])
+        # ⚠️ cookies(), not storage_state(). To collect localStorage,
+        # storage_state() opens a page and navigates it to **every origin the
+        # context has touched** -- which is why closing the browser after a
+        # paper flashed a new tab racing through a screenful of sites. It is
+        # also the one thing here that touches publisher origins again after
+        # the work is done. Only the cookies are ever read from it (see the
+        # line below, and the persistent-context seeding that consumes
+        # latest_headed_state), so the localStorage half was pure cost.
+        cookies = await headed_context.cookies()
+        self.latest_headed_state = {"cookies": cookies}
         if self.headless_context is not None:
             await self.headless_context.add_cookies(cookies)
         print(f"  ↔ 有头→无头 cookie同步: {len(cookies)}")
