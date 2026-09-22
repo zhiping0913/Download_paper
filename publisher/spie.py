@@ -82,6 +82,11 @@ class SPIEHandler(PublisherHandler):
     #   /api/ebooks/article/fulltexthtml        电子书
     # 问错了族不会报错，只会回一个 hasAccess=False 的空壳，看着像没权限。
     FULLTEXT_API_TMPL = SPIE_BASE + '/api/{family}/article/fulltexthtml'
+
+    #: How many times to POST the fulltext API. ⚠️ These are retries for a
+    #: missing *response*, not attempts at different answers: once SPIE
+    #: replies, hasAccess settles it.
+    FULLTEXT_TRIES = 3
     FULLTEXT_FAMILIES = ('journals', 'proceedings', 'ebooks')
     FULLTEXT_API = FULLTEXT_API_TMPL.format(family='journals')
 
@@ -376,30 +381,47 @@ class SPIEHandler(PublisherHandler):
         # request worth not making is this one.
         captured, captured_url = self.captured_api_entry('/article/fulltexthtml')
         if captured:
-            html = self._fulltext_from_captured(captured)
+            html, decided = self._fulltext_from_captured(captured)
             if html:
                 return html
+            if decided:
+                # The capture already carries SPIE's answer. Re-asking cannot
+                # change it, and this is the publisher where the request worth
+                # not making is this one.
+                return ''
 
-        # ⚠️ Prefer the family the *page itself* used, which the captured URL
-        # spells out (/api/journals|proceedings|ebooks/article/fulltexthtml).
-        # Asking the wrong family does not fail loudly: it answers
-        # hasAccess=False with an empty shell, which reads like a permissions
-        # problem. Inferring it from citation_article_type is a guess about
-        # what SPIE declares; the captured URL is what SPIE actually served.
+        # ⚠️ The family comes from the page, not from guessing. The captured
+        # URL spells out which one the page itself used
+        # (/api/journals|proceedings|ebooks/article/fulltexthtml); failing
+        # that, SPIE declares it in citation_article_type.
         family = self._family_from_url(captured_url) or \
             self.fulltext_family(landing_html, page_url)
         referer = referer or f"{self.SPIE_BASE}/{family}"
+        api = self.FULLTEXT_API_TMPL.format(family=family)
 
-        # 判定出的族先试；万一 SPIE 改了 meta 的写法，再把其余两个补上，
-        # 总共最多 3 次请求 —— 有界，不是漫无目的地猜。
-        families = [family] + [f for f in self.FULLTEXT_FAMILIES if f != family]
-        for attempt, fam in enumerate(families):
-            api = self.FULLTEXT_API_TMPL.format(family=fam)
-            note = '' if attempt == 0 else '（回退）'
-            print(f"  ↪ 请求正文 API{note}: /api/{fam}/article/fulltexthtml ({doi})")
-            html = await self._post_fulltext(page, api, doi, referer)
-            if html:
-                return html
+        # ❌ Never walk the other two families. That used to be the fallback,
+        # on the theory that a wrong family answers hasAccess=False and looks
+        # like a permissions problem -- but the page has already told us the
+        # family, so a second and third POST only re-ask a question that was
+        # answered. Measured on 10.1117/12.209459: the capture said
+        # hasAccess=True with no fullTextHtml (a 1994 proceedings paper that
+        # simply has no HTML edition), and the handler still fired three
+        # POSTs at Imperva, the last two at families it knew were wrong.
+        #
+        # Retries exist only for "no answer came back" -- a timeout or a
+        # network wobble. An answer, of either kind, ends it.
+        for attempt in range(1, self.FULLTEXT_TRIES + 1):
+            note = '' if attempt == 1 else f'（第 {attempt} 次）'
+            print(f"  ↪ 请求正文 API{note}: "
+                  f"/api/{family}/article/fulltexthtml ({doi})")
+            payload = await self._post_fulltext(page, api, doi, referer)
+            if payload is None:
+                if attempt < self.FULLTEXT_TRIES:
+                    print("  ↻ 没有收到响应，重试")
+                continue
+            html, _decided = self._consume_fulltext_payload(payload)
+            return html
+        print(f"  ⚠️  正文 API {self.FULLTEXT_TRIES} 次都没有响应")
         return ''
 
     @classmethod
@@ -413,29 +435,59 @@ class SPIEHandler(PublisherHandler):
                 return fam
         return ''
 
-    def _fulltext_from_captured(self, body: str) -> str:
-        """Body HTML out of a captured fulltexthtml response, or ''.
+    def _fulltext_from_captured(self, body: str) -> tuple:
+        """``(html, decided)`` from a captured fulltexthtml response.
 
-        Lands the payload as fulltexthtml.json exactly as the POST path does:
-        reusing the capture must leave the same file behind, or the capture
-        directory quietly stops being re-renderable offline.
+        *decided* says SPIE has answered: either it granted access and there
+        simply is no HTML edition, or it refused. Both end the matter, and
+        the caller must not POST again -- see fetch_fulltext_html.
+        Unparseable JSON is the one case that is *not* decided.
         """
         try:
             payload = json.loads(body)
         except Exception:
             print("  ⚠️  预载捕获的正文 API 无法解析为 JSON，改为主动请求")
-            return ''
-        html = self.fulltext_html_from_payload(payload)
-        if not html:
-            print(f"  ⚠️  预载捕获的正文 API 里没有 fullTextHtml"
-                  f"（hasAccess={payload.get('hasAccess')}）")
-            return ''
-        print(f"  ♻️  正文 API 复用预载捕获（{len(body):,} 字符，未重复请求）")
-        self._cache_json('fulltexthtml.json', payload)
-        return html
+            return '', False
+        html, decided = self._consume_fulltext_payload(payload, captured=body)
+        return html, decided
 
-    async def _post_fulltext(self, page, api: str, doi: str, referer: str) -> str:
-        """One POST to a fulltext endpoint; '' when it yields no body."""
+    def _consume_fulltext_payload(self, payload: dict,
+                                  captured: str = '') -> tuple:
+        """``(html, decided)`` for one fulltext payload; lands the JSON.
+
+        ⚠️ ``hasAccess=True`` with no ``fullTextHtml`` is an answer, not a
+        failure to be retried: the article is entitled and simply has no HTML
+        edition. Measured on 10.1117/12.209459, a 1994 proceedings paper --
+        the old code read that as "wrong family?" and fired two more POSTs.
+        """
+        if not isinstance(payload, dict):
+            return '', False
+        html = self.fulltext_html_from_payload(payload)
+        has_access = payload.get('hasAccess')
+        if html:
+            if captured:
+                print(f"  ♻️  正文 API 复用预载捕获"
+                      f"（{len(captured):,} 字符，未重复请求）")
+            self._cache_json('fulltexthtml.json', payload)
+            return html, True
+
+        where = '预载捕获的' if captured else ''
+        if has_access is False:
+            print(f"  ⛔ {where}正文 API：hasAccess=False —— 这篇没有正文权限")
+        else:
+            print(f"  ℹ️  {where}正文 API：hasAccess={has_access}，"
+                  f"但没有 fullTextHtml —— 这篇没有 HTML 正文")
+        # Land it anyway: "SPIE said there is nothing" is a result the output
+        # directory should be able to show offline.
+        self._cache_json('fulltexthtml.json', payload)
+        return '', True
+
+    async def _post_fulltext(self, page, api: str, doi: str, referer: str):
+        """One POST to the fulltext endpoint.
+
+        Returns the decoded payload, or ``None`` when **no answer came
+        back** -- the only condition the caller retries on.
+        """
         try:
             payload = await evaluate_with_timeout(
                 page,
@@ -463,19 +515,13 @@ class SPIEHandler(PublisherHandler):
             )
         except Exception as exc:
             print(f"  ⚠️  正文 API 异常: {type(exc).__name__}: {str(exc)[:120]}")
-            return ''
+            return None
 
         if not isinstance(payload, dict) or payload.get('__err'):
-            print(f"  ⚠️  正文 API 失败: {(payload or {}).get('__err', 'no response')}")
-            return ''
-
-        html = ((payload.get('data') or {}).get('fullTextHtml') or '')
-        if not html:
-            print(f"  ⚠️  正文 API 无 fullTextHtml (hasAccess={payload.get('hasAccess')})")
-            return ''
-
-        self._cache_json('fulltexthtml.json', payload)
-        return html
+            print(f"  ⚠️  正文 API 失败: "
+                  f"{(payload or {}).get('__err', 'no response')}")
+            return None
+        return payload
 
     def _cache_json(self, name: str, payload: dict) -> None:
         if not self.captured_data_dir:
