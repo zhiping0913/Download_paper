@@ -77,13 +77,14 @@ $CHROME_PROFILE_ROOT/
 结束后浏览器也会关掉，下一篇重来一遍。原因是被 CDP 驱动过的 profile 会累积自动化
 指纹，用着用着 Cloudflare 就不放行了 —— 所以干脆不复用。
 
-⚠️ 与之相关但方向相反的一个旋钮：`DP_STEALTH_JS=0` 可关掉注入到 headed 页面的反检测
-补丁。实测那段补丁基本无效——伪造 `plugins` / `languages` 的两段都带 `.length === 0`
-前置条件，而真实 Chrome 报告 5 个插件、2 种语言，**永不执行**；`delete window.cdc_…`
-删的是 ChromeDriver 痕迹，Playwright 没有这个全局。真正生效的两条反而制造出真人浏览器
-**不可能**出现的状态：`navigator.webdriver` 变成 `undefined`（真人是 `false`），且是
-实例上的 getter 而非原型上的数据属性；`permissions.query.toString()` 不再返回
-`[native code]`。本程序不读这三者，关掉不损失任何能力。默认仍为开，留待 A/B 验证。
+❌ 反检测补丁 `_stealth_js` 与 `DP_STEALTH_JS` **已整个删除**。实测（纯 CDP 读、
+不注入任何补丁）我们自己启动的 Chrome 本来就报 `navigator.webdriver === false`
+（boolean，实例无自有属性，`Navigator.prototype` 上是 `[native code]` getter）——
+与真人逐项一致；`true` 只出现在带 `--enable-automation` 启动的 Chrome，那是
+Playwright **自己启动**浏览器时才加的。补丁反而把这个正常的 `false` 改成真人不可能
+的 `undefined`，并注入假 plugins（实测 `plugins=0`，所以那个分支一直在跑，而不是
+此前记载的"永不执行"）。加 `--disable-blink-features=AutomationControlled` 也没有
+任何区别。
 
 重建时往里面填什么，只看两个条件：
 

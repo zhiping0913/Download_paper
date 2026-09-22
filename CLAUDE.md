@@ -1209,33 +1209,31 @@ iframe 就点它，找不到才走兜底。
   注入。判断手里那份是不是响应：看那个 `<script src=…orchestrate…>` 元素在不在，
   不在就是响应。要看 widget 得在 DevTools Console 里取 `document.documentElement.outerHTML`
 
-### 反检测补丁 `_stealth_js`（`DP_STEALTH_JS`，默认开）
+### ❌ `_stealth_js` 已整个删除（`DP_STEALTH_JS` 一并去掉）
 
-注入 headed context 每个页面。**实测下来它基本无效，而真正生效的部分可能适得其反** ——
-下面每一条都是在真实 Chrome 二进制上量出来的，不是推断：
+**起因**：用户在真实的 Cloudflare 拦截页上执行 `console.log(navigator.webdriver)`，
+读到 **`undefined`** —— 而真人浏览器只会是 `false`。
 
-| 分支 | 实测 |
-|---|---|
-| 伪造 `plugins` | **永不执行** —— 条件是 `.length === 0`，真实 Chrome 报 5 个 |
-| 伪造 `languages` | **永不执行** —— 同上，真实 Chrome 报 2 种（`en-US,en`） |
-| `delete window.cdc_…` | **空操作** —— `cdc_` 是 ChromeDriver 的痕迹，Playwright/CDP 不注入 |
-| 改写 `navigator.webdriver` | 生效，但造出真人**不可能**的状态 |
-| 改写 `permissions.query` | 生效，但同样留下痕迹 |
+**实测（纯 CDP 读，不注入任何补丁）**：我们自己启动的 Chrome **本来就报 `false`**：
 
-- ⚠️ **它把「可疑」换成了「不可能」**。未注入时 `navigator.webdriver === true` —— 诚实、
-  常见的一个信号；注入后变成 `undefined`，而真实浏览器**只会是 `false`**。前者说明
-  「这是自动化」，后者说明「这是**在撒谎的**自动化」，后者罕见得多，因而更好认
-- ⚠️ **补丁本身比它掩盖的破绽更显眼**：真属性是 `Navigator.prototype` 上的**数据属性**，
-  补丁却在 `navigator` **实例**上新建了 **getter** —— 于是原型上有、实例上也有，
-  且实例那个是访问器，真人那里根本不存在这种组合。一行
-  `Object.getOwnPropertyDescriptor(navigator, 'webdriver')` 即可看出
-- ⚠️ `permissions.query.toString()` 从 `[native code]` 变成箭头函数源码，且从原型挪到
-  实例自有属性 —— 这是最经典的一条检测
-- **关掉不损失任何能力**：本程序不读 `navigator.webdriver` / `plugins` /
-  `permissions.query`。唯一可能沾边的「靠 PDF 插件决定内嵌还是下载」，我们是用
-  profile 的 `always_open_pdf_externally` 强制下载，不依赖插件存在
-- 默认仍为**开**（维持现状），`DP_STEALTH_JS=0` 关闭。**它是否真的影响拦截率尚无证据**，
-  开关就是为了做这个 A/B —— 有结论前不要改默认
+```
+value=false  type=boolean  实例自有属性=无
+Navigator.prototype 上: function get webdriver() { [native code] }
+```
+
+- 📌 **不需要任何 flag**。`--disable-blink-features=AutomationControlled` 加不加，
+  结果**完全相同** —— `webdriver=true` 只出现在带 `--enable-automation` 启动的
+  Chrome 上，那是 **Playwright 自己启动浏览器**时加的；本仓是我们起 Chrome、
+  Playwright 只用 CDP 连上来，所以从来就没有过这个问题
+- ⚠️ 那个 `undefined` **完全是补丁自己造的**：它把一个正常的 `false` 改成真人不可能
+  的取值，还在**实例**上新建 getter（原型上有、实例上也有，且实例那个是访问器）
+- ❌ **并且 CLAUDE.md 此前记错了一条**：原文说「伪造 plugins 的分支永不执行，真实
+  Chrome 报 5 个」。改完后在**有头 Playwright context** 里实测 **`plugins` 是 0**
+  —— 那个分支**一直在执行**，往页面里注入 3 个假 plugin 对象。假 plugin 数组比
+  `webdriver` 更好认（对象缺正确原型，一戳就破）。所以删它比原先以为的更值
+- ✅ 删除后同一环境实测：`webdriver=false`（boolean、实例无自有属性、原型
+  `[native code]`）、`permissions.query.toString()` 恢复成
+  `function query() { [native code] }`、`languages=zh-CN,zh`
 
 ### profile 生命周期（`chrome_session.prepare_profile_dir`）
 
