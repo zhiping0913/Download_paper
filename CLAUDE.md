@@ -831,6 +831,23 @@ Playwright 里这几个调用**都不接受 `timeout=`**，也不受 `set_defaul
   `retry_download`「成了」，于是重试、回退低清链接、`fresh` 层全被跳过，只留下一个
   0 字节的 `.jpg` —— 事后还分辨不出它和真图的区别
 
+### 我们自己造的文件名也要有上限（`safe_download_name`）
+
+❌ **实测报错**：`OSError: [Errno 36] File name too long:
+'/tmp/dp_dl_.../div-class-title-51-5-w-monol…'` —— 某个 PDF 的 URL 路径段里塞着
+整篇标题（实测 basename **469 字节**），而 `download_via_cdp_stream` /
+`_save_captured_body` 直接拿 basename 当文件名。
+
+- ⚠️ **最坏的时机**：字节**已经取回来了**才在写盘这一步失败，于是整层报「未拿到文件」
+- 📌 `core.utilities.safe_download_name()`：按**字节**截到 200（ext4 每组件 255，留出
+  `.crdownload`、`_1` 这类后缀的余量），**保留扩展名**（下游的 `_detect_and_rename`
+  和媒体类型判断都看它），并且不切断多字节 UTF-8 字符
+- ⚠️ **它和产出目录那套上限不是一回事**，别混：`MAX_STEM_BYTES`（补充材料）、
+  图片的 `name_cap`、`WINDOWS_CHILD_RESERVE` 是**一组**，共同约束**最终产出路径**；
+  `safe_download_name` 只管**临时下载目录里由 URL 推出来的名字**
+- ✅ 实测：469 字节的 basename 走完取流路径，落盘 50,016 字节、文件名由调用方给的
+  `paper.pdf`，不再有 Errno 36
+
 ### Windows 路径预算（`organize_paper_output`）
 
 Windows 拒绝任何超过 **MAX_PATH(260)** 的路径，且报的是
