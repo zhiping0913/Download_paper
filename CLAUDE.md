@@ -158,6 +158,17 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
   "Open access"。用裸类名去取，一篇无权限的文章只要侧栏推荐了开放获取论文就会被
   判成有权限
 
+### 删掉的死配置：`USE_CHROME_MODE` / `HEADLESS`
+
+两个都**没有任何代码读取** —— 只是被定义、被打印。而每次运行都会打出来的那行
+`- Chrome模式: persistent` 还在说反话：它的说明是「persistent = 复用现有 profile」，
+可抓取 profile 是**每篇论文先删再建**的（`prepare_profile_dir`），从不复用。
+`HEADLESS` 同理：有头/无头由 Phase 0 按出版商和预检结果自己判
+（`HEADLESS_ACCESSIBLE_PUBLISHERS` / `--force-headed`），环境变量插不上手。
+
+📌 **一个打印出来、看着像在生效、实际谁都不读的开关，比没有更糟** —— 它会让人
+据此调参、据此解释现象。
+
 ### SPIE 正文 API：族只问一次，`hasAccess` 就是结论
 
 ❌ **旧行为是三连撞**：判定出的族先试，失败就把另外两个族也 POST 一遍。理由曾是

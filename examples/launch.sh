@@ -67,7 +67,9 @@ export CHROME_PROFILE_ROOT="${CHROME_PROFILE_ROOT:-/tmp/dp_profiles}"
 
 # export CHROME_PROFILE=Default          # profile 名。默认 Default
 # export CHROME_DOWNLOAD_DIR="${HOME}/Downloads"   # Chrome 默认下载目录
-# export USE_CHROME_MODE=persistent      # persistent（复用 profile）| remote（连已在跑的）
+# ❌ USE_CHROME_MODE / HEADLESS 已删除：没有任何代码读它们。有头还是无头由
+#    Phase 0 按出版商和预检结果自己判（HEADLESS_ACCESSIBLE_PUBLISHERS /
+#    --force-headed）；profile 也从不复用，每篇先删再建。
 # export HEADLESS=false                  # true/false。Cloudflare 站点建议 false
 
 # ★ 反检测补丁（注入 headed 每个页面的 _stealth_js）。默认开 = 现状。
@@ -273,7 +275,6 @@ for v in CHROME_PATH CHROME_DEBUG_PORT CHROME_AUX_DEBUG_PORT \
          DP_FETCH_ORDER DP_FETCH_PDF DP_FETCH_FIGURE \
          DP_FETCH_SUPPLEMENT DP_FETCH_API \
          DP_HTTP_FIRST DP_HTTP_USER_AGENT \
-         USE_CHROME_MODE HEADLESS \
          DP_PAGE_LOAD_TIMEOUT DP_CLOUDFLARE_TIMEOUT DP_PDF_FASTPATH_WAIT \
          DP_PDF_DOWNLOAD_TIMEOUT DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT \
          DP_SUPPLEMENTAL_TIMEOUT DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT \
