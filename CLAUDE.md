@@ -831,6 +831,26 @@ Playwright 里这几个调用**都不接受 `timeout=`**，也不受 `set_defaul
   `retry_download`「成了」，于是重试、回退低清链接、`fresh` 层全被跳过，只留下一个
   0 字节的 `.jpg` —— 事后还分辨不出它和真图的区别
 
+### `RAW_HTML_PUBLISHERS` 的 handler 不回落渲染后 DOM
+
+`get_page_html()` 的回落链现在是：**捕获 → view-source 重取 → 空**。不再有
+`page.content()` 那一层。
+
+- ⚠️ **渲染后 DOM 不是原始响应的"弱化版"，它是另一份文档**：MathJax 已经把 TeX
+  换成 SVG，剩下的只有无障碍朗读串。拿它产出的 md **看着完整、公式全丢**，而且
+  事后分辨不出它和正常产出的区别 —— 混进语料库比缺一篇更糟
+- 📌 **而且它几乎救不回什么**：捕获没拿到、view-source 重取也失败，说明页面本身
+  多半就没加载出来，实时 DOM 大概率同样是空的
+- 📌 这不是新规矩，是补齐：Cambridge 和 Wiley 的 **handler 级**回落早就因为同一
+  理由删掉了，漏的是契约里低一层的这处
+- ⚠️ **只对集合里的 handler 生效**。没有声明 `PUBLISHER`、本来就是按渲染后 DOM 写的
+  handler 仍保留 `content()` 回落，`content_with_timeout` 那层也必须留着 ——
+  那条路径的卡死风险依旧存在
+- ✅ 实测：IOP `10.1088/2515-7647/ac9e2f` 正常路径不受影响（3,634 行、823 行表格、
+  8 图）；构造 view-source 失败的场景，IOP 返回空并打印
+  `⛔ view-source 也失败 —— 返回空正文，不读渲染后 DOM`，而未声明 `PUBLISHER` 的
+  handler 仍拿到 DOM
+
 ### 表格多的文章曾像卡死：每个单元格都在起 pandoc
 
 ❌ **实测**：IOP `10.1088/2515-7647/ac9e2f`（*"…data tables and best practices"*，
