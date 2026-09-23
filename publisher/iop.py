@@ -256,6 +256,17 @@ class IOPHandler(PublisherHandler):
                 # Other divs (e.g., article-text wrapper, display-eqn) — recurse as needed
                 elif 'article-text' in classes:
                     cls._walk_iop_body(element, body_parts)
+                # ⚠️ div.tableBox holds the front-matter lists ("List of
+                # symbols", "List of abbreviations") as plain <table>s with no
+                # data-toolbar-type, so neither this walk nor
+                # extract_tables_from_html saw them. Measured on
+                # 10.1088/2515-7647/ac9e2f: two such tables, 30 and 110 rows,
+                # and the md showed both headings with nothing underneath.
+                elif 'tableBox' in classes:
+                    for plain in element.find_all('table'):
+                        tbl_md = cls._table_element_to_md(plain)
+                        if tbl_md:
+                            body_parts.extend([tbl_md, ""])
 
             elif element.name == 'table' and element.get('data-toolbar-type') == 'table':
                 tbl_md = cls._table_element_to_md(element)
@@ -564,8 +575,17 @@ class IOPHandler(PublisherHandler):
         """
         title = table_element.get('data-toolbar-title', '').strip()
         if not title:
-            strong = table_element.find_previous('strong')
-            if strong:
+            # ⚠️ Search only inside the table's own wrapper. A bare
+            # find_previous('strong') walks the whole document backwards and
+            # will happily return site chrome -- measured on
+            # 10.1088/2515-7647/ac9e2f, the "List of symbols" table came out
+            # titled "**Next**", picked up from a pagination button. A table
+            # with no title nearby should simply have none: the section
+            # heading above it already says what it is.
+            box = (table_element.find_parent('div', class_='boxout')
+                   or table_element.find_parent('div', class_='tableBox'))
+            strong = box.find('strong') if box is not None else None
+            if strong is not None and IOPHandler._is_after(strong, table_element):
                 title = strong.get_text(' ', strip=True)
 
         md_rows = []
@@ -599,7 +619,19 @@ class IOPHandler(PublisherHandler):
         heading = title.rstrip('.')
         if description:
             heading = f"{heading} — {description}"
-        lines = [f"**{heading}**", "", "\n".join(md_rows)]
+        # ⚠️ No heading line at all when there is no title. Emitting
+        # ``****`` (bold with nothing in it) is worse than omitting it: it
+        # reads as a rendering bug, and the front-matter tables that have no
+        # title already sit under their own <h2>.
+        lines = ([f"**{heading}**", ""] if heading else []) + ["\n".join(md_rows)]
+        # ⚠️ Footnotes belong here, not in the caller. IOP's tables are
+        # reached by two different walks (div.boxout in _walk_iop_body, and
+        # the bare <table> branch), and only this function is common to both
+        # -- attaching them one level up got them onto a list that nothing
+        # reads. See _table_footnotes for where they live in the markup.
+        notes = IOPHandler._table_footnotes(table_element)
+        if notes:
+            lines.extend(["", notes])
         return "\n".join(lines)
 
     @classmethod
@@ -624,6 +656,38 @@ class IOPHandler(PublisherHandler):
                 tables.append((title, md))
 
         return tables
+
+    @classmethod
+    def _table_footnotes(cls, table_element) -> str:
+        """Footnote lines printed under a table, or ''.
+
+        ⚠️ IOP puts them *outside* the table, as ``<p><small>`` siblings
+        inside the wrapping ``div.boxout``. Extracting the table alone drops
+        them, and they carry the definitions the numbers mean nothing without
+        -- measured on 10.1088/2515-7647/ac9e2f Table 9: "* Kerr coefficient
+        is defined in the paper as K = Δn/λE²".
+        """
+        box = table_element.find_parent('div', class_='boxout')
+        if box is None:
+            return ''
+        lines = []
+        for small in box.find_all('small'):
+            # Only what follows the table; a caption above it is already the
+            # title.
+            if not cls._is_after(table_element, small):
+                continue
+            text = convert_html_fragment_to_markdown(small.decode_contents())
+            if text:
+                lines.append(text)
+        return '\n\n'.join(lines)
+
+    @staticmethod
+    def _is_after(anchor, node) -> bool:
+        """True when *node* appears after *anchor* in document order."""
+        for element in anchor.next_elements:
+            if element is node:
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # Reference extraction
@@ -957,10 +1021,16 @@ class IOPHandler(PublisherHandler):
             figure_urls = {}
             supp_urls = []
             supp_descriptions = {}
-            iop_tables = []
             if fulltext_html:
                 figure_urls = self.extract_figures_from_html(fulltext_html)
-                iop_tables = self.extract_tables_from_html(fulltext_html)
+                # ❌ extract_tables_from_html() is deliberately NOT called
+                # here. Its result went to metadata['_tables'], which nothing
+                # ever read -- the tables in the Markdown come from the body
+                # walk (div.boxout in _walk_iop_body). On a tables-heavy
+                # article that dead call was the single most expensive thing
+                # in the run: measured 46 s on 10.1088/2515-7647/ac9e2f,
+                # converting all 6,428 cells a second time and throwing the
+                # result away.
                 # Graphical abstract (figure inside the abstract container)
                 # is downloaded as key_image via the shared workflow path,
                 # not as fig_N, so it doesn't bump the body figure numbering.
@@ -1003,7 +1073,6 @@ class IOPHandler(PublisherHandler):
                 except Exception as e:
                     print(f"  ⚠ 补充材料提取异常: {e}")
 
-            metadata['_tables'] = iop_tables
 
             return {
                 'metadata': metadata,

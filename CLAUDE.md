@@ -831,6 +831,37 @@ Playwright 里这几个调用**都不接受 `timeout=`**，也不受 `set_defaul
   `retry_download`「成了」，于是重试、回退低清链接、`fresh` 层全被跳过，只留下一个
   0 字节的 `.jpg` —— 事后还分辨不出它和真图的区别
 
+### IOP 表格：符号表、脚注、以及一次没人读的重复转换
+
+用户报告 `10.1088/2515-7647/ac9e2f` 的 `### List of symbols` / `### List of
+abbreviations` 在 md 里是**空白**，Table 9 的脚注也不见了。一个报告牵出三层：
+
+- ❌ **`div.tableBox` 两条路都不认**。那两节的内容是**没有 `data-toolbar-type` 的
+  普通 `<table>`**（30 行 / 110 行），而正文遍历只递归 `div.article-text`、只渲染
+  `table[data-toolbar-type="table"]`。现在正文遍历认 `div.tableBox`
+- ⚠️ 改完暴露出**标题兜底在向前扫整个文档**：`find_previous('strong')` 抓到了分页
+  按钮，符号表标题成了 `**Next**`。搜索范围收进表格自己的容器
+  （`div.boxout` / `div.tableBox`），且必须在表格**之前**；找不到就**不输出标题行**
+  —— 原来会输出一个空的 `****`，看着像渲染 bug
+- ❌ **IOP 把表格脚注放在表格外面**：`div.boxout` 里表格之后的 `<p><small>`。只提取
+  `<table>` 必然丢，而它们正是"这些数字什么意思"的定义（Table 9:
+  `^*^ Kerr coefficient is defined in the paper as K = Δn/λE²`）。
+  `_table_footnotes()` 取它们，走同一套公式管道
+- ⚠️ **脚注必须加在 `_table_element_to_md()` 里**：IOP 的表格由**两个不同的遍历**
+  到达（`_walk_iop_body` 的 `div.boxout` 分支，以及裸 `<table>` 分支），只有这个函数
+  是两条路的公共点。我第一版加在 `extract_tables_from_html()` 上，离线测试显示
+  "脚注有了"，**md 里却什么都没有** —— 因为那条路的产出没人读（见下）
+- ❌ **`metadata['_tables']` 从头到尾没有任何代码读取**。md 里的表格来自正文遍历，
+  而 `extract_tables_from_html()` 的结果赋给 `_tables` 后就再没被碰过。在表格多的
+  文章上这是**单项最贵的开销**：实测 46 秒，把 6,428 个单元格**第二遍**转成 Markdown
+  然后扔掉。已删除该调用
+- 📌 **教训**：这种"算出来、存进 metadata、没人读"的死代码不会报错，只会让每篇多花
+  一倍时间；更糟的是它会**让人把修复加在错误的路径上还以为修好了**。改之前先确认
+  产出到底从哪条路来
+- ✅ 实测该篇：md **3,634 → 3,804 行**，表格行 **823 → 963**，Kerr 脚注 1 处、符号表
+  2 处、图片 8 个不变；另一篇无表格的 IOP（`10.1088/0741-3335/51/3/035013`）
+  115 行、33 条参考文献，不受影响
+
 ### `RAW_HTML_PUBLISHERS` 的 handler 不回落渲染后 DOM
 
 `get_page_html()` 的回落链现在是：**捕获 → view-source 重取 → 空**。不再有
