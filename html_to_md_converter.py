@@ -8,6 +8,7 @@ APS JSON 递归转换已移至 publisher/aps.py。
 """
 
 import re
+import functools
 import pypandoc
 
 # ⚠️ pypandoc re-probes pandoc's capabilities on EVERY conversion:
@@ -30,6 +31,35 @@ def _memoize_pandoc_formats() -> None:
 
 
 _memoize_pandoc_formats()
+
+
+@functools.lru_cache(maxsize=1)
+def _mathjax_args() -> tuple:
+    """How this pandoc wants to be told "render math for MathJax".
+
+    ⚠️ The two spellings do not overlap across versions, so neither can be
+    hard-coded:
+
+      * pandoc 3.1.3 (measured here): ``--mathjax`` works silently,
+        ``--math-method=mathjax`` fails with "Unknown option --math-method".
+      * Newer pandoc: ``--mathjax`` still works but prints
+        "[WARNING] Deprecated: --mathjax. Use --math-method=mathjax[:URL]
+        instead." on every single conversion -- and this runs once per
+        formula, so a formula-heavy paper buries the log.
+
+    Probed once per process against a trivial document, then cached. The new
+    spelling is tried first so an up-to-date pandoc stops warning.
+    """
+    for args in (('--math-method=mathjax',), ('--mathjax',)):
+        try:
+            pypandoc.convert_text('<p>x</p>', to='gfm', format='html',
+                                  extra_args=list(args))
+            return args
+        except Exception:
+            continue
+    # Neither accepted: convert without a math flag rather than not at all.
+    return ()
+
 
 def clean_html_body(html, klass=None):
     """
@@ -236,7 +266,7 @@ def mathml_to_latex_pandoc(mathml_html: str) -> str:
             html_wrapped,
             to='gfm',
             format='html',
-            extra_args=['--mathjax']
+            extra_args=list(_mathjax_args())
         )
         result = latex_md.strip()
         result = re.sub(r'^<p>(.*)</p>$', r'\1', result, flags=re.DOTALL).strip()
