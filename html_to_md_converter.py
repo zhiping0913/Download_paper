@@ -10,6 +10,27 @@ APS JSON 递归转换已移至 publisher/aps.py。
 import re
 import pypandoc
 
+# ⚠️ pypandoc re-probes pandoc's capabilities on EVERY conversion:
+# convert_text -> _validate_formats -> get_pandoc_formats(), and that last one
+# spawns a pandoc process just to list the supported formats. So each
+# conversion costs *two* process launches, and the answer never changes
+# within a run.
+#
+# Measured on IOP 10.1088/2515-7647/ac9e2f, an article that is mostly tables:
+# 6,724 table cells, each converted individually -> ~13,000 process spawns.
+# The run appeared to hang at "Step 3.5 生成Markdown" for many minutes.
+def _memoize_pandoc_formats() -> None:
+    import functools
+    original = getattr(pypandoc, 'get_pandoc_formats', None)
+    if original is None or getattr(original, '_dp_memoized', False):
+        return
+    cached = functools.lru_cache(maxsize=1)(original)
+    cached._dp_memoized = True
+    pypandoc.get_pandoc_formats = cached
+
+
+_memoize_pandoc_formats()
+
 def clean_html_body(html, klass=None):
     """
     清理HTML body内容

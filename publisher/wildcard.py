@@ -6,6 +6,7 @@ Nature, IOP, Springer, Elsevier, and other publishers can compose
 into their own handlers.
 """
 
+import functools
 import re
 from html import unescape
 from urllib.parse import urlparse
@@ -166,6 +167,36 @@ def prepare_mathjax_html_fragment(html_fragment: str, placeholder_prefix: str = 
     return str(soup), formulas
 
 
+@functools.lru_cache(maxsize=4096)
+def _convert_fragment_cached(html_fragment: str, placeholder_prefix: str) -> str:
+    """Memoised body of :func:`convert_html_fragment_to_markdown`.
+
+    ⚠️ Exact-input memoisation, not an approximation: the same fragment always
+    converts to the same Markdown, and this function has no side effects.
+    Table cells repeat heavily -- measured on IOP 10.1088/2515-7647/ac9e2f,
+    2,276 pandoc-bound fragments but only 1,803 distinct ones, with the most
+    common citation cell appearing 24 times.
+    """
+    prepared_html, formulas = prepare_mathjax_html_fragment(html_fragment,
+                                                            placeholder_prefix)
+
+    # ❌ No "skip pandoc for plain text" fast path. It was tried and
+    # reverted: pandoc's Markdown writer normalises punctuation and escapes
+    # markup characters, so bypassing it changes bytes without changing
+    # meaning. Measured on IOP 10.1088/2515-7647/ac9e2f: an en dash in
+    # "100–150 ps" comes back from pandoc as "100--150 ps", and "&lt;38 MHz"
+    # as "\\<38 MHz". Reproducing that escaping by hand is guesswork, and a
+    # representation that drifts silently makes two runs impossible to
+    # compare. The speed comes from the cache above and from not handing
+    # pandoc the surrounding <td> (see IOPHandler._process_table_cell).
+    md = convert_html_to_markdown(prepared_html)
+    for index, latex in enumerate(formulas):
+        md = md.replace(f"{placeholder_prefix}{index:03d}MATHEND", latex)
+    md = cleanup_markdown(md)
+    md = remove_newlines_in_paragraph(md, "", "p")
+    return re.sub(r'\s+', ' ', md).strip()
+
+
 def convert_html_fragment_to_markdown(html_fragment: str, placeholder_prefix: str = "MATH") -> str:
     """Convert an HTML fragment to Markdown, restoring MathJax formulas.
 
@@ -176,14 +207,7 @@ def convert_html_fragment_to_markdown(html_fragment: str, placeholder_prefix: st
     Returns:
         Cleaned Markdown string (single line / collapsed whitespace).
     """
-    prepared_html, formulas = prepare_mathjax_html_fragment(html_fragment, placeholder_prefix)
-    md = convert_html_to_markdown(prepared_html)
-    for index, latex in enumerate(formulas):
-        md = md.replace(f"{placeholder_prefix}{index:03d}MATHEND", latex)
-    md = cleanup_markdown(md)
-    md = remove_newlines_in_paragraph(md, "", "p")
-    md = re.sub(r'\s+', ' ', md).strip()
-    return md
+    return _convert_fragment_cached(html_fragment or '', placeholder_prefix)
 
 
 def _strip_decorative_svg(fragment: str) -> str:

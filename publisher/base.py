@@ -72,7 +72,7 @@ class PublisherHandler(ABC):
 
         # Imported here rather than at module scope: this is the rare path,
         # and base.py is imported by every handler in the tree.
-        from core.utilities import RAW_HTML_PUBLISHERS, fetch_view_source_html
+        from core.utilities import RAW_HTML_PUBLISHERS, fetch_view_source_html  # noqa: F401
 
         if (self.PUBLISHER or '').lower() in RAW_HTML_PUBLISHERS:
             print("  ⚠️  未捕获到原始响应，改用 view-source 重取")
@@ -85,11 +85,16 @@ class PublisherHandler(ABC):
             print("  ⚠️  view-source 也失败，回落渲染后 DOM"
                   "（公式可能已被 MathJax 替换）")
 
-        try:
-            return await p.content()
-        except Exception:
-            pass
-        return ''
+        # ⚠️ Through content_with_timeout, never a bare ``p.content()``.
+        # Playwright's content() takes no timeout and is not covered by
+        # set_default_timeout, so on a wedged renderer it neither succeeds nor
+        # fails -- it simply never returns. Reported on IOP
+        # 10.1088/2515-7647/ac9e2f: the run stopped at
+        # "使用IOPHandler完整提取" with nothing after it. Every other
+        # content() in the tree was wrapped when that hazard was catalogued;
+        # this one, the contract's own last resort, was missed.
+        from core.utilities import content_with_timeout
+        return await content_with_timeout(p, what='get_page_html 回落')
 
     def captured_api(self, path_suffix: str) -> str:
         """A response body the *page itself* already fetched, or ''.

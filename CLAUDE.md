@@ -831,6 +831,37 @@ Playwright 里这几个调用**都不接受 `timeout=`**，也不受 `set_defaul
   `retry_download`「成了」，于是重试、回退低清链接、`fresh` 层全被跳过，只留下一个
   0 字节的 `.jpg` —— 事后还分辨不出它和真图的区别
 
+### 表格多的文章曾像卡死：每个单元格都在起 pandoc
+
+❌ **实测**：IOP `10.1088/2515-7647/ac9e2f`（*"…data tables and best practices"*，
+HTML 1.8 MB、**6,428 个表格单元格**）停在 `Step 3.5️⃣ 生成Markdown` 不动。
+**不是死锁** —— CPU 一直在 10% 左右，只是慢到看不出在动。`faulthandler` 的栈：
+
+```
+extract_tables_from_html → _process_table_cell → convert_html_fragment_to_markdown
+  → pypandoc.convert_text → _validate_formats → get_pandoc_formats()
+      └─ subprocess.communicate
+```
+
+两个叠加的原因：
+
+1. **`pypandoc` 每次转换前都另起一个 pandoc 去问"支持哪些格式"**，答案一个进程内
+   永不改变 → 每格 **2 次**进程启动。`html_to_md_converter` 里 memoize 掉
+2. **`_process_table_cell(str(cell))` 传的是整个 `<td>…</td>`**，不是内容。改成
+   `decode_contents()`
+3. 片段级 `lru_cache` —— 单元格重复率高（2,276 个 pandoc 片段里只有 1,803 个不同）
+
+**100.4s → 45.9s，pandoc 6,428 → 2,972 次，表格输出与基准逐字节相同。**
+
+- ❌ **试过"纯文本跳过 pandoc"的快路径（28.8s），已回退**。它不等价：pandoc 的
+  Markdown writer 会规范化标点、转义标记字符 —— 实测 `100–150 ps` 出来是
+  `100--150 ps`、`&lt;38 MHz` 出来是 `\<38 MHz`。手工复制那套转义是在猜，而
+  **表示悄悄漂移会让新旧产出再也无法比对**。宁可慢一倍
+- ⚠️ 判断"是不是死锁"要看 **CPU 时间是否在增长**（`/proc/<pid>/stat` 的
+  utime+stime），不要只看没有输出。这次正是靠它区分"慢"与"卡"
+- ⚠️ `pypandoc.convert_text` **本身没有超时** —— 这次只是慢，但 pandoc 真挂住时
+  整个批次会无声停住，与本仓那一串「没有 timeout= 的调用」同源。尚未处理
+
 ### 我们自己造的文件名也要有上限（`safe_download_name`）
 
 ❌ **实测报错**：`OSError: [Errno 36] File name too long:

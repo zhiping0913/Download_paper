@@ -540,6 +540,13 @@ class IOPHandler(PublisherHandler):
     def _process_table_cell(cell_html: str) -> str:
         """Process a table cell's inner HTML to plain text with formulas preserved.
 
+        ⚠️ Callers pass ``decode_contents()``, not ``str(cell)``. The wrapping
+        ``<td>`` changed nothing about the output -- pandoc drops it -- but it
+        meant every fragment contained a tag, which defeated the no-markup
+        fast path in convert_html_fragment_to_markdown. On a tables-heavy
+        article that is the difference between one pandoc process per cell and
+        almost none: 10.1088/2515-7647/ac9e2f has 6,428 cells.
+
         Handles <script type=\"math/tex\"> → $...$, GIF epsilon, and HTML formatting
         (sub/sup/em) using the same IOP preprocessing pipeline as body paragraphs.
         """
@@ -566,7 +573,8 @@ class IOPHandler(PublisherHandler):
         if thead:
             header_cells = []
             for th in thead.find_all('th'):
-                header_cells.append(IOPHandler._process_table_cell(str(th)))
+                header_cells.append(
+                    IOPHandler._process_table_cell(th.decode_contents()))
             if header_cells:
                 md_rows.append('| ' + ' | '.join(header_cells) + ' |')
                 md_rows.append('|' + '|'.join(['---'] * len(header_cells)) + '|')
@@ -577,7 +585,7 @@ class IOPHandler(PublisherHandler):
                 continue
             cells = []
             for cell in tr.find_all(['td', 'th']):
-                text = IOPHandler._process_table_cell(str(cell))
+                text = IOPHandler._process_table_cell(cell.decode_contents())
                 text = re.sub(r'\s+', ' ', text)
                 cells.append(text)
             if cells and not all(c == '' for c in cells):
