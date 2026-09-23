@@ -851,6 +851,21 @@ Playwright 里这几个调用**都不接受 `timeout=`**，也不受 `set_defaul
   `⛔ view-source 也失败 —— 返回空正文，不读渲染后 DOM`，而未声明 `PUBLISHER` 的
   handler 仍拿到 DOM
 
+### pandoc 的 `--mathjax` 写法按版本探测，不写死
+
+新版 pandoc 对 `--mathjax` 每次转换都打一行
+`[WARNING] Deprecated: --mathjax. Use --math-method=mathjax[:URL] instead.`
+—— 而这个调用是**按公式**发生的，公式多的文章会把日志埋掉。
+
+- ⚠️ **但两种写法在版本间不重叠，哪个都不能写死**。实测本机 pandoc **3.1.3**：
+  `--mathjax` 正常且**无 warning**，`--math-method=mathjax` 直接
+  `Unknown option --math-method.` —— 直接换写法会让旧版机器全部报错
+- 📌 `_mathjax_args()`：进程内探测**一次**（拿一个 `<p>x</p>` 试），**新写法优先**，
+  失败退回 `--mathjax`，两个都不行就不带 math 参数（宁可转换质量降级，也不要不转）
+- ✅ 实测：本机探测出 `('--mathjax',)`、`MathML→LaTeX` 仍是 `$E = mc^{2}$`；
+  模拟新版 pandoc（让新写法成功）探测出 `('--math-method=mathjax',)`；
+  表格产出与基准**逐字节相同**
+
 ### 表格多的文章曾像卡死：每个单元格都在起 pandoc
 
 ❌ **实测**：IOP `10.1088/2515-7647/ac9e2f`（*"…data tables and best practices"*，
