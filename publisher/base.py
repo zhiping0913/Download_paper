@@ -56,12 +56,12 @@ class PublisherHandler(ABC):
         ``wildcard.init_extract_all_page`` and by the headed-browser path in
         ``complete_paper_extraction.py`` before each main-page navigation.
 
-        ⚠️ Dropping to ``page.content()`` means reading a DOM where MathJax
-        has already replaced the TeX with SVG whose only text is the a11y
-        speech string -- and nothing stops it any more, the route
-        interception having been removed. A handler listed in
-        ``RAW_HTML_PUBLISHERS`` re-fetches the source with view-source first,
-        and the degradation is announced rather than silent.
+        ⚠️ A handler listed in ``RAW_HTML_PUBLISHERS`` never reaches
+        ``page.content()``: it re-fetches the source with view-source, and if
+        that fails too it gets ``''``. Reading the rendered DOM there would
+        hand back a document whose formulas MathJax has already replaced --
+        complete-looking output with every equation gone. Only handlers that
+        were written against the rendered DOM keep that fallback.
         """
         raw = getattr(self, '_raw_server_html', None)
         if raw:
@@ -82,8 +82,21 @@ class PublisherHandler(ABC):
                 source = ''
             if source:
                 return source
-            print("  ⚠️  view-source 也失败，回落渲染后 DOM"
-                  "（公式可能已被 MathJax 替换）")
+            # ⛔ Stop here. A handler in RAW_HTML_PUBLISHERS parses the served
+            # response; the rendered DOM is not a weaker version of that, it
+            # is a different document -- MathJax has replaced the formulas,
+            # so what comes out *looks* complete and has lost every equation.
+            # An empty body is the honest answer, and the workflow already
+            # renders "[... not found.]" for it.
+            #
+            # 📌 It is also very unlikely to contain anything: if neither the
+            # capture nor a view-source re-fetch produced markup, the page
+            # itself did not load. Cambridge and Wiley dropped their own
+            # rendered-DOM last resorts for exactly this reason; this is the
+            # same rule, one level down in the contract.
+            print("  ⛔ view-source 也失败 —— 返回空正文，不读渲染后 DOM"
+                  "（宁可空白，也不要一份公式已被替换、却看着完整的产出）")
+            return ''
 
         # ⚠️ Through content_with_timeout, never a bare ``p.content()``.
         # Playwright's content() takes no timeout and is not covered by
