@@ -79,6 +79,7 @@ from core.utilities import (
     content_with_timeout,
     url_looks_like_bot_challenge,
     url_wants_api_harvest,
+    complete_downloads_in,
     DP_HTTP_TOTAL_TIMEOUT,
     DP_SUPPLEMENTAL,
     DP_SUPPLEMENTAL_SET,
@@ -1964,36 +1965,6 @@ async def _try_fresh_chrome_download(url: str, output_dir: Path,
         await _close_fresh_pdf_session(session, download_dir)
 
 
-def _newest_complete_download(download_dir: str) -> str:
-    """The finished file in *download_dir*, or ''.
-
-    Chrome renames a completed download to the name the server gave it, so
-    the temporary ``Unconfirmed NNNNNN.crdownload`` path cannot be turned into
-    the final one by string surgery -- the directory has to be looked at. It
-    is created empty for each attempt, so anything complete in it is ours;
-    the largest is taken when several exist.
-    """
-    if not download_dir or not os.path.isdir(download_dir):
-        return ''
-    best, best_size = '', -1
-    try:
-        for name in os.listdir(download_dir):
-            if name.endswith(('.crdownload', '.tmp')):
-                continue
-            path = os.path.join(download_dir, name)
-            try:
-                if not os.path.isfile(path):
-                    continue
-                size = os.path.getsize(path)
-            except OSError:
-                continue
-            if size > best_size:
-                best, best_size = path, size
-    except OSError:
-        return ''
-    return best if best_size > 0 else ''
-
-
 def _finalize_downloaded_pdf(src: str, output_dir: Path,
                              filename: str,
                              complete_timeout: float = None) -> Optional[str]:
@@ -2035,7 +2006,8 @@ def _finalize_downloaded_pdf(src: str, output_dir: Path,
                 #
                 # The directory is created empty per attempt, so any complete
                 # file in it is this download.
-                landed = _newest_complete_download(download_dir)
+                _done = complete_downloads_in(download_dir)
+                landed = _done[0][0] if _done else ''
                 if landed:
                     print(f"    ✓ 下载已完成并改名: {os.path.basename(landed)}")
                     src = landed

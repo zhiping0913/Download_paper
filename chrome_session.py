@@ -88,6 +88,7 @@ import websockets
 from core.utilities import (
     DEFAULT_API_HARVEST,
     api_harvest_patterns,
+    complete_downloads_in,
     env_seconds,
     looks_like_html_bytes,
     safe_download_name,
@@ -3263,19 +3264,12 @@ async def _await_download(download_dir: str, timeout_s: float = 20.0,
     """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        try:
-            names = [n for n in os.listdir(download_dir)
-                     if not n.endswith('.crdownload')]
-        except OSError:
-            names = []
-        for name in names:
-            path = os.path.join(download_dir, name)
-            try:
-                size = os.path.getsize(path)
-            except OSError:
-                continue
-            if size <= 0:
-                continue
+        # ⚠️ What counts as "complete" lives in core.utilities, shared with
+        # _finalize_downloaded_pdf. The two used to judge it independently and
+        # only this one was right -- the other tried to guess the final name
+        # from the .crdownload path and reported a finished download as a
+        # timeout. Same pit, two exits.
+        for path, size in complete_downloads_in(download_dir):
             await asyncio.sleep(settle_s)
             try:
                 if os.path.getsize(path) == size:
