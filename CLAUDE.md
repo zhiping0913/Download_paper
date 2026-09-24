@@ -506,6 +506,23 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
 `auto_solve_bot_challenge`（在空白页上找验证框）、内联音频的 body 等待。
 统统跟着 `_use_tab` 一起关。
 
+### 「下载完成」只有一个判据（`complete_downloads_in`）
+
+三条下载路径此前各判各的，**而且只有两条是对的**：
+
+| 路径 | 判据 | |
+|---|---|---|
+| `tab` 层（共享浏览器） | Playwright 的 `Download` API，`save_as()` 自己知道何时完成 | ✅ **不能也不需要合并** —— 它有 API，另两条只能看文件系统 |
+| `fresh` 层挑战循环（`_await_download`） | 扫目录、跳 `.crdownload`、等大小稳定 | ✅ 一直正确 |
+| `fresh` 层收尾（`_finalize_downloaded_pdf`） | 拿 `.crdownload` 路径**去掉后缀猜**最终名 | ❌ 坏的那个 |
+
+后两条是**同一件事做了两遍**，而错的那遍在最后一步，把已经下好的文件丢掉。
+现在"什么算完成"只有一处定义：`core.utilities.complete_downloads_in()`
+（跳过 `.crdownload`/`.tmp` 与 0 字节，按大小排序），等多久、要不要等大小稳定
+由调用方自己决定。
+
+⚠️ `tab` 那条**刻意不合并**：硬合并会让一个知道传输何时结束的 API 退化成猜文件系统。
+
 ### `.crdownload` 完成后 Chrome 会改成**服务器给的**文件名
 
 ❌ **实测（用户报告，Cambridge PDF）**：日志写 `⏳ 等待下载完成（上限 600s）` →

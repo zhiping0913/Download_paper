@@ -495,6 +495,47 @@ def looks_like_html_bytes(data: bytes) -> bool:
 SAFE_NAME_MAX_BYTES = 200
 
 
+def complete_downloads_in(download_dir: str) -> list:
+    """``[(path, size)]`` for the finished files in *download_dir*, largest first.
+
+    The single definition of "this download is done", shared by the two places
+    that watch a Chrome download directory:
+    ``chrome_session._await_download`` (the challenge loop) and
+    ``complete_paper_extraction._finalize_downloaded_pdf`` (the hand-off that
+    copies the file into the paper directory).
+
+    ⚠️ Deriving the final name from the ``.crdownload`` path does not work and
+    must not be attempted: Chrome renames the partial file to the name the
+    *server* gave it, so stripping the suffix off
+    ``Unconfirmed 821706.crdownload`` yields ``Unconfirmed 821706``, a name
+    Chrome never uses. The directory has to be looked at. It is created empty
+    for each attempt, so anything complete in it belongs to this download.
+
+    Callers decide how long to wait and whether to require the size to settle;
+    what counts as "complete" lives here so the two cannot drift apart.
+    """
+    if not download_dir or not os.path.isdir(download_dir):
+        return []
+    found = []
+    try:
+        for name in os.listdir(download_dir):
+            if name.endswith(('.crdownload', '.tmp')):
+                continue
+            path = os.path.join(download_dir, name)
+            try:
+                if not os.path.isfile(path):
+                    continue
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            if size > 0:
+                found.append((path, size))
+    except OSError:
+        return []
+    found.sort(key=lambda item: item[1], reverse=True)
+    return found
+
+
 def safe_download_name(url: str, fallback: str = 'download.bin',
                        max_bytes: int = SAFE_NAME_MAX_BYTES) -> str:
     """A filename for *url* that the filesystem will actually accept.
