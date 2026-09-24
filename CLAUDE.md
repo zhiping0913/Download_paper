@@ -1484,6 +1484,29 @@ Navigator.prototype 上: function get webdriver() { [native code] }
 - ⚠️ APS 的 `fulltext_data` 是 dict 不是 str，所以主流程**不写 `page.html`**，
   目录里只有 `page_raw.html`
 
+### Cambridge 把表格渲染成图片（`div.table-wrap-ada`）
+
+❌ **实测（用户报告，`10.1017/hpl.2022.24`）**：md 里**没有任何表格**，表格图也没下 ——
+而页面上有 `Table 1 Design structures of the coatings.` 和它的 `Note:`。
+
+- 📌 **这篇全文 `<table>` 数量是 0**。Cambridge 把表格渲染成图片：
+  `<div class="table-wrap-ada" id="tabN">` 里是 `div.caption`、
+  `div.figure-thumb > img`（懒加载）、`div.table-wrap-foot`（Note）
+- ❌ **原有的表格图逻辑认 `data-img-name="Table N."`，而这篇所有 `<img>` 该属性都是
+  `None`** —— 于是既没进下载表，正文遍历也**静默跳过**：那个 `<section>` 有
+  `figure-thumb` 但没有 `fig-ada`，落进插图分支后拿不到 `data-img-name` 就什么都不输出。
+  判据改成**认容器**（`div.table-wrap-ada` / `div.table-wrap`）
+- ⚠️ **Note 必须一起取**（`div.table-wrap-foot`）：它是符号定义
+  （"H i and L i represent the high-n layer and low-n layer…"），丢了表里的数字就读不懂
+- ⚠️ **编号接在插图后面**（`tab_8/9/10`），不按 id 的 `tab_1/2/3`：主流程按 key 末尾
+  数字给下载文件编号，`tab_1` 会和 `fig_1` 抢同一个槽位。这是沿用原有约定
+- ✅ 实测该篇：图片 7 → **10**，三张表格图落盘（51,347 / 11,458 / 6,262 字节，
+  `magic` 均 `image/png`），md 里远程链接残留 **0**、Note 2 条
+- 📌 **同一个修复在另一篇上多找出一张表**：`10.1017/hpl.2019.36` 从 43 图 / 1,683 行
+  变成 44 图 / 1,687 行 —— 多出来的正是它一直没被抓到的
+  `**Table 1.** LaserNet US facility capabilities.`（26,589 字节 gif）。
+  ⚠️ 行数变了**不等于回归**，要看清多出来的是什么
+
 ### Cambridge (`10.1017`, cambridge.org)
 
 - ⚠️ **同一个 URL 会答出两份不同的文档，而请求里看不出区别**。实测

@@ -443,6 +443,41 @@ class CambridgeHandler(PublisherHandler):
                         body_parts.extend([eq_md, ""])
 
                 elif child.name == 'section':
+                    # Table rendered as an image:
+                    # <section><div class="table-wrap-ada" id="tabN">
+                    #   <div class="caption">…<div class="figure-thumb"><img>
+                    #   <div class="table-wrap-foot">Note: …
+                    #
+                    # ⚠️ Handled before the figure branch: such a section has a
+                    # figure-thumb but no fig-ada, so the figure branch fell
+                    # through to a data-img-name that is absent here and emitted
+                    # nothing at all. Measured on 10.1017/hpl.2022.24: three
+                    # tables, each with a caption and a Note, none of which
+                    # reached the Markdown.
+                    table_wrap = child.find(
+                        'div', class_=lambda c: bool(c) and (
+                            'table-wrap-ada' in c or 'table-wrap' in c))
+                    if table_wrap is not None:
+                        label, caption = cls._table_caption_parts(table_wrap)
+                        head = ' '.join(
+                            p for p in (f"**{label}**" if label else '',
+                                        caption) if p).strip()
+                        if head:
+                            body_parts.extend([head, ""])
+                        thumb = table_wrap.find('div', class_='figure-thumb')
+                        img = (thumb.find('img', class_='aop-lazy-load-image')
+                               if thumb else None)
+                        img_url = cls._cambridge_img_url(img) if img else ''
+                        if img_url:
+                            alt = label or 'Table'
+                            body_parts.extend([f"![{alt}]({img_url})", ""])
+                        note = cls._table_note(table_wrap)
+                        if note:
+                            # The note defines the symbols used in the table --
+                            # dropping it leaves the numbers unreadable.
+                            body_parts.extend([note, ""])
+                        continue
+
                     # Figure block: <section> containing fig-ada + figure-thumb
                     fig_ada = child.find('div', class_='fig-ada')
                     fig_thumb = child.find('div', class_='figure-thumb')
@@ -719,6 +754,40 @@ class CambridgeHandler(PublisherHandler):
 
         return '\n'.join(lines).strip()
 
+    @staticmethod
+    def _table_caption_parts(wrap) -> tuple:
+        """``(label, caption)`` for a table-image wrapper.
+
+        The label is what the body uses as alt text ("Table 1."), so it has to
+        come out the same in both passes.
+        """
+        cap = wrap.find('div', class_='caption')
+        if cap is None:
+            return '', ''
+        label_el = cap.find('span', class_='label')
+        label = label_el.get_text(' ', strip=True) if label_el is not None else ''
+        text = ''
+        cap_p = cap.find('p')
+        if cap_p is not None:
+            text = cap_p.get_text(' ', strip=True)
+        if not label:
+            # No <span class="label">: the caption itself starts with
+            # "Table N ...", so take that prefix.
+            match = re.match(r'(Table\s*\d+\.?)\s*(.*)', text)
+            if match:
+                label, text = match.group(1), match.group(2)
+        if label and not label.endswith('.'):
+            label += '.'
+        return label, text
+
+    @staticmethod
+    def _table_note(wrap) -> str:
+        """The ``Note:`` line printed under a table image, or ''."""
+        foot = wrap.find('div', class_='table-wrap-foot')
+        if foot is None:
+            return ''
+        return foot.get_text(' ', strip=True)
+
     @classmethod
     def extract_figures_from_html(cls, html_content: str) -> dict:
         """Extract figure and table-image URLs and captions from HTML."""
@@ -822,9 +891,36 @@ class CambridgeHandler(PublisherHandler):
                 'caption': caption,
             }
 
-        # Also capture table images: figure-thumb with data-img-name="Table N."
-        # (Cambridge renders tables as GIF images, not HTML tables)
+        # Tables rendered as images, the <div class="table-wrap-ada" id="tabN">
+        # layout. ⚠️ This is a separate pass from the data-img-name one below
+        # because that attribute is simply absent on some articles: measured on
+        # 10.1017/hpl.2022.24, every <img> has data-img-name=None, so all three
+        # tables were skipped -- no table in the Markdown and no image
+        # downloaded, even though the page shows "Table 1 Design structures of
+        # the coatings." and its note. The container is what identifies them.
+        #
+        # ⚠️ Numbering continues after the figures rather than using the id
+        # (tab1 → 1): the workflow keys downloaded files by the trailing digits
+        # of the key, so tab_1 and fig_1 would fight over the same slot.
         tab_num = len(figures)
+        for wrap in soup.select('div.table-wrap-ada, div.table-wrap'):
+            thumb = wrap.find('div', class_='figure-thumb')
+            img = thumb.find('img', class_='aop-lazy-load-image') if thumb else None
+            if img is None:
+                continue
+            img_url = cls._cambridge_img_url(img)
+            if not img_url or img_url in {v['url'] for v in figures.values()}:
+                continue
+            label, caption = cls._table_caption_parts(wrap)
+            tab_num += 1
+            figures[f"tab_{tab_num}"] = {
+                'url': img_url.strip(),
+                'caption': ' '.join(p for p in (label, caption) if p).strip(),
+                # What the body walk writes as the alt text, so
+                # convert_to_markdown can swap the URL for the local file.
+                'img_name': label or f"Table {tab_num}.",
+            }
+
         for thumb in soup.find_all('div', class_='figure-thumb'):
             img = thumb.find('img', class_='aop-lazy-load-image')
             if not img:
