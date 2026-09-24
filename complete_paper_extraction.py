@@ -4893,14 +4893,24 @@ JSON 格式:
                         )
                         if md_path:
                             success_count += 1
-                            print(f"✅ 成功: {md_path}")
+                            # ⚠️ Repeat the DOI here. A single paper's log runs
+                            # to hundreds of lines, so by the time this prints,
+                            # the "处理论文 i/N: <doi>" header has scrolled far
+                            # away -- and the paths below carry the *title*, not
+                            # the DOI, which is what a batch is indexed by.
+                            print(f"✅ 成功 [{doi}]: {md_path}")
                         else:
                             fail_count += 1
+                            print(f"❌ 失败 [{doi}]: 未产出 Markdown")
                     except Exception as e:
-                        print(f"❌ 处理失败: {e}")
+                        print(f"❌ 处理失败 [{doi}]: {e}")
                         import traceback
                         traceback.print_exc()
                         fail_count += 1
+
+                    print(f"{'='*80}")
+                    print(f"论文 {i}/{len(articles)} 结束: {doi}")
+                    print(f"{'='*80}")
 
                     # Retire the browser after every paper. A profile driven
                     # over CDP picks up automation fingerprints as it goes,
