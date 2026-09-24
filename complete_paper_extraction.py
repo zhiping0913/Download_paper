@@ -1964,6 +1964,36 @@ async def _try_fresh_chrome_download(url: str, output_dir: Path,
         await _close_fresh_pdf_session(session, download_dir)
 
 
+def _newest_complete_download(download_dir: str) -> str:
+    """The finished file in *download_dir*, or ''.
+
+    Chrome renames a completed download to the name the server gave it, so
+    the temporary ``Unconfirmed NNNNNN.crdownload`` path cannot be turned into
+    the final one by string surgery -- the directory has to be looked at. It
+    is created empty for each attempt, so anything complete in it is ours;
+    the largest is taken when several exist.
+    """
+    if not download_dir or not os.path.isdir(download_dir):
+        return ''
+    best, best_size = '', -1
+    try:
+        for name in os.listdir(download_dir):
+            if name.endswith(('.crdownload', '.tmp')):
+                continue
+            path = os.path.join(download_dir, name)
+            try:
+                if not os.path.isfile(path):
+                    continue
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            if size > best_size:
+                best, best_size = path, size
+    except OSError:
+        return ''
+    return best if best_size > 0 else ''
+
+
 def _finalize_downloaded_pdf(src: str, output_dir: Path,
                              filename: str,
                              complete_timeout: float = None) -> Optional[str]:
@@ -1983,6 +2013,7 @@ def _finalize_downloaded_pdf(src: str, output_dir: Path,
     final_pdf = Path(output_dir) / filename
     waited = 0
     base, _ = os.path.splitext(src)
+    download_dir = os.path.dirname(src)
     if src.endswith('.crdownload'):
         print(f"  ⏳ 等待下载完成（源文件仍为 .crdownload，上限 {budget:.0f}s）...")
         while src.endswith('.crdownload') and waited < budget:
@@ -1992,9 +2023,29 @@ def _finalize_downloaded_pdf(src: str, output_dir: Path,
                 src = base
                 break
             if not os.path.isfile(src):
+                # ⚠️ The partial file vanished -- that is Chrome *finishing*,
+                # not failing. It renames "Unconfirmed 821706.crdownload" to
+                # the server's own filename, which is not `base` (stripping
+                # ".crdownload" gives "Unconfirmed 821706", a name Chrome
+                # never uses). So this branch used to fall out of the loop
+                # with src still ending in .crdownload, print "下载在 600s
+                # 内未完成" after about a minute, and throw away a download
+                # that had succeeded -- the finished file was sitting in the
+                # directory the whole time.
+                #
+                # The directory is created empty per attempt, so any complete
+                # file in it is this download.
+                landed = _newest_complete_download(download_dir)
+                if landed:
+                    print(f"    ✓ 下载已完成并改名: {os.path.basename(landed)}")
+                    src = landed
                 break
         if src.endswith('.crdownload'):
-            print(f"    ⏰  下载在 {budget:.0f}s 内未完成")
+            # Say which of the two it was; they need different responses.
+            if waited >= budget:
+                print(f"    ⏰  下载在 {budget:.0f}s 内未完成")
+            else:
+                print(f"    ⚠️  下载文件在 {waited}s 后消失，且目录里没有成品")
             return None
     if not (os.path.isfile(src) and not src.endswith('.crdownload')):
         print("    ⚠️  下载文件异常")
