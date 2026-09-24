@@ -506,6 +506,27 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
 `auto_solve_bot_challenge`（在空白页上找验证框）、内联音频的 body 等待。
 统统跟着 `_use_tab` 一起关。
 
+### `.crdownload` 完成后 Chrome 会改成**服务器给的**文件名
+
+❌ **实测（用户报告，Cambridge PDF）**：日志写 `⏳ 等待下载完成（上限 600s）` →
+约一分钟后 `⏰ 下载在 600s 内未完成`，而**实际只等了一分钟，且下载已经成功**。
+
+- 成因：`base` 是把 `.crdownload` 去掉得到的（`Unconfirmed 821706`），可 Chrome 完成
+  时改成的是**服务器给的文件名**（`S0263…pdf`）——`Unconfirmed 821706` 这个名字它
+  从来不用。于是 `os.path.isfile(base)` 永远为假，`src` 一消失就从
+  `if not os.path.isfile(src): break` 退出，循环外只看见 `src` 仍以 `.crdownload`
+  结尾，就报了超时
+- ⚠️ **那条消息两处都错**：时间不是 600 秒（是文件消失的那一刻），结论也不是"未完成"
+  （是已完成）。而且**下载到的文件被直接丢弃** —— 又一次「产出成功、程序报失败」
+- 📌 修法是**去看目录**而不是靠字符串推名字（`_newest_complete_download()`）：
+  下载目录每次尝试都新建且为空，里面任何完整文件都属于本次下载，多个就取最大的
+- ⚠️ **两种失败要分开报**，它们该采取的行动不同：
+  `⏰ 下载在 Ns 内未完成`（等满预算）vs `⚠️ 下载文件在 Ns 后消失，且目录里没有成品`
+- ✅ 四种情形逐项验过（可控的假下载目录）：改名成真实文件名 → 4 s 拿到；文件消失
+  但无成品 → 如实报；一直没完成 → 等满预算才报超时；Chrome 保留 stem
+  （`paper.pdf.crdownload` → `paper.pdf`）→ 原有路径不变。
+  另跑 Cambridge `10.1017/hpl.2019.36` 端到端：PDF 7.12 MB、md 1,683 行
+
 ### `.crdownload` 的完成预算按文件种类给
 
 ❌ **实测踩过（用户报告，10.1126/sciadv.abn7627）**：`DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT=500`
