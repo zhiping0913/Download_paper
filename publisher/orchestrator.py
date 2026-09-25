@@ -9,6 +9,7 @@ from publisher import APSHandler, AIPHandler, CambridgeHandler
 from publisher.nature import NatureHandler
 from publisher.iop import IOPHandler
 from publisher.jstage import JStageHandler
+from publisher.rcsi import RCSIHandler
 from publisher.springer_book import SpringerBookHandler
 from publisher.optica import OpticaHandler
 from publisher.science import ScienceHandler
@@ -42,6 +43,12 @@ def detect_publisher_from_url(url: str) -> str:
     # be endless and wrong the moment a new society joins.
     if 'jstage.jst.go.jp' in url_lower:
         return 'jstage'
+
+    # RCSI (Russian Center for Scientific Information). Domain only, for the
+    # same reason as J-STAGE: it hosts the Academy's journals under many DOI
+    # prefixes.
+    if 'journals.rcsi.science' in url_lower:
+        return 'rcsi'
 
     # Springer Book/Chapter detection (BEFORE general Springer/Nature detection)
     # Springer book paths include /book/, /chapter/, /referencework/, /referenceworkentry/
@@ -263,6 +270,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return APSHandler(**kwargs)
     elif publisher == 'jstage':
         return JStageHandler(**kwargs)
+    elif publisher == 'rcsi':
+        return RCSIHandler(**kwargs)
     elif publisher == 'arxiv':
         # ArXiv uses APS-like handler
         kwargs.setdefault('journal_prefix', 'arxiv')
