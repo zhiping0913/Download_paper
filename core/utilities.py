@@ -989,6 +989,12 @@ def fetch_crossref(doi: str) -> dict:
                 'pages': work.get('page'),
                 'journal': work.get('container-title', [''])[0] if work.get('container-title') else '',
                 'doi': work.get('DOI', doi),
+                # Crossref's own full-text links. The first one's host is the
+                # most reliable pre-navigation hint about *where* the article
+                # actually lives -- see _crossref_headless_host in the main
+                # flow for why the publisher name is not.
+                'link': [entry.get('URL') for entry in (work.get('link') or [])
+                         if entry.get('URL')],
             }
 
             # Extract authors

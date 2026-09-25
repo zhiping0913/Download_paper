@@ -127,24 +127,65 @@ class JStageHandler(PublisherHandler):
         el = soup.select_one('div.global-article-title')
         return el.get_text(' ', strip=True) if el is not None else ''
 
+    #: The English page prints this instead of a name when the author has no
+    #: Latin spelling. It is a placeholder, not a person.
+    _NAME_PLACEHOLDERS = ('[in japanese]', '[in english]')
+
+    @staticmethod
+    def _norm_name(name: str) -> str:
+        """Collapse the double spaces J-STAGE's DOM puts inside names.
+
+        ⚠️ The DOM writes ``余語  覚文`` (two spaces) where citation_author
+        writes ``余語 覚文`` (one). Without this the same person appears twice
+        in the author list.
+        """
+        return re.sub(r'\s+', ' ', name or '').strip()
+
+    @classmethod
+    def citation_authors_from_html(cls, html: str) -> List[str]:
+        """Every author, from the ``citation_author`` tags.
+
+        📌 This is the only complete list. Measured on
+        10.2184/lsj.49.6_349 (three authors): both language pages carry the
+        same three ``citation_author`` tags, so this is what the author list
+        is built from; the per-language DOM only contributes alternative
+        spellings.
+        """
+        if not html:
+            return []
+        soup = BeautifulSoup(html, 'html.parser')
+        names = []
+        for tag in soup.find_all('meta', attrs={'name': 'citation_author'}):
+            name = cls._norm_name(tag.get('content') or '')
+            if name and name not in names:
+                names.append(name)
+        return names
+
     @classmethod
     def authors_from_html(cls, html: str) -> List[str]:
-        """Author names in this page's language, in order."""
+        """Author names as *this page* spells them, in order.
+
+        ❌ ``meta[name=authors]`` is deliberately not used, not even as a
+        fallback: it holds **one arbitrary author**, not the list. Measured on
+        10.2184/lsj.49.6_349, whose three authors are 余語 覚文 /
+        GOLOVIN Daniil O. / Yanjun GU -- the ja page's meta says
+        "余語 覚文" and the en page's says "GOLOVIN Daniil O.". Trusting it
+        would silently drop two authors.
+        """
         if not html:
             return []
         soup = BeautifulSoup(html, 'html.parser')
         names = []
         for anchor in soup.select('div.global-authors-name-tags a.customTooltip'):
-            name = anchor.get_text(' ', strip=True)
-            if name and name not in names:
+            name = cls._norm_name(anchor.get_text(' ', strip=True))
+            if not name or name.lower() in cls._NAME_PLACEHOLDERS:
+                # ⚠️ The English page shows "[in Japanese]" for an author with
+                # no Latin spelling. Keeping it would put a placeholder in the
+                # author list.
+                continue
+            if name not in names:
                 names.append(name)
-        if names:
-            return names
-        # ⚠️ Fallback only. meta[authors] holds every author in one string and
-        # J-STAGE's separator for multiple authors has not been observed, so
-        # splitting it would be a guess; the DOM gives one anchor per author.
-        single = cls._meta(soup, 'authors')
-        return [single] if single else []
+        return names
 
     @classmethod
     def abstract_from_html(cls, html: str) -> str:
@@ -200,12 +241,30 @@ class JStageHandler(PublisherHandler):
     # Contract
     # ------------------------------------------------------------------
 
+    @classmethod
+    def _combined_authors(cls, ja_html: str, en_html: str) -> List[str]:
+        """Every author, plus the other language's spelling of each.
+
+        Order: the complete ``citation_author`` list first, then any spelling
+        the per-language DOM adds that is not already there. For a single
+        Japanese author that yields ``["瀬戸 慧大", "Keita SETO"]`` -- both
+        spellings, so a search over metadata.json hits either language; for
+        10.2184/lsj.49.6_349 it yields the three authors once each, because
+        the DOM spellings there are the same strings.
+        """
+        names = cls.citation_authors_from_html(ja_html or en_html)
+        for html in (ja_html, en_html):
+            for name in cls.authors_from_html(html):
+                if name not in names:
+                    names.append(name)
+        return names
+
     async def extract_metadata(self, page) -> dict:
         html = await self.get_page_html(page)
         soup = BeautifulSoup(html, 'html.parser') if html else BeautifulSoup('', 'html.parser')
         return {
             'title': self.title_from_html(html),
-            'authors': self.authors_from_html(html),
+            'authors': self._combined_authors(html, ''),
             'abstract': self.abstract_from_html(html),
             'doi': self._meta(soup, 'citation_doi') or self.doi,
             'journal': self._meta(soup, 'citation_journal_title'),
@@ -227,12 +286,22 @@ class JStageHandler(PublisherHandler):
         doi = self.doi
         set_actual_base_url(self, page)
 
+        # ⚠️ Only take page.url when it is a real URL. "about:blank" is
+        # truthy, so `page.url or landed` let it overwrite the landing URL the
+        # workflow had pinned -- and then every URL built from it was wrong
+        # ("about:blank/-char/en", no PDF link). That happens whenever the
+        # flow runs off the capture rather than a live tab, which is a normal
+        # outcome, not an error (see PageCapture.article_url).
         landed = getattr(self, '_landing_url', '') or ''
         try:
-            landed = page.url or landed
+            live = page.url or ''
         except Exception:
-            pass
+            live = ''
+        if live and not live.startswith(('about:', 'chrome://')):
+            landed = live
         self._landing_url = landed
+        if not landed:
+            print("  ⚠️  没有落地 URL，无法确定语言版本与 PDF 链接")
 
         here = self.lang_of_url(landed) or 'ja'
         self._html_by_lang[here] = await self.get_page_html(page)
@@ -240,10 +309,17 @@ class JStageHandler(PublisherHandler):
         # The other language, one navigation. Both pages are kept because each
         # carries a title and an author spelling the other does not.
         other = 'en' if here == 'ja' else 'ja'
-        other_url = self.article_url_for(landed, other)
-        print(f"  🌐 另取 {other} 版页面: {other_url}")
+        other_url = self.article_url_for(landed, other) if landed else ''
+        if not other_url or 'jstage' not in other_url:
+            # Nothing sane to navigate to; say so instead of fetching a
+            # made-up URL and reporting "page not retrieved".
+            print(f"  ⚠️  落地 URL 不可用（{landed or '(空)'}），跳过另一语言版本")
+            other_url = ''
+        else:
+            print(f"  🌐 另取 {other} 版页面: {other_url}")
         other_html = await goto_and_capture_document(
-            page, other_url, timeout_ms=60000, label=f"J-STAGE {other}")
+            page, other_url, timeout_ms=60000,
+            label=f"J-STAGE {other}") if other_url else ''
         if other_html:
             self._html_by_lang[other] = other_html
         else:
@@ -264,9 +340,7 @@ class JStageHandler(PublisherHandler):
             ja_title = self.title_from_html(ja_html)
             en_title = self.title_from_html(en_html)
             titles = [t for t in (ja_title, en_title) if t]
-            authors = self.authors_from_html(ja_html) + [
-                name for name in self.authors_from_html(en_html)
-                if name not in self.authors_from_html(ja_html)]
+            authors = self._combined_authors(ja_html, en_html)
             ja_abstract = self.abstract_from_html(ja_html)
             en_abstract = self.abstract_from_html(en_html)
             metadata = {

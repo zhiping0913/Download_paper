@@ -274,8 +274,10 @@ HEADLESS_ACCESSIBLE_PUBLISHERS = [
     'oxford', 
     'pleiades',
     'acs',
-    # J-STAGE serves the landing page without any bot challenge; there is no
-    # full text to fetch, so nothing here needs a headed browser.
+    # J-STAGE. Reached pre-navigation through Crossref's link host, not its
+    # publisher name -- for J-STAGE that name is the society ("Laser Society
+    # of Japan") and there are hundreds of them. See
+    # _crossref_headless_publisher.
     'jstage',
     ]
 
@@ -392,7 +394,8 @@ class PageCapture:
                     # The Playwright listener sees no loaderId; '' means
                     # "unknown", which restrict_to_article_load treats as
                     # "keep" rather than "drop".
-                    self.documents_meta.append({'body': body, 'loaderId': ''})
+                    self.documents_meta.append(
+                        {'body': body, 'loaderId': '', 'url': response.url})
                     return
                 # The endpoints the page fetches for itself. Keyed by URL plus
                 # a counter so a publisher that answers the same URL twice
@@ -424,7 +427,8 @@ class PageCapture:
             if 'html' in (entry.get('mimeType') or '').lower():
                 self.documents.append(body)
                 self.documents_meta.append(
-                    {'body': body, 'loaderId': entry.get('loaderId') or ''})
+                    {'body': body, 'loaderId': entry.get('loaderId') or '',
+                     'url': entry.get('url') or ''})
             elif (entry.get('type') or '') != 'Document':
                 self.api[f"cdp:{len(self.api)}"] = entry
 
@@ -502,6 +506,26 @@ class PageCapture:
         except Exception as e:
             print(f"  ⚠️  HTML 落盘失败: {e}")
         return raw
+
+    def article_url(self) -> str:
+        """The URL the article document was served from, or ''.
+
+        ⚠️ Needed because the live page is not always available. When the
+        capture holds the article but no Playwright page could be matched to
+        the preloaded tab, the flow continues offline -- and then ``page.url``
+        is the ``about:blank`` of a freshly created page. Measured on J-STAGE
+        10.2184/lsj.49.6_349: the preload captured a 72,919-character article,
+        the page lookup missed, and publisher detection read ``about:blank``,
+        fell through to UNKNOWN and produced a degraded Markdown (no abstract,
+        no references) for a publisher that has a handler.
+        """
+        raw = self.raw_html()
+        if not raw:
+            return ''
+        for entry in (self.documents_meta or []):
+            if entry.get('body') == raw and entry.get('url'):
+                return entry['url']
+        return ''
 
     def pin(self, handler, label: str = '') -> str:
         """Hand the capture to *handler* and return the raw article HTML."""
@@ -679,15 +703,44 @@ def save_html_snapshot(path, content: str, label: str = "HTML") -> bool:
 
 
 def _crossref_headless_publisher(crossref_data: dict):
-    """Return the HEADLESS_ACCESSIBLE_PUBLISHERS entry Crossref's publisher matches.
+    """The HEADLESS_ACCESSIBLE_PUBLISHERS entry this DOI matches, or None.
 
-    Word-boundary matching, so a short key like 'oup' does not match inside an
-    unrelated word like 'group' (e.g. "Optica Publishing Group").
+    Two sources, in this order:
 
-    None means unknown or not in the list -- i.e. this publisher needs a headed
-    browser. Both the Phase 0 decision and the pdf_link direct download consult
-    this, so the two cannot drift apart.
+    1. **Crossref's own full-text link** (``message.link[0].URL``), run
+       through the same URL detector the post-navigation code uses. This is
+       the reliable one: it names the *host the article lives on*.
+    2. The publisher name, word-boundary matched against the list. Only when
+       Crossref gave no link.
+
+    ⚠️ The name alone is not enough, and platforms are why. A platform hosts
+    many imprints and Crossref records the *imprint*, not the platform:
+    J-STAGE carries hundreds of Japanese societies, so
+    ``10.2184/lsj.49.6_349`` arrives as "Laser Society of Japan" and no
+    entry in the list can ever match it -- while its link,
+    ``https://www.jstage.jst.go.jp/article/lsj/49/6/49_349/_pdf``, says
+    exactly what it is. Springer and Wiley have the same shape. Listing
+    imprints would be endless and would go stale.
+
+    ⚠️ Word boundaries stay on the name path: a short key like 'oup' must not
+    match inside "Optica Publishing Group".
+
+    None means "needs a headed browser". Both the Phase 0 decision and the
+    pdf_link direct download consult this, so the two cannot drift apart.
     """
+    links = crossref_data.get('link') or []
+    first_link = next((u for u in links if u), '')
+    if first_link:
+        token = detect_publisher_from_url(first_link)
+        if token and token not in ('', 'unknown'):
+            for publisher_name in HEADLESS_ACCESSIBLE_PUBLISHERS:
+                if token == publisher_name.lower():
+                    return publisher_name
+            # A known publisher that is simply not on the headless list: that
+            # is an answer, not a reason to fall back to the fuzzier name
+            # match.
+            return None
+
     crossref_publisher = (crossref_data.get('publisher') or '').lower()
     if not crossref_publisher:
         return None
@@ -3393,7 +3446,8 @@ async def complete_extraction_workflow(
 
         return candidates
 
-    async def process_with_handler(page, context, handler, publisher, captured_data, force_headed_downloads):
+    async def process_with_handler(page, context, handler, publisher, captured_data,
+                                   force_headed_downloads, landing_url_hint: str = ''):
         """Run publisher extraction and shared output/download steps."""
         print(f"Step 2️⃣  使用{publisher.upper()}Handler完整提取...")
         print("=" * 80)
@@ -3413,14 +3467,24 @@ async def complete_extraction_workflow(
         # (That is how metadata.json ended up with a supplemental link.)
         # Handlers that want it can also read handler._landing_url, e.g. to
         # derive a journal code from the URL.
+        # ⚠️ page.url is not always usable. When the flow runs off the
+        # capture rather than a live tab, it is "about:blank" -- and a handler
+        # that derives anything from the landing URL (J-STAGE builds the other
+        # language's URL and the PDF URL from it) then builds nonsense like
+        # "about:blank/-char/en". *landing_url_hint* is the URL the caller
+        # already resolved, from the captured article response.
         landing_url = ''
         try:
             candidate = (page.url or '') if page is not None else ''
-            if candidate and not candidate.startswith('about:'):
+            if candidate and not candidate.startswith(('about:', 'chrome://')):
                 landing_url = candidate
-                handler._landing_url = landing_url
         except Exception:
             pass
+        if not landing_url and landing_url_hint:
+            landing_url = landing_url_hint
+            print(f"  ↪ 实时页面无 URL，落地 URL 取自捕获: {landing_url[:80]}")
+        if landing_url:
+            handler._landing_url = landing_url
 
         try:
             extraction_result = await handler.extract_all(captured=captured_data)
@@ -3871,17 +3935,25 @@ async def complete_extraction_workflow(
             referer=referer or '',
         )
 
-    # ========== 第1步判断：根据Crossref publisher决定是否需要Phase 0 ==========
+    # ========== 第1步判断：Crossref 的 link 域名（其次 publisher）决定是否 Phase 0 ==========
     should_use_headless_phase0 = False
     if not force_headed:
         crossref_publisher = crossref_data.get('publisher', '').lower()
+        _cr_link = next((u for u in (crossref_data.get('link') or []) if u), '')
+        # ⚠️ Say which source decided. The message used to name the publisher
+        # unconditionally, and after the link check went in it was reporting
+        # "根据Crossref publisher 'laser society of japan' 判断出版商为 JSTAGE"
+        # -- a name that cannot produce that answer. A log line that credits
+        # the wrong input is how a wrong judgement stays invisible.
+        _basis = f"link 域名 '{_cr_link[:60]}'" if _cr_link else \
+            f"publisher '{crossref_publisher}'"
         matched_publisher = _crossref_headless_publisher(crossref_data)
         if matched_publisher:
             should_use_headless_phase0 = True
-            print(f"✓ 根据Crossref publisher '{crossref_publisher}' 判断出版商为 {matched_publisher.upper()}")
+            print(f"✓ 根据Crossref {_basis} 判断出版商为 {matched_publisher.upper()}")
             print(f"  → 将使用Phase 0进行无头浏览器预检\n")
         else:
-            print(f"⊘ Crossref publisher '{crossref_publisher}' 不在无头直连列表中")
+            print(f"⊘ 据Crossref {_basis} 判断：不在无头直连列表中")
             print(f"  → 跳过Phase 0，直接使用有头浏览器\n")
 
     # ========== 阶段0（可选）：使用无头浏览器快速预检 ==========
@@ -3960,6 +4032,13 @@ async def complete_extraction_workflow(
 
                     # 检测最终URL
                     final_headless_url = headless_page.url
+                    if ((not final_headless_url)
+                            or final_headless_url.startswith(('about:', 'chrome://'))):
+                        _cap_url = _capture.article_url()
+                        if _cap_url:
+                            print(f"  ↪ 实时页面是 {final_headless_url or '(空)'}，"
+                                  f"改用捕获里文章响应的 URL")
+                            final_headless_url = _cap_url
                     print(f"  ✓ 最终URL: {final_headless_url}")
 
                     # 检测出版商
@@ -4008,6 +4087,10 @@ async def complete_extraction_workflow(
                             headless_publisher,
                             captured_data,
                             force_headed,
+                            # Same reason as the headed path: pass the URL this
+                            # branch already resolved so a blank page.url does
+                            # not leave the handler without one.
+                            landing_url_hint=final_headless_url,
                         )
                         await headless_page.close()
                         if headless_browser is not None:
@@ -4475,6 +4558,18 @@ async def complete_extraction_workflow(
             _headed_raw = _capture.raw_html() or None
 
             final_url = page.url
+            # ⚠️ A blank page means the flow is running off the capture, not
+            # off a live tab (see PageCapture.article_url). Detecting the
+            # publisher from "about:blank" silently hands the paper to the
+            # fallback handler.
+            if (not final_url) or final_url.startswith(('about:', 'chrome://')):
+                captured_url = _capture.article_url()
+                if captured_url:
+                    print(f"  ↪ 实时页面是 {final_url or '(空)'}，"
+                          f"改用捕获里文章响应的 URL")
+                    final_url = captured_url
+                else:
+                    final_url = url
             print(f"✓ 最终 URL: {final_url}")
 
             final_publisher = detect_publisher_from_url(final_url)
@@ -4549,7 +4644,9 @@ async def complete_extraction_workflow(
             #     'journal_prefix' / 'journal_name': str, # 可选的出版商扩展字段
             # }
             if callable(getattr(handler, 'extract_all', None)):
-                result = await process_with_handler(page, context, handler, publisher, captured_data, True)
+                result = await process_with_handler(
+                    page, context, handler, publisher, captured_data, True,
+                    landing_url_hint=final_url)
             else:
                 # Other publishers - use Crossref metadata only
                 print("Step 2️⃣  使用Crossref元数据...")
