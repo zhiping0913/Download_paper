@@ -8,6 +8,7 @@ from publisher.base import PublisherHandler
 from publisher import APSHandler, AIPHandler, CambridgeHandler
 from publisher.nature import NatureHandler
 from publisher.iop import IOPHandler
+from publisher.jstage import JStageHandler
 from publisher.springer_book import SpringerBookHandler
 from publisher.optica import OpticaHandler
 from publisher.science import ScienceHandler
@@ -34,6 +35,13 @@ def detect_publisher_from_url(url: str) -> str:
     For example, AIP's DOI (10.1063) must be checked before APS's loose substring matches.
     """
     url_lower = url.lower()
+
+    # J-STAGE (Japanese society journals). ⚠️ Domain only, never by DOI
+    # prefix: J-STAGE hosts hundreds of societies, each with its own prefix
+    # (10.2184 for Rev. Laser Eng., others elsewhere), so a prefix list would
+    # be endless and wrong the moment a new society joins.
+    if 'jstage.jst.go.jp' in url_lower:
+        return 'jstage'
 
     # Springer Book/Chapter detection (BEFORE general Springer/Nature detection)
     # Springer book paths include /book/, /chapter/, /referencework/, /referenceworkentry/
@@ -253,6 +261,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return ScienceDirectHandler(**kwargs)
     elif publisher == 'aps':
         return APSHandler(**kwargs)
+    elif publisher == 'jstage':
+        return JStageHandler(**kwargs)
     elif publisher == 'arxiv':
         # ArXiv uses APS-like handler
         kwargs.setdefault('journal_prefix', 'arxiv')

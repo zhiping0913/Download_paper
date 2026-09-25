@@ -1155,7 +1155,13 @@ def organize_paper_output(output_dir: Path, metadata: dict, s2_data: dict) -> Pa
     try:
         # Prioritize metadata from handler over s2_data
         year = metadata.get('year') or s2_data.get('year') or '0000'
-        title = metadata.get('title') or s2_data.get('title') or 'paper'
+        # ``_dir_title`` lets a handler name the folder differently from the
+        # metadata title. J-STAGE needs it: metadata['title'] carries the
+        # Japanese and English titles together so a search on either hits, but
+        # a directory called "日本語 English" twice as long serves nobody --
+        # the folder uses the Japanese title alone.
+        title = (metadata.get('_dir_title') or metadata.get('title')
+                 or s2_data.get('title') or 'paper')
 
         # Safety check: ensure year and title are strings
         if not isinstance(year, str):
@@ -1244,8 +1250,16 @@ def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
               so the source is traceable without re-running extraction.
     """
     try:
-        year = s2_data.get('year') or metadata.get('year') or '0000'
-        title = s2_data.get('title') or metadata.get('title') or 'paper'
+        # ⚠️ Handler metadata first, Crossref second -- the same order
+        # organize_paper_output uses. They used to disagree: the folder was
+        # named from the handler's title and metadata.json from Crossref's, so
+        # the two could describe the same paper differently. Measured on
+        # J-STAGE 10.2184/lsj.51.5_337, where the handler builds
+        # "<日本語> <English>" on purpose so a search over metadata.json hits
+        # either language, and Crossref's English-only title silently replaced
+        # it.
+        year = metadata.get('year') or s2_data.get('year') or '0000'
+        title = metadata.get('title') or s2_data.get('title') or 'paper'
 
         # Prefer explicit link, fall back to whatever the handler stashed on
         # metadata['_landing_url'] during extraction (see process_with_handler).
@@ -1271,6 +1285,12 @@ def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
             'issue': metadata.get('issue'),
             'pages': metadata.get('pages'),
             'corresponding_author_emails': metadata.get('corresponding_author_emails', []),
+            # ❌ No 'references' key. It was added here for J-STAGE and taken
+            # back out: the reference list already lives in paper.md (the
+            # publisher's own wording) and in crossref.json (Crossref's), so a
+            # third copy inside metadata.json only makes that file large and
+            # harder to scan.
+
             'extracted_at': datetime.now().isoformat(),
             'pdf': pdf_filename,
             'pdf_link': pdf_link or metadata.get('pdf_url') or '',
@@ -1328,7 +1348,7 @@ def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
 RAW_HTML_PUBLISHERS = frozenset({
     'iop', 'sciencedirect', 'aps', 'optica', 'cambridge',
     'acs', 'wiley', 'ieee', 'spie', 'aip', 'nature', 'mdpi', 'acm', 'oup', 'science', 'researching',
-    'opticsjournal',
+    'opticsjournal', 'jstage',
 })
 
 
