@@ -105,6 +105,7 @@ python complete_paper_extraction.py --file dois.txt         # 批量（主程序
 | `10.1117` / spiedigitallibrary.org | SPIEHandler | 有头 | 完整 |
 | `10.3788` / researching.cn | ResearchingHandler | 有头 | 完整 |
 | opticsjournal.net | OpticsJournalHandler | 有头 | 完整（无补充材料） |
+| jstage.jst.go.jp | JStageHandler | 无头 | **abstract + PDF** — 见下 |
 
 ### APS 的四个教训（2026-09-20，另一台机器的实跑日志）
 
@@ -243,6 +244,52 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
   md 里三处引用都渲染成了指向该 DOI 的链接。海报：`10.1117/12.3071462` →
   `supplemental--10.1117_12.3071462_poster.pdf`，750,717 字节、PDF 1.5、1 页，
   md 里有 `## Supplemental Material` 段
+
+### J-STAGE（`jstage.jst.go.jp`，日本各学会期刊）
+
+**abstract + PDF only.** 目前见到的每篇都只有抄録和 PDF，出版商不提供正文，
+所以没有正文/图片/补充材料提取，接口留空而不是猜。
+
+- ⚠️ **只按域名路由，绝不按 DOI 前缀**：J-STAGE 托管几百个学会，各自前缀不同
+  （レーザー研究是 `10.2184`，别家另有），列前缀迟早漏且会错
+- 📌 **同一篇有日/英两个页面，而且不是同一条记录的翻译**：
+  `doi.org/{doi}` 落到 `…/_article/-char/ja` 还是 `/-char/en` 取决于浏览器，
+  两页各有自己的标题和作者写法：
+
+  | | `meta[title]` | `meta[authors]` |
+  |---|---|---|
+  | `-char/ja` | 高強度レーザーパルスによる非線形Compton 散乱の モンテカルロ法 | 瀬戸 慧大 |
+  | `-char/en` | Monte Carlo Method for Nonlinear Compton Scattering … | Keita SETO |
+
+- ⚠️ **`citation_*` 两页完全相同、而且永远是日语** —— 所以英文标题**不可能**从
+  `citation_title` 拿到，必须真的去访问另一个语言的页面。语言相关的值一律取
+  `meta[name=title]` / `meta[name=authors]`，不取 `citation_*`
+- ⚠️ **作者列表优先取 DOM**（`div.global-authors-name-tags a.customTooltip`，
+  一个作者一个锚点），`meta[authors]` 只作兜底：它把所有作者塞在一个字符串里，
+  而多作者时的分隔符尚无样本，拆分就是在猜
+- 两份 HTML 都落盘（`page_ja.html` / `page_en.html`）—— 每份都有对方没有的东西
+- **PDF 从落地 URL 构造**：`_article` → `_pdf`，`/-char/...` 全部丢掉。⚠️ 不能拿 DOI 拼
+  —— 路径里是期刊自己的卷/页标识（`/article/lsj/51/5/51_337/`），`10.2184/lsj.51.5_337`
+  推不出来
+- 产出：`metadata['title']` 是**「日语 English」合并串**（metadata.json 检索两种语言都
+  命中）、`authors` 是 `["瀬戸 慧大", "Keita SETO"]`；而**目录名只用日语标题** ——
+  靠新增的 `metadata['_dir_title']`，`organize_paper_output` 优先读它
+- md 里**不输出 `## Article Text` 空段**：空标题看着像提取失败，而这里是出版商本来
+  就没有正文。`fulltext_data` 返回 `''`，所以也不会生成 `page.html`
+- 引用文献**原样照抄** `citation_reference`（「1）」编号、中日英混排都保留），只进
+  `paper.md`；`metadata.json` 不写 references（`crossref.json` 里有 Crossref 自己那份）
+- ✅ 实测 `10.2184/lsj.51.5_337`：目录 `2023--高強度レーザー…`、PDF 0.88 MB、
+  md 114 行、40 条引用文献、抄録 450 字符、无头直连零挑战
+
+### ⚠️ `metadata.json` 的 title/year 改为 handler 优先
+
+`save_metadata_json` 原来是 `s2_data.get('title') or metadata.get('title')`
+（Crossref 优先），而 `organize_paper_output` 一直是 handler 优先 —— 于是**目录名和
+metadata.json 可能对同一篇论文给出不同的标题**。J-STAGE 正是被它咬到：handler 特意
+拼出的「日语 English」被 Crossref 的英文标题静默顶掉。两处现已统一为 handler 优先。
+
+⚠️ 影响面**超出 J-STAGE**：其它出版商的 `metadata.json` 里 title/year 以前取 Crossref、
+现在取页面。实测 Optica `10.1364/OE.444043` 的 title/year 不变、`paper.md` md5 也不变。
 
 ### researching.cn（中国激光杂志社，`10.3788`）
 

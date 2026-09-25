@@ -273,7 +273,10 @@ HEADLESS_ACCESSIBLE_PUBLISHERS = [
     'oup_book', 
     'oxford', 
     'pleiades',
-    'acs'
+    'acs',
+    # J-STAGE serves the landing page without any bot challenge; there is no
+    # full text to fetch, so nothing here needs a headed browser.
+    'jstage',
     ]
 
 
