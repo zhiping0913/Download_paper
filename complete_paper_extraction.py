@@ -279,6 +279,9 @@ HEADLESS_ACCESSIBLE_PUBLISHERS = [
     # of Japan") and there are hundreds of them. See
     # _crossref_headless_publisher.
     'jstage',
+    # RCSI. Same story as J-STAGE: identified by Crossref's link host, since
+    # its publisher name is the academy, not the platform.
+    'rcsi',
     ]
 
 

@@ -105,6 +105,8 @@ python complete_paper_extraction.py --file dois.txt         # 批量（主程序
 | `10.1117` / spiedigitallibrary.org | SPIEHandler | 有头 | 完整 |
 | `10.3788` / researching.cn | ResearchingHandler | 有头 | 完整 |
 | opticsjournal.net | OpticsJournalHandler | 有头 | 完整（无补充材料） |
+| jstage.jst.go.jp | JStageHandler | 无头 | abstract + 参考文献 + PDF |
+| journals.rcsi.science | RCSIHandler | 无头 | metadata + PDF（页面没有正文）|
 | jstage.jst.go.jp | JStageHandler | 无头 | **abstract + PDF** — 见下 |
 
 ### APS 的四个教训（2026-09-20，另一台机器的实跑日志）
@@ -1704,6 +1706,32 @@ Navigator.prototype 上: function get webdriver() { [native code] }
 - PDF 链接固定构造为 `https://dl.acm.org/doi/pdf/{doi}`（下载可能仍 401，走标准 retry/skip）
 - **必须有头** — ACM 对 headless Chromium 有 Cloudflare 硬拦截。不要把 `'acm'` 加进 `HEADLESS_ACCESSIBLE_PUBLISHERS`
 - 图片 / 补充材料 handler 里保留接口 stub，将来想抓时不用改提取契约
+
+### RCSI（journals.rcsi.science）
+
+- 俄罗斯科学院各刊的 OJS 平台。**按域名路由**，不按 DOI 前缀 —— 它和 J-STAGE 一样
+  托管几十种刊、前缀各不相同（示例是 `10.31857`）
+- 页面**没有正文**，只有元数据和 PDF，所以 handler 只做这两件事
+- 元数据**不从落地页取，取 JATS XML**：把落地 URL 里的 `view` 换成 `xml`
+  （`/article/view/247372` → `/article/xml/247372`）。这份 XML 双语齐全 ——
+  `<article-title xml:lang="en">` 配文章级 `<trans-title>`（俄文）、
+  `<abstract>` 配 `<trans-abstract>`、每位作者都有
+  `<name xml:lang="en">` 和 `<name xml:lang="ru">`，一次请求就够
+- ⚠️ **`trans-title` 必须限定在 `article-meta` 里**：期刊名本身也是一个
+  `<trans-title>`（Журнал экспериментальной и теоретической физики）且排在更前面，
+  全文档找「第一个 trans-title」拿到的是**刊名**
+- ⚠️ **这份 XML 走 `request` 层，不是默认的 `tab`**：它以 `application/xml` 响应，
+  用浏览器标签页打开拿回来的是 **Chrome 自己的 XML viewer DOM**（`<html>` 外壳里嵌着
+  源码）。实测那样落盘的 `article.xml` 是 **81,217 字符**而出版商只发了 **14,143** ——
+  凑巧还能解析出来，所以这是个**静默**的问题。`fetch_html_via_ladder(default=...)`
+  就是为此开的口子
+- ⚠️ **PDF 链接只能读落地页的 `citation_pdf_url`**：下载路径里有**第二个 id**
+  （文件的，不是文章的 —— `/article/download/247372/225467`），view URL 和 XML 里
+  **都没有**它。`view`→`download` 只能拼出文章级路径，所以那是兜底不是正道
+- md 与 metadata 双语并存（同 J-STAGE）：`title` 写「俄文 英文」、`authors` 两套拼接，
+  两种文字搜索都能命中；目录名用英文标题
+- ✅ 实测 `10.31857/S0044451023120210` **无头**通过：XML 14,143 字符、4 位作者×2 语、
+  摘要 ru 1609 / en 1815、参考文献 44 条、`paper.pdf` 1.16 MB、md 126 行
 
 ## 参考
 

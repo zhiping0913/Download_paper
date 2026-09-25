@@ -833,7 +833,8 @@ async def fetch_html_via_ladder(url: str, *, kind: str = 'api', page=None,
                                 context=None, referer: str = None,
                                 expect=None, timeout_s: float = 30.0,
                                 restore_url: str = None,
-                                headless: bool = True) -> str:
+                                headless: bool = True,
+                                default: tuple = ('tab', 'fresh')) -> str:
     """Fetch *url* as HTML, walking the ladder until something usable comes back.
 
     *expect* is a substring or a predicate identifying the page we wanted; see
@@ -859,8 +860,13 @@ async def fetch_html_via_ladder(url: str, *, kind: str = 'api', page=None,
     The default is True so that forgetting to pass it cannot pop a window
     during a headless batch -- the quieter of the two wrong answers. It is
     still a wrong answer on a headed run, so pass it explicitly.
+
+    *default* is the full rung order for callers whose target is a plain file
+    on an undefended host -- an XML or JSON API answers a bare request, and
+    the 'tab' rung would hand back Chrome's *viewer* DOM instead of the
+    publisher's bytes. ``DP_FETCH_*`` still overrides it.
     """
-    tiers = fetch_ladder(kind)
+    tiers = fetch_ladder(kind, default)
 
     for tier in tiers:
         if tier == 'request':
@@ -1354,7 +1360,7 @@ def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
 RAW_HTML_PUBLISHERS = frozenset({
     'iop', 'sciencedirect', 'aps', 'optica', 'cambridge',
     'acs', 'wiley', 'ieee', 'spie', 'aip', 'nature', 'mdpi', 'acm', 'oup', 'science', 'researching',
-    'opticsjournal', 'jstage',
+    'opticsjournal', 'jstage', 'rcsi',
 })
 
 
