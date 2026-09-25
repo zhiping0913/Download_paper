@@ -281,6 +281,29 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
 - ✅ 实测 `10.2184/lsj.51.5_337`：目录 `2023--高強度レーザー…`、PDF 0.88 MB、
   md 114 行、40 条引用文献、抄録 450 字符、无头直连零挑战
 
+### 无头判据：先看 Crossref 的 `link` 域名，再退回 publisher 名
+
+`_crossref_headless_publisher()` 原来只按 **Crossref 的 publisher 名**做词边界匹配。
+
+- ❌ **平台托管多个出版社时，这个判据必然失效**：Crossref 记的是**出版社**而不是
+  **平台**。J-STAGE 上是 `Laser Society of Japan`（几百个学会，列不完），
+  `10.2184/lsj.49.6_349` 因此永远匹配不上 —— 而它的
+  `message.link[0].URL`（`https://www.jstage.jst.go.jp/…/_pdf`）直接说明文章住在哪。
+  Springer、Wiley 是同一种形状
+- 📌 现在的顺序：**① `link` 第一条的域名**，交给 `detect_publisher_from_url`
+  （与落地之后用的是同一个检测器，两处不会漂）；**② 没有 link 或域名未知**时才看
+  publisher 名
+- ⚠️ **link 认出一个"已知但不在无头名单里"的出版商时直接返回 None，不回退看名字** ——
+  那是一个**答案**（该用有头），回退会让更模糊的名字匹配推翻更可靠的域名判断
+- ⚠️ 名字那条路**保留词边界**：`oup` 不能在 "Optica Publishing **Group**" 里误命中
+- ⚠️ **日志要说清是哪个来源决定的**。改完后那句还在打印
+  `根据Crossref publisher 'laser society of japan' 判断出版商为 JSTAGE` ——
+  一个**不可能**得出该结论的输入。credit 错了输入的日志，会让错误判断一直隐形
+- ✅ 实测六种输入：J-STAGE(link) → `jstage`；Optica(link) → None（正确，它要有头）；
+  Nature(link) → `nature`；无 link 名字命中 → `oup`；无 link 名字不中 → None；
+  link 域名未知 → 回退名字 → `oup`。端到端：J-STAGE 从有头变 **🟢 无头直连**，
+  AIP 仍无头（367 行、12 图不变），Optica 仍有头（md5 `7d3143c4` 不变）
+
 ### ⚠️ `metadata.json` 的 title/year 改为 handler 优先
 
 `save_metadata_json` 原来是 `s2_data.get('title') or metadata.get('title')`
