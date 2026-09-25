@@ -1625,7 +1625,8 @@ async def _looks_like_article_page(pw_page, url: str, doi: str) -> bool:
         return False
 
 
-def _pick_page_by_url(browser, candidate, url: str, doi: str):
+def _pick_page_by_url(browser, candidate, url: str, doi: str,
+                      landed_url: str = ''):
     """The open page whose URL looks like the article, preferring *candidate*.
 
     Deliberately reads nothing but ``page.url``, which Playwright answers from
@@ -1634,38 +1635,73 @@ def _pick_page_by_url(browser, candidate, url: str, doi: str):
     asks each page for its HTML and is only worth paying for when the capture
     has no article to offer.
     """
+    # ⚠️ Host of the URL the article was *served* from when we know it. The
+    # host of `url` is doi.org, which no publisher page ever matches after the
+    # redirect -- so without landed_url this function could only ever succeed
+    # via the DOI-in-URL test, and that fails for J-STAGE and ScienceDirect.
     try:
         from urllib.parse import urlparse
-        want_host = urlparse(url).netloc.lower()
+        want_host = urlparse(landed_url or url).netloc.lower()
     except Exception:
         want_host = ''
     doi_l = (doi or '').lower()
 
-    def looks_right(pg) -> bool:
-        try:
-            pg_url = (pg.url or '').lower()
-        except Exception:
-            return False
-        if not pg_url or pg_url.startswith(('about:', 'chrome://')):
-            return False
-        if doi_l and doi_l in pg_url:
-            return True
-        try:
-            return bool(want_host) and urlparse(pg_url).netloc.lower() == want_host
-        except Exception:
-            return False
+    landed_l = (landed_url or '').lower().rstrip('/')
 
-    if candidate is not None and looks_right(candidate):
-        return candidate
-    for ctx in browser.contexts:
-        for pg in ctx.pages:
-            if pg is not candidate and looks_right(pg):
+    def page_url(pg) -> str:
+        try:
+            value = (pg.url or '').lower()
+        except Exception:
+            return ''
+        if not value or value.startswith(('about:', 'chrome://')):
+            return ''
+        return value
+
+    def exact(pg) -> bool:
+        """Same document, allowing for a trailing slash."""
+        value = page_url(pg).rstrip('/')
+        return bool(landed_l) and value == landed_l
+
+    def by_doi(pg) -> bool:
+        return bool(doi_l) and doi_l in page_url(pg)
+
+    pages = [pg for ctx in browser.contexts for pg in ctx.pages]
+    if candidate is not None and candidate not in pages:
+        pages.insert(0, candidate)
+
+    # Exact URL first, then the DOI in the path.
+    #
+    # 📌 Why not host matching: in production it would usually be right -- one
+    # Chrome serves one paper and is retired afterwards, so the publisher's
+    # host has just this article's tab on it. But "usually right" is the wrong
+    # standard for choosing which document gets extracted, and an exact URL is
+    # available for free (the capture records it). So the fuzzy test is not
+    # kept as a fallback; see the note below for why it is provably unreachable
+    # anyway.
+    #
+    # ⚠️ Correction to an earlier claim in this file's history: the measurement
+    # that "host matching returned the previous paper's page" came from a
+    # browser polluted by probe scripts, not from a real run. Production does
+    # not leave another paper's tab open.
+    for test, label in ((exact, 'URL 完全一致'), (by_doi, 'URL 含 DOI')):
+        for pg in pages:
+            if test(pg):
                 try:
-                    print(f"  ✓ 按 URL 选定页面: {pg.url[:90]}")
+                    print(f"  ✓ 按{label}选定页面: {pg.url[:90]}")
                 except Exception:
                     pass
                 return pg
-    return candidate
+
+    # ❌ No host-based fallback, because it is provably unreachable rather
+    # than merely unwise: want_host comes from `landed_url or url`, and the
+    # only case that would reach a host comparison is landed_url being empty
+    # -- where the host is doi.org, which no publisher page carries after the
+    # redirect.
+    #
+    # Not finding the page is a safe answer: the flow continues from the
+    # capture, and when the capture has no article _pick_article_page (which
+    # reads each page's HTML) runs instead.
+    return None
 
 
 async def _pick_article_page(browser, candidate, url: str, doi: str):
@@ -1694,23 +1730,22 @@ async def _pick_article_page(browser, candidate, url: str, doi: str):
     return candidate
 
 
-async def _find_pw_page_by_cdp_target(browser, target_id):
-    """在 Playwright 连接的 browser 中按 CDP targetId 精确定位 page。
-    targetId 是 tab 的唯一标识，页面重定向（doi.org -> 文章页）后不变，
-    与 URL 内容无关 —— 适用于任何 publisher（含 SD 这类 URL 里不带 doi 的）。"""
-    if not target_id or browser is None:
-        return None
-    for _ct in browser.contexts:
-        for _pg in _ct.pages:
-            try:
-                _sess = await _ct.new_cdp_session(_pg)
-                _info = await _sess.send("Target.getTargetInfo")
-                _tid = _info.get("targetInfo", {}).get("targetId", "")
-                if _tid == target_id:
-                    return _pg
-            except Exception:
-                continue
-    return None
+# ❌ _find_pw_page_by_cdp_target() has been removed. It compared the
+# preload's targetId (the last path segment of the CDP websocket URL, which is
+# what Chrome's /json reports) against `Target.getTargetInfo` asked over a
+# Playwright CDP session -- and **those two id spaces do not correspond**.
+# Measured on one browser, same moment, same J-STAGE page:
+#
+#   Chrome /json        D77BDB56D0CEDB5ABC2E3EF2438BE303
+#   Playwright session  2CA3FA09A46E6AAD4567ACD33E2260E6
+#
+# The whole enumeration matched nothing, three attempts in a row. So the
+# "precise, redirect-proof" matcher never once worked, and the retry loop
+# added on the theory that Playwright had simply not enumerated the tab yet
+# was re-running a comparison that cannot succeed. A browser-level session
+# (browser.new_browser_cdp_session + Target.getTargets) does return /json's
+# ids, but mapping one back to a Playwright Page still needs the URL -- so
+# the URL is the matcher, and _pick_page_by_url is where it lives.
 
 
 async def retry_download(download_func, *args, max_retries=DP_MAX_RETRIES, retry_delay=DP_RETRY_DELAY, **kwargs):
@@ -4374,16 +4409,23 @@ async def complete_extraction_workflow(
             if _cf_preloaded:
                 # 预载已成功：在 Playwright pages 中找到对应页面复用
                 print("🛡️  复用预载页面（Playwright连接前已通过 Cloudflare）...")
-                _cf_pre_target_id = _cf_pre_result.get("target_id")
-                _cf_page_obj = await _find_pw_page_by_cdp_target(browser, _cf_pre_target_id)
+                _cf_page_obj = None
                 if _cf_page_obj is None:
+                    # ⚠️ Compare against the URL the article was *served*
+                    # from, not the doi.org URL we asked for. The page has
+                    # redirected by now, so `url in _pg_url` could only ever
+                    # match a publisher whose final URL still contains
+                    # "doi.org/<doi>" -- never J-STAGE, whose path is
+                    # lsj/49/6/49_349.
+                    _want = _capture.article_url() or url
                     for _ctx in browser.contexts:
                         for _pg in _ctx.pages:
                             try:
                                 _pg_url = _pg.url
                             except Exception:
                                 _pg_url = ''
-                            if _pg_url and (url in _pg_url or _pg_url == url):
+                            if _pg_url and (_want in _pg_url or _pg_url in _want
+                                            or url in _pg_url):
                                 _cf_page_obj = _pg
                                 break
                         if _cf_page_obj:
@@ -4407,7 +4449,9 @@ async def complete_extraction_workflow(
                 # commit. The page object is still wanted -- page.url pins
                 # _landing_url, and handlers that open a table or a chapter
                 # navigate with it -- but it no longer has to be interrogated.
-                _cf_page_obj = _pick_page_by_url(browser, _cf_page_obj, url, doi)
+                _cf_page_obj = _pick_page_by_url(
+                    browser, _cf_page_obj, url, doi,
+                    landed_url=_capture.article_url())
                 if _capture.raw_html():
                     print("  ✓ 捕获里已有文章原始响应，离线继续（不校验实时页面）")
                     _cf_loaded = True
@@ -4462,9 +4506,11 @@ async def complete_extraction_workflow(
                                            'Fallback 预载', captured_data_dir)
                     if _cf_result["success"]:
                         print(f"  ✅ 纯CDP挑战通过")
-                        # 在 Playwright 中找到这个 page 并复用（优先按 CDP targetId，与 URL 无关）
-                        _cf_target_id = _cf_result.get("target_id")
-                        _cf_page_obj = await _find_pw_page_by_cdp_target(browser, _cf_target_id)
+                        # 在 Playwright 中按 URL 找到这个 page 并复用。
+                        # targetId 匹配已删除 —— 见 _pick_page_by_url 上方那段。
+                        _cf_page_obj = _pick_page_by_url(
+                            browser, None, url, doi,
+                            landed_url=_capture.article_url())
                         if _cf_page_obj is None:
                             for _ctx in browser.contexts:
                                 for _pg in _ctx.pages:

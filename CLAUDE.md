@@ -281,6 +281,43 @@ handler 若能从页面上看出出版商拒绝了这篇文章，就在 `extract
 - ✅ 实测 `10.2184/lsj.51.5_337`：目录 `2023--高強度レーザー…`、PDF 0.88 MB、
   md 114 行、40 条引用文献、抄録 450 字符、无头直连零挑战
 
+### 找回预载页面：`targetId` 匹配是假的，只能按 URL
+
+预载在 Playwright 连接**之前**打开文章页，之后要在 Playwright 的 pages 里把那个
+tab 找回来。原先有三条路，**只有第三条真能用**：
+
+- ❌ **按 CDP `targetId`**（曾被注释称为"精确、与 URL 无关、适用于任何 publisher"）
+  —— **实测两组 id 毫不相交**。同一浏览器、同一时刻、同一个 J-STAGE 页面：
+
+  ```
+  Chrome /json（= 预载的 ws_url 末段）  D77BDB56D0CEDB5ABC2E3EF2438BE303
+  Playwright 会话里 Target.getTargetInfo  2CA3FA09A46E6AAD4567ACD33E2260E6
+  ```
+
+  三次枚举全部不命中。函数已删除。⚠️ 我曾以"Playwright 还没枚举到 tab"解释它偶发
+  落空并加了 3 次重试 —— **那是猜的，且重试在重复一个不可能成功的比较**。
+  浏览器级会话（`new_browser_cdp_session` + `Target.getTargets`）确实能拿到 /json
+  那套 id，但要映射回 Playwright 的 Page 仍然只能靠 URL
+- ❌ **`url in pg.url`** —— `url` 是 `https://doi.org/{doi}`，而页面早已重定向。只有
+  最终 URL 仍含 `doi.org/<doi>` 才可能命中，**没有出版商是这样**
+- ✅ **按 URL**（`_pick_page_by_url`）：**精确 URL 优先**（容忍尾斜杠），其次
+  **URL 里含 DOI**（IOP/Optica 这类有效；J-STAGE 用 `lsj/49/6/49_349`、
+  ScienceDirect 用 PII，都不含 DOI）。精确 URL 来自
+  `PageCapture.article_url()` —— 捕获里那份文章响应自己的 URL
+- ❌ **不做 host 兜底**：`want_host` 取自 `landed_url or url`，唯一能走到它的情形是
+  `landed_url` 为空 —— 那时 host 是 `doi.org`，不可达。⚠️ 我一度用"它会选中上一篇
+  的残留 tab"为它的删除辩护，**那个实测来自被探针污染的浏览器**；生产是一篇一个
+  Chrome、跑完即关，不会有别篇的 tab
+- 📌 找不到页面**是安全答案**：捕获里有文章就离线继续；捕获里没有，才由
+  `_pick_article_page`（逐个读页面 HTML）去认
+- ✅ 实测 Optica：`✓ 按URL 完全一致选定页面: …/fulltext.cfm?uri=oe-30-1-389` →
+  `✓ 找到预载页面，直接复用`，`paper.md` md5 `7d3143c4` 不变
+
+⚠️ **探针不要占用主端口**：我的探针用 `launch_chrome(headless=True)` 在 9222 上留了
+一个**无头** Chrome，随后主流程（本该有头）复用了那个端口，于是以无头身份撞上
+Optica 的 Radware —— 拦截页 URL 的 `sst=` 参数里明写着 `HeadlessChrome/152.0.0.0`，
+产出降级成 `2021--Optica Article`。调试脚本请换 `CHROME_DEBUG_PORT`。
+
 ### 无头判据：先看 Crossref 的 `link` 域名，再退回 publisher 名
 
 `_crossref_headless_publisher()` 原来只按 **Crossref 的 publisher 名**做词边界匹配。
