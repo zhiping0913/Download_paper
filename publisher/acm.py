@@ -1,23 +1,24 @@
 """ACM Digital Library publisher handler (dl.acm.org, DOI prefix 10.1145).
 
-**Abstract-only.** ACM Digital Library gates full text behind login for
-almost all conference proceedings, so this handler is deliberately
-minimal:
+**Full text when ACM prints it, abstract when it does not.** Open-access
+articles ship the whole paper -- sections, LaTeX, algorithms, footnotes,
+appendices, references and supplemental files -- in the server's own
+response, so everything here parses the raw HTML and never reads the live
+DOM. Gated conference papers ship only the abstract; the handler says so
+instead of leaving a blank that reads like a rendering bug.
 
-  * ``metadata`` — title, DOI, authors (+ affiliations + emails), year,
-    journal/conference name, and abstract are extracted from the
-    article landing page.
-  * ``fulltext_data`` — the h2-section walk produces best-effort
-    markdown for whatever ACM ships in the free landing page (Abstract
-    is always present; References may or may not be; body / figures
-    / supplemental are usually behind login and left unset).
-  * ``links.pdf_url`` — always constructed as
-    ``https://dl.acm.org/doi/pdf/{doi}``. Downloading may still 401 for
-    paywalled papers; that's handled by the standard retry/skip logic
-    in ``_download_all_resources``.
-  * ``links.figure_urls`` / ``links.supplemental_urls`` — empty.
-    Interfaces are kept so future full-text support can slot in
-    without touching the extraction contract.
+  * ``metadata`` -- title, DOI, authors (+ affiliations + emails), year,
+    journal/conference name, abstract, references.
+  * ``fulltext_data`` -- the article page's raw HTML; the markdown is built
+    from it by walking ``section[id^=sec-]`` in document order.
+  * ``links.pdf_url`` -- always ``https://dl.acm.org/doi/pdf/{doi}``.
+    Downloading may still 401 for paywalled papers; that is the standard
+    retry/skip path in ``_download_all_resources``.
+  * ``links.figure_urls`` -- every ``<img>`` in the body and appendices,
+    numbered by document order. ⚠️ On ACM these are often **algorithms**
+    rendered as JPEGs rather than figures.
+  * ``links.supplemental_urls`` -- the ``/doi/suppl/...`` files listed in
+    ``section#supplementary-materials``.
 
 Headed-only: ACM fronts every request with Cloudflare bot protection
 that hard-blocks headless Chromium. Do NOT add ``'acm'`` to
@@ -38,27 +39,6 @@ from html_to_md_converter import (
 )
 from publisher.base import PublisherHandler
 from publisher.wildcard import init_extract_all_page, set_actual_base_url
-
-
-# H2 headings that live on the article landing page but describe UI /
-# widgets rather than paper content. The h2 walker skips these.
-_ACM_H2_SKIP = frozenset({
-    'formats available',
-    'recommendations',
-    'comments',
-    'information & contributors',
-    'bibliometrics & citations',
-    'view options',
-    'figures',
-    'tables',
-    'media',
-    'share',
-    'export citations',
-    'new citation alert added!',
-    'add a citation alert',
-    'footer',
-    'acm is now open access',
-})
 
 
 class ACMHandler(PublisherHandler):
@@ -264,9 +244,12 @@ class ACMHandler(PublisherHandler):
         # Feeding the div straight to pandoc emits a fenced-div wrapper
         # ("::: {role=\"paragraph\"}"). Wrap the div's INNER HTML in a
         # <p> tag so pandoc renders a plain paragraph instead.
+        # ⚠️ Through _inline_md, not straight to pandoc: ACM abstracts carry
+        # span.core-tex math too, and pandoc would turn it into
+        # "[\$\\(\\sqrt{m}\\)\$]{role=\"math\"}".
         paragraphs: List[str] = []
         for p in section.find_all('div', attrs={'role': 'paragraph'}):
-            md = cls._convert_paragraph_to_md('<p>' + p.decode_contents() + '</p>')
+            md = cls._inline_md(p.decode_contents())
             if md:
                 paragraphs.append(md)
         if paragraphs:
@@ -289,68 +272,402 @@ class ACMHandler(PublisherHandler):
         return re.sub(r'\s+', ' ', md).strip()
 
     # ------------------------------------------------------------------
-    # h2-section walker (abstract-only mode: best effort)
+    # Full text
     # ------------------------------------------------------------------
+    #
+    # ACM (Atypon) ships the whole article in the server's response --
+    # sections, LaTeX and all -- so everything below parses the raw HTML
+    # and never touches the live DOM.
+    #
+    # Shapes that matter (10.1145/3728480 is the reference sample):
+    #
+    #   div.core-container   several per page; the body is the one holding
+    #                        <section id="sec-N">, the back matter is the one
+    #                        holding #footnotes / #appendix / #bibliography
+    #   div[role=paragraph]  a paragraph. ⚠️ It can CONTAIN display formulas
+    #                        and statement figures, so it is walked, not
+    #                        flattened
+    #   span.core-tex        the LaTeX itself, author's own source. Inline
+    #                        spans carry their \( \) delimiters
+    #   div.display-formula  block formula + an optional div.label ("(9)")
+    #   figure.statement     Lemma / Theorem / Proof / Algorithm. The
+    #                        data-type attribute names which, and the page
+    #                        renders it indented
+    #   figure[data-type=algorithm]  an IMAGE, not text (jds-2025-03-algo1.jpg)
+
+    #: Block-level children a container walk must stop and handle, rather
+    #: than sweeping into the surrounding inline text.
+    _BLOCK_TAGS = frozenset({'section', 'figure', 'table', 'ul', 'ol', 'h1',
+                             'h2', 'h3', 'h4', 'h5', 'h6'})
+
+    @staticmethod
+    def _is_block_div(el) -> bool:
+        if getattr(el, 'name', None) != 'div':
+            return False
+        classes = el.get('class') or []
+        role = el.get('role') or ''
+        return ('display-formula' in classes
+                or role in ('paragraph', 'doc-footnote')
+                or 'biblioentry' in classes)
+
+    # -- math ----------------------------------------------------------
+
+    @staticmethod
+    def _inline_tex(latex: str) -> str:
+        """``\\(x\\)`` → ``$x$``. Empty when there is nothing left."""
+        tex = (latex or '').strip()
+        tex = re.sub(r'^\\\(', '', tex)
+        tex = re.sub(r'\\\)$', '', tex)
+        tex = re.sub(r'\s+', ' ', tex).strip()
+        return f"${tex}$" if tex else ''
+
+    @classmethod
+    def _display_tex(cls, latex: str, label: str = '') -> str:
+        """Render a block formula.
+
+        ⚠️ Only the ``equation`` / ``equation*`` wrapper is stripped and
+        replaced by ``$$``. ``align``, ``array`` and friends are emitted as
+        they stand -- they are display environments in their own right, and
+        wrapping them in ``$$`` produces LaTeX that will not compile. This
+        article alone uses equation, equation*, align, align*, aligned,
+        array and bmatrix.
+        """
+        tex = (latex or '').strip()
+        tex = tex.replace('\\nonumber', ' ')
+        match = re.match(r'^\\begin\{equation\*?\}(.*)\\end\{equation\*?\}$',
+                         tex, re.DOTALL)
+        if match:
+            inner = match.group(1).strip()
+            if label:
+                inner += f"\\tag{{{cls._bare_label(label)}}}"
+            return '$$\n' + inner + '\n$$' if inner else ''
+        return tex
+
+    @staticmethod
+    def _bare_label(label: str) -> str:
+        """``(9)`` → ``9``; the ``\\tag`` macro adds its own parentheses."""
+        return (label or '').strip().strip('()').strip()
+
+    @classmethod
+    def _inline_md(cls, element) -> str:
+        """Markdown for one inline run, with the LaTeX carried through.
+
+        Each ``span.core-tex`` becomes an opaque token before pandoc runs
+        and is swapped back afterwards -- pandoc would otherwise escape the
+        backslashes in the author's source.
+        """
+        fragment = BeautifulSoup(f'<div>{element}</div>', 'html.parser')
+        # ⚠️ pandoc turns an unknown attribute into a bracketed span
+        # ("[Lemma 1.]{data-style=\"small-caps\"}"), which lands in the
+        # markdown as literal noise. These attributes are presentational.
+        for styled in fragment.find_all(attrs={'data-style': True}):
+            del styled['data-style']
+        # Same story for target="_blank" on reference links, which pandoc
+        # renders as a trailing {target="_blank"}.
+        for anchor in fragment.find_all('a', attrs={'target': True}):
+            del anchor['target']
+        for math_span in fragment.find_all(attrs={'role': 'math'}):
+            del math_span['role']
+        formulas: List[str] = []
+        for span in fragment.find_all('span', class_='core-tex'):
+            tex = cls._inline_tex(span.get_text())
+            target = span.parent if (span.parent is not None
+                                     and span.parent.get('role') == 'math'
+                                     and len(span.parent.find_all(recursive=False)) == 1) else span
+            if not tex:
+                target.replace_with('')
+                continue
+            formulas.append(tex)
+            target.replace_with(f"DPMATH{len(formulas) - 1:04d}ZZ")
+        md = cls._convert_paragraph_to_md('<p>' + fragment.div.decode_contents() + '</p>')
+        for index, tex in enumerate(formulas):
+            md = md.replace(f"DPMATH{index:04d}ZZ", tex)
+        return md.strip()
+
+    # -- body walk -----------------------------------------------------
+
+    @classmethod
+    def _walk(cls, node, level: int, figures: Dict[str, str]) -> List[str]:
+        """Render *node*'s children in document order.
+
+        *level* is the heading depth the node's own ``<h2>`` should take, so
+        appendix subsections can be pushed one level down without their
+        markup saying anything about it.
+        """
+        blocks: List[str] = []
+        inline_buffer: List[str] = []
+
+        def flush():
+            if not inline_buffer:
+                return
+            md = cls._inline_md(''.join(inline_buffer))
+            inline_buffer.clear()
+            if md:
+                blocks.append(md)
+
+        for child in node.children:
+            if isinstance(child, NavigableString):
+                if str(child).strip():
+                    inline_buffer.append(str(child))
+                continue
+            name = child.name
+            classes = child.get('class') or []
+            role = child.get('role') or ''
+
+            if name in ('script', 'style'):
+                continue
+
+            if not (name in cls._BLOCK_TAGS or cls._is_block_div(child)):
+                inline_buffer.append(str(child))
+                continue
+
+            flush()
+
+            if re.fullmatch(r'h[1-6]', name or ''):
+                depth = min(6, level + int(name[1]) - 2)
+                # ⚠️ Through _inline_md, not get_text: section titles carry
+                # math too ("4.3 Box-constrained \(\ell _\infty\) Regression"),
+                # and get_text would print the raw delimiters.
+                text = cls._inline_md(child.decode_contents())
+                if text:
+                    blocks.append('#' * max(2, depth) + ' ' + text)
+            elif name == 'section':
+                blocks.extend(cls._walk(child, level, figures))
+            elif 'display-formula' in classes:
+                blocks.extend(cls._render_display_formula(child))
+            elif name == 'figure':
+                blocks.extend(cls._render_figure(child, level, figures))
+            elif role == 'paragraph':
+                blocks.extend(cls._walk(child, level, figures))
+            elif role == 'doc-footnote':
+                blocks.extend(cls._render_footnote(child))
+            elif 'biblioentry' in classes:
+                blocks.extend(cls._render_biblioentry(child))
+            else:
+                md = cls._convert_paragraph_to_md(str(child))
+                if md:
+                    blocks.append(md)
+
+        flush()
+        return blocks
+
+    @classmethod
+    def _render_display_formula(cls, div) -> List[str]:
+        span = div.find('span', class_='core-tex')
+        if span is None:
+            return []
+        label_div = div.find('div', class_='label')
+        # ⚠️ No separator: the label is one token with markup inside it
+        # ("(P<sub>ϵ</sub>)"), and ' ' would split it into "(P ϵ)".
+        label = label_div.get_text('', strip=True) if label_div else ''
+        tex = cls._display_tex(span.get_text(), label)
+        return [tex] if tex else []
+
+    @classmethod
+    def _render_figure(cls, figure, level: int, figures: Dict[str, str]) -> List[str]:
+        """A statement block, an image, or both.
+
+        Lemma / Theorem / Proof are set off from the running text on the
+        page; a blockquote is the markdown that says the same thing without
+        inventing a heading level for something that is not a section.
+        """
+        caption_el = figure.find('figcaption')
+        caption = ''
+        if caption_el is not None:
+            caption = cls._inline_md(caption_el.decode_contents())
+            caption_el.extract()
+
+        image_md: List[str] = []
+        for img in figure.find_all('img'):
+            key = img.get('data-dp-asset')
+            img.extract()
+            if not key:
+                continue
+            number = key.split('_')[-1]
+            image_md.append(f"[FIGURE_{number}]")
+
+        body = cls._walk(figure, level, figures)
+
+        out: List[str] = []
+        heading = caption or cls._statement_heading(figure)
+        if heading:
+            out.append(heading if heading.startswith('**') else f"**{heading}**")
+        out.extend(image_md)
+        if body:
+            # One blockquote for the whole statement: the page indents it as
+            # a single block, and separate quotes would read as separate
+            # statements.
+            quoted = '\n\n'.join(body)
+            out.append('\n'.join('> ' + line if line else '>'
+                                  for line in quoted.split('\n')))
+        return [b for b in out if b]
+
+    @staticmethod
+    def _statement_heading(figure) -> str:
+        """A heading like "Algorithm 1." for a statement with no caption.
+
+        ACM gives the algorithm figures no ``<figcaption>`` -- the number
+        lives only in ``data-type`` plus the element id (``algorithm1``).
+        """
+        data_type = (figure.get('data-type') or '').strip()
+        if not data_type:
+            return ''
+        number = re.search(r'(\d+)$', figure.get('id') or '')
+        label = data_type[:1].upper() + data_type[1:]
+        return f"{label} {number.group(1)}." if number else f"{label}."
+
+    @classmethod
+    def _render_footnote(cls, div) -> List[str]:
+        label_div = div.find('div', class_='label')
+        label = label_div.get_text(' ', strip=True) if label_div else ''
+        if label_div is not None:
+            label_div.extract()
+        text = ' '.join(cls._walk(div, 2, {}))
+        if not text:
+            return []
+        return [f"{label} {text}".strip() if label else text]
+
+    @classmethod
+    def _render_biblioentry(cls, div) -> List[str]:
+        label_div = div.find('div', class_='label')
+        label = label_div.get_text(' ', strip=True) if label_div else ''
+        content = div.find('div', class_='citation-content')
+        if content is None:
+            return []
+        text = cls._inline_md(content.decode_contents())
+        if not text:
+            return []
+        return [f"{label} {text}".strip()]
+
+    # -- locating the article ------------------------------------------
+
+    @staticmethod
+    def _body_sections(soup: BeautifulSoup) -> List:
+        """The numbered body sections, in order.
+
+        ACM stacks several ``div.core-container`` blocks on the page (nav,
+        metadata, abstract, body, back matter). The body is the one holding
+        ``section[id^=sec-]``; picking it by id keeps the widgets out
+        without a blocklist.
+        """
+        return [s for s in soup.find_all('section', id=re.compile(r'^sec-\d+$'))
+                if s.find_parent('section', id=re.compile(r'^sec-\d+$')) is None]
+
+    @classmethod
+    def _number_assets(cls, soup: BeautifulSoup) -> None:
+        """Tag every article image with the key the downloader will use.
+
+        The figure scan and the body walk are two independent passes; if
+        each counted for itself they would drift apart the first time one of
+        them skipped an image (ACS has been bitten by exactly that). Both
+        read the number off the markup instead.
+        """
+        containers = cls._body_sections(soup)
+        appendix = soup.find('section', id='appendix')
+        if appendix is not None:
+            containers.append(appendix)
+        index = 0
+        for container in containers:
+            for img in container.find_all('img'):
+                index += 1
+                img['data-dp-asset'] = f'fig_{index}'
+
+    @classmethod
+    def extract_figures_from_html(cls, html_content: str) -> Dict[str, dict]:
+        """``{'fig_N': {'url': large, 'original_url': medium}}``.
+
+        ⚠️ Not every ACM image is a "Figure": this article's only one is an
+        **algorithm** rendered as a JPEG. They are numbered by document
+        order regardless of what they depict, which is what the downloader
+        keys on.
+        """
+        if not html_content:
+            return {}
+        soup = BeautifulSoup(html_content, 'html.parser')
+        cls._number_assets(soup)
+        figures: Dict[str, dict] = {}
+        for img in soup.find_all('img', attrs={'data-dp-asset': True}):
+            medium = (img.get('src') or '').strip()
+            large = (img.get('data-viewer-src') or '').strip()
+            best = large or medium
+            if not best:
+                continue
+            figures[img['data-dp-asset']] = {
+                'url': cls._absolute(best),
+                'original_url': cls._absolute(medium) if medium and medium != best else None,
+            }
+        return figures
+
+    @classmethod
+    def _absolute(cls, url: str) -> str:
+        if not url:
+            return ''
+        if url.startswith('http'):
+            return url
+        return cls.ACM_BASE + ('' if url.startswith('/') else '/') + url
+
+    @classmethod
+    def extract_supplemental_from_html(cls, html_content: str) -> Tuple[List[str], Dict[str, str]]:
+        """``(urls, {url: description})`` from the Supplemental Material section."""
+        if not html_content:
+            return [], {}
+        soup = BeautifulSoup(html_content, 'html.parser')
+        section = soup.find('section', id='supplementary-materials')
+        if section is None:
+            return [], {}
+        urls: List[str] = []
+        descriptions: Dict[str, str] = {}
+        for item in section.find_all('div', class_='core-supplementary-material'):
+            anchor = item.find('a', href=True)
+            if anchor is None:
+                continue
+            url = cls._absolute(anchor['href'])
+            if url in urls:
+                continue
+            urls.append(url)
+            heading = item.find('div', class_='heading')
+            if heading is not None:
+                descriptions[url] = re.sub(
+                    r'\s+', ' ', heading.get_text(' ', strip=True)).strip()
+        return urls, descriptions
 
     @classmethod
     def extract_article_text_from_html(cls, html_content: str) -> Tuple[str, str]:
-        """Walk every non-skipped ``<h2>`` and render its content as markdown.
+        """``(abstract_md, body_md)`` for an ACM article page.
 
-        Returns ``(abstract_md, body_md)``. In abstract-only mode the
-        abstract is always populated when present; body_md contains any
-        additional h2 sections we can salvage (Index Terms, References,
-        etc.) but is not required to be complete — full-text sections
-        are typically behind login on ACM.
+        ``body_md`` is the numbered sections plus the footnotes and the
+        appendices -- everything the publisher prints as the paper. The
+        reference list and the supplemental material are returned by their
+        own extractors, because the workflow needs them as data, not prose.
+
+        An empty ``body_md`` is a real answer: many ACM conference papers
+        are still gated and the landing page carries the abstract alone.
         """
         if not html_content:
             return '', ''
 
         soup = BeautifulSoup(html_content, 'html.parser')
-
-        # Abstract first — this is the only section we CARE about.
+        cls._number_assets(soup)
         abstract_md = cls._extract_abstract(soup)
 
-        # Best-effort walk: iterate every top-level h2, skip the ones on the
-        # blocklist, and render the enclosing <section> content as markdown.
-        # Abstract is intentionally re-included so callers that use only
-        # body_md still get the paper's text.
-        seen_headings = set()
-        body_parts: List[str] = []
-        for h2 in soup.find_all('h2'):
-            heading_text = re.sub(r'\s+', ' ', h2.get_text(' ', strip=True)).strip()
-            if not heading_text:
-                continue
-            if heading_text.lower() in _ACM_H2_SKIP:
-                continue
-            if heading_text in seen_headings:
-                continue
-            seen_headings.add(heading_text)
+        figures: Dict[str, str] = {}
+        blocks: List[str] = []
+        for section in cls._body_sections(soup):
+            blocks.extend(cls._walk(section, 2, figures))
 
-            # Prefer the enclosing <section> as the content boundary;
-            # fall back to sibling walking if the h2 isn't wrapped.
-            section = h2.find_parent('section')
-            content_html = ''
-            if section is not None:
-                # Rebuild without the <h2> so it doesn't render twice.
-                section_copy = BeautifulSoup(str(section), 'html.parser')
-                first_h2 = section_copy.find('h2')
-                if first_h2:
-                    first_h2.decompose()
-                content_html = str(section_copy)
-            else:
-                buf = []
-                for sib in h2.next_siblings:
-                    if getattr(sib, 'name', None) in ('h2', 'h1'):
-                        break
-                    buf.append(str(sib))
-                content_html = ''.join(buf)
+        footnotes = soup.find('section', id='footnotes')
+        if footnotes is not None:
+            rendered = cls._walk(footnotes, 2, figures)
+            if len(rendered) > 1:
+                blocks.extend(rendered)
 
-            section_md = cls._convert_paragraph_to_md(content_html)
-            if not section_md:
-                continue
-            body_parts.append(f"## {heading_text}\n\n{section_md}")
+        appendix = soup.find('section', id='appendix')
+        if appendix is not None:
+            rendered = cls._walk(appendix, 2, figures)
+            if len(rendered) > 1:
+                blocks.extend(rendered)
 
-        body_md = '\n\n'.join(body_parts).strip()
+        body_md = '\n\n'.join(b for b in blocks if b).strip()
         return abstract_md, body_md
 
     # ------------------------------------------------------------------
@@ -395,13 +712,28 @@ class ACMHandler(PublisherHandler):
         return f"{self.ACM_BASE}/doi/pdf/{doi}"
 
     async def get_supplemental_url(self, doi: str) -> Optional[str]:
-        # Stub — see module docstring. Abstract-only for now.
+        # ACM lists supplemental files inside the article page itself; they
+        # are collected in extract_all, so there is no separate URL to open.
         return None
 
     async def extract_references(self, html: str) -> list:
-        # Stub — abstract-only mode. Return an empty list so downstream
-        # code that expects an iterable doesn't NPE.
-        return []
+        """Reference strings from ``section#bibliography``.
+
+        Each entry is ``div.label`` ("[1]") plus ``div.citation-content``;
+        the sibling ``div.external-links`` holds Google Scholar / Crossref
+        buttons and is left out.
+        """
+        if not html:
+            return []
+        soup = BeautifulSoup(html, 'html.parser')
+        section = soup.find('section', id='bibliography')
+        if section is None:
+            return []
+        references: List[str] = []
+        for entry in section.find_all('div', class_='biblioentry'):
+            rendered = self._render_biblioentry(entry)
+            references.extend(rendered)
+        return references
 
     async def get_figures(self, json_data: dict) -> dict:
         return {}
@@ -429,10 +761,20 @@ class ACMHandler(PublisherHandler):
 
             fulltext_html = await self.get_page_html(page)
 
-            # References are intentionally NOT extracted — full-text
-            # (including the ref list DOM) is usually gated behind login
-            # on ACM. Empty list satisfies downstream expectations.
-            metadata.setdefault('references', [])
+            metadata['references'] = await self.extract_references(fulltext_html)
+
+            figure_urls = self.extract_figures_from_html(fulltext_html)
+            supplemental_urls, supplemental_descriptions = (
+                self.extract_supplemental_from_html(fulltext_html))
+
+            _, body_md = self.extract_article_text_from_html(fulltext_html)
+            print(f"  ✓ 正文: {len(body_md):,} 字符")
+            print(f"  ✓ 参考文献: {len(metadata['references'])} 条")
+            print(f"  ✓ 图片: {len(figure_urls)} 个")
+            print(f"  ✓ 补充材料: {len(supplemental_urls)} 个")
+            if not body_md:
+                print("  ⚠️  页面上没有正文 —— 这篇多半仍是登录墙后的，"
+                      "md 只会有摘要")
 
             pdf_url = await self.get_pdf_url(doi)
 
@@ -440,9 +782,9 @@ class ACMHandler(PublisherHandler):
                 'metadata': metadata,
                 'links': {
                     'pdf_url': pdf_url,
-                    'figure_urls': {},          # abstract-only
-                    'supplemental_urls': [],    # abstract-only
-                    'supplemental_descriptions': {},
+                    'figure_urls': figure_urls,
+                    'supplemental_urls': supplemental_urls,
+                    'supplemental_descriptions': supplemental_descriptions,
                 },
                 'fulltext_data': fulltext_html,
                 'journal_name': 'acm',
@@ -471,6 +813,12 @@ class ACMHandler(PublisherHandler):
     # ------------------------------------------------------------------
 
     def convert_to_markdown(self, metadata: dict, article_text, **kwargs) -> str:
+        figure_filenames = kwargs.get('figure_filenames') or {}
+        figure_urls = kwargs.get('figure_urls') or {}
+        supplemental_urls = kwargs.get('supplemental_urls') or []
+        supplemental_descriptions = kwargs.get('supplemental_descriptions') or {}
+        supplemental_downloads = kwargs.get('supplemental_downloads') or []
+
         title = metadata.get('title') or 'ACM Article'
         md_parts: List[str] = [f"# {title}", '']
 
@@ -505,38 +853,76 @@ class ACMHandler(PublisherHandler):
                 md_parts.append(f"{label} {val}")
                 md_parts.append('')
 
-        # Abstract (the whole point of this handler)
         abstract = (metadata.get('abstract') or '').strip()
         body_md = ''
-
-        # article_text is the raw fulltext_html; try to salvage extra
-        # h2 sections from it.
-        abstract_from_body = ''
         if isinstance(article_text, str) and article_text.strip():
             if article_text.lstrip().startswith('<'):
                 abstract_from_body, body_md = self.extract_article_text_from_html(article_text)
+                if not abstract:
+                    abstract = abstract_from_body
             else:
                 body_md = article_text.strip()
-        if not abstract:
-            abstract = abstract_from_body
 
         md_parts.extend(['---', '', '## Abstract', ''])
         md_parts.append(abstract or '[No abstract available.]')
         md_parts.append('')
 
-        # Best-effort extra sections (Index Terms, References ...) —
-        # explicitly labelled so the reader knows they're not full text.
         if body_md:
+            md_parts.extend(['---', '', self._resolve_figures(
+                body_md, figure_filenames, figure_urls), ''])
+        else:
+            # Say so rather than let a missing body read as a rendering bug.
             md_parts.extend([
                 '---',
                 '',
-                '## Additional sections',
-                '',
-                '*ACM support is abstract-only — the sections below are best-effort '
-                'extracts from the article landing page.*',
-                '',
-                body_md,
+                '*ACM 没有在页面上提供正文（多半仍在登录墙后），以上只有摘要。*',
                 '',
             ])
 
+        if supplemental_urls or supplemental_downloads:
+            md_parts.extend(['---', '', '## Supplemental Material', ''])
+            for url in supplemental_urls:
+                description = supplemental_descriptions.get(url, '')
+                name = url.rsplit('/', 1)[-1]
+                # ⚠️ The download entries are already paths relative to the
+                # paper directory ("supplemental/supplemental--x.pdf"), so
+                # they are used as they stand -- prefixing the folder again
+                # produces a link to a file that does not exist.
+                local = next((str(f) for f in supplemental_downloads
+                              if str(f).endswith(name)), '')
+                target = local or url
+                # ⚠️ Angle brackets: ACM's own filenames contain "[1]",
+                # which would otherwise close the markdown link early.
+                md_parts.append(f"- [{description or name}](<{target}>)")
+            md_parts.append('')
+
+        references = metadata.get('references') or []
+        if references:
+            md_parts.extend(['---', '', '## References', ''])
+            for reference in references:
+                md_parts.extend([reference, ''])
+
         return '\n'.join(md_parts).rstrip() + '\n'
+
+    @staticmethod
+    def _resolve_figures(body_md: str, figure_filenames: dict,
+                         figure_urls: dict) -> str:
+        """Turn ``[FIGURE_N]`` placeholders into images.
+
+        ⚠️ A placeholder whose file did not download falls back to the
+        remote URL rather than vanishing: a missing image should be visible
+        in the markdown, not silently absent.
+        """
+        def replace(match):
+            number = match.group(1)
+            filename = figure_filenames.get(number) or figure_filenames.get(int(number)) \
+                if figure_filenames else None
+            if filename:
+                return f"![Figure {number}]({filename})"
+            info = figure_urls.get(f'fig_{number}')
+            url = info.get('url') if isinstance(info, dict) else info
+            if url:
+                return f"![Figure {number}]({url})"
+            return f"*[Figure {number} 未下载]*"
+
+        return re.sub(r'\[FIGURE_(\d+)\]', replace, body_md)
