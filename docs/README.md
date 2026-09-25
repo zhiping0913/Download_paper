@@ -320,7 +320,7 @@ Cloudflare 也不算数 —— clearance cookie 绑定在签发它的主机上�
 - `10.1002`、`onlinelibrary.wiley.com` -> `wiley` **(view-source 取 LaTeX；表格 rowspan 需按网格渲染)**
 - `10.1021`、`pubs.acs.org` -> `acs` **(Silverchair 平台；图/表/Scheme 共用包装但独立编号)**
 - `10.1109`、`ieeexplore.ieee.org` -> `ieee` **(REST 接口取正文/引用/补充材料/脚注，公式为 LaTeX 原文；PDF 走通用取数阶梯，`get_pdf_url()` 返回 `/stampPDF/getPDF.jsp`，直接回字节)**
-- `10.1145`、`dl.acm.org` -> `acm` **(abstract-only — 仅抓 abstract，正文/图片/补充材料不保证；必须有头访问)**
+- `10.1145`、`dl.acm.org` -> `acm` **(开放获取的文章抓全文：正文/公式/算法图/补充材料/参考文献；仍被登录墙挡住的只有摘要。必须有头访问)**
 - `sciencedirect.com`、`10.1016` -> `nature` (Elsevier 回退)
 - `epj-conferences.org`、`10.1051` -> `nature` (EDP Sciences 回退)
 - `arxiv.org` -> `arxiv`

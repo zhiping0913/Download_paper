@@ -98,7 +98,7 @@ python complete_paper_extraction.py --file dois.txt         # 批量（主程序
 | `10.1088` | IOPHandler | 有头 | 完整 |
 | `10.1017` | CambridgeHandler | 无头 | 完整 |
 | `10.1093` | OupHandler | 无头 | 完整 |
-| `10.1145` | ACMHandler | **有头** | **abstract-only** — 见下 |
+| `10.1145` | ACMHandler | **有头** | 完整（开放获取有正文，gated 的只有摘要）|
 | `10.1109` | IEEEHandler | 有头 | 完整（REST 接口） |
 | `10.1021` | ACSHandler | 有头 | 完整 |
 | `10.1002` | WileyHandler | 有头 | 完整 |
@@ -1701,11 +1701,43 @@ Navigator.prototype 上: function get webdriver() { [native code] }
 
 ### ACM (`10.1145`, dl.acm.org)
 
-- **仅抓 abstract**。ACM 全文对未登录用户 gated，正文/图片/补充材料抓不到
-- 输出的 `paper.md` 保证有 `## Abstract` 段，其余章节尽力而为（Index Terms、References 等在 landing page 上能看到的会被 h2 walker 顺手带出来，但不保证完整）
+Atypon 平台，**正文就在原始响应里**（`page_raw.html`），公式是作者的 LaTeX 源码。
+开放获取的文章能拿到整篇；仍被登录墙挡住的会议论文只有摘要 —— 那时 md 里**明说**
+没有正文，不留一段看着像渲染失败的空白。
+
+- ❌ **旧的 h2 遍历已删除**。它按标题文字黑名单过滤，而 ACM 页面上的 h2 有一半是
+  弹窗和侧栏（"Export Citations"、"New Citation Alert added!"…），名单永远补不完。
+  现在按 **id** 取：正文是 `section[id^=sec-]`，后置是 `#footnotes` / `#appendix` /
+  `#bibliography` / `#supplementary-materials`
+- ⚠️ **`div[role=paragraph]` 里可以嵌块级元素**（独立公式、Lemma 块），所以段落要
+  **遍历**不能拍平 —— 直接 `get_text()` 或整段丢给 pandoc 会把公式挤进正文
+- 公式：`span.core-tex`。行内那份自带 `\( \)` 定界符；块级在
+  `div.display-formula`，编号在旁边的 `div.label`
+- ⚠️ **只能剥 `equation` / `equation*` 外壳**换成 `$$`。`align`、`array`、`bmatrix`
+  原样输出 —— 它们本身就是 display 环境，再套 `$$` 编译不过。实测这一篇就同时用了
+  equation / equation* / align / align* / aligned / array / bmatrix 七种
+- ⚠️ **编号标签取 `get_text('')` 不能带分隔符**：`(P<sub>ϵ</sub>)` 用 `' '` 连接会变成
+  `(P ϵ)`。标签以 `\tag{}` 输出
+- ⚠️ **pandoc 会把不认识的属性写成花括号后缀**，实测三处全中：
+  `[Lemma 1.]{data-style="small-caps"}`、参考文献链接后的 `{target="_blank"}`、
+  以及 `{role="math"}`。转换前先删掉这三个属性
+- ⚠️ **摘要和章节标题也要走同一条公式管道**。第一版只改了正文，于是摘要里留下
+  `[\$\\(\\sqrt {m},\\)\$]{role="math"}`、标题里留下
+  `4.3 Box-constrained \(\ell _\infty\) Regression` —— 这正是「所有元素使用同一套
+  公式转换管道」那条核心原则
+- **Lemma / Theorem / Proof / Algorithm 都是 `figure.statement`**，`data-type` 说明是哪种，
+  页面把它**缩进**显示。md 用**一个** blockquote 承载整块（空行也要 `>`，否则会断成
+  几个互不相干的引用）
+- ⚠️ **Algorithm 是图片不是文字**（`jds-2025-03-algo1.jpg`），而且**没有
+  `<figcaption>`** —— 编号只能从 `id="algorithm1"` 取。图片按**文档顺序**编号
+  （正文 + 附录），`data-dp-asset` 在解析前打好，两次遍历读同一个标记
+- 补充材料在 `section#supplementary-materials`，链接是 `/doi/suppl/...`。
+  ⚠️ 下载项**已经是相对论文目录的路径**（`supplemental/xxx`），再拼一次目录名会得到
+  一个不存在的链接；而 ACM 自己的文件名里有 `[1]`，markdown 链接要用尖括号包起来
 - PDF 链接固定构造为 `https://dl.acm.org/doi/pdf/{doi}`（下载可能仍 401，走标准 retry/skip）
 - **必须有头** — ACM 对 headless Chromium 有 Cloudflare 硬拦截。不要把 `'acm'` 加进 `HEADLESS_ACCESSIBLE_PUBLISHERS`
-- 图片 / 补充材料 handler 里保留接口 stub，将来想抓时不用改提取契约
+- ✅ 实测 `10.1145/3728480`：md 943 行、84 个独立公式、2 张算法图
+  （823×468 / 825×752 JPEG）、74 条参考文献、1 个补充材料、正文里远程图片链接 0 处
 
 ### RCSI（journals.rcsi.science）
 
