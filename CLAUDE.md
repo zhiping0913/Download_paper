@@ -1723,6 +1723,34 @@ Navigator.prototype 上: function get webdriver() { [native code] }
   `\$` 在公式内部是字面美元符号，只能剥最外层定界符；references 的文本是
   UTF-8 被当 cp1252 的乱码，需 `_fix_mojibake`
 
+### OUP / Silverchair (`10.1093`, academic.oup.com)
+
+- ❌ **`div.boxed-text` 之前整块被丢掉**。PNAS Nexus 把 **Significance Statement**
+  放在这里，而它是 `ArticleFulltext` 的**直接子节点**，`_walk_body` 认不出就落到
+  最后那句「其余一律跳过」—— 表现是 md 里**根本没有这一段**，日志里也看不出异常
+- 📌 它的标题是 `span.label.title-label` 而**不是 `<h*>`**，所以要在这里提升成标题；
+  盒子里的其余内容照常走 `_walk_body`，公式和列表才和正文同一条管道
+- ⚠️ **补充材料的正文引用要去掉两样东西**。OUP 每提一次 "SI Appendix" 就发一对：
+
+  ```html
+  <span class="link link-data-supplement" data-supplement-target="sup1"></span>
+  <span class="content-section supplementary-material">
+    <a path-from-xml="sup1" href="https://…silverchair-cdn.com/…?Expires=…&Signature=…">SI Appendix</a>
+  </span>
+  ```
+
+  pandoc 会把它不认识的属性原样留下，于是 md 里出现
+  `[]{supplement-target="sup1"}` 加一条 **700 字符的签名 URL** ——
+  实测 `10.1093/pnasnexus/pgag197` **14 处**
+- 📌 **链接连缩短都不值得留**：签名会过期，而文件本身已经下进 `supplemental/`。
+  所以空的导航 span 直接删，CDN 锚点**只留文字**（句子仍读作 "See SI Appendix …"）。
+  `path-from-xml` 属性无论如何都删掉 —— 它是 OUP 的 XML 管道痕迹，不是内容
+- ✅ 实测该篇：`### Significance Statement` 就位、`supplement-target` /
+  `path-from-xml` / `silverchair-cdn` 在 md 里各 **0 处**、10 处 "SI Appendix" 作为
+  文字保留，419 行
+- ✅ 回归：另一篇 OUP 存档（`ptep/pts067`）新旧逐行 diff **只有 1 处**，正是那条被
+  改成纯文字的补充材料链接 —— 其余 87 KB 正文逐字节相同
+
 ### ACM (`10.1145`, dl.acm.org)
 
 Atypon 平台，**正文就在原始响应里**（`page_raw.html`），公式是作者的 LaTeX 源码。
