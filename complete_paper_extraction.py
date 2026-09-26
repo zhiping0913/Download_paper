@@ -303,6 +303,10 @@ HEADLESS_ACCESSIBLE_PUBLISHERS = [
     # RCSI. Same story as J-STAGE: identified by Crossref's link host, since
     # its publisher name is the academy, not the platform.
     'rcsi',
+    # iphy (Chinese Academy of Sciences' physics journals). Nothing on the
+    # site challenges a headless browser: the preload passed on the first
+    # poll, cf=✗, and the body XHR was captured.
+    'iphy',
     ]
 
 
@@ -752,7 +756,12 @@ def _crossref_headless_publisher(crossref_data: dict):
     None means "needs a headed browser". Both the Phase 0 decision and the
     pdf_link direct download consult this, so the two cannot drift apart.
     """
-    links = crossref_data.get('link') or []
+    links = list(crossref_data.get('link') or [])
+    # ⚠️ 'link' is the full-text link and plenty of records have none -- every
+    # 10.7498 (iphy) record, for one. resource.primary.URL is the canonical
+    # landing page and is there instead, so it is consulted before falling
+    # back to the much fuzzier publisher name.
+    links.append(crossref_data.get('resource_url') or '')
     first_link = next((u for u in links if u), '')
     if first_link:
         token = detect_publisher_from_url(first_link)
@@ -4050,13 +4059,15 @@ async def complete_extraction_workflow(
     should_use_headless_phase0 = False
     if not force_headed:
         crossref_publisher = crossref_data.get('publisher', '').lower()
-        _cr_link = next((u for u in (crossref_data.get('link') or []) if u), '')
+        _cr_link = next((u for u in ((crossref_data.get('link') or [])
+                                     + [crossref_data.get('resource_url') or ''])
+                         if u), '')
         # ⚠️ Say which source decided. The message used to name the publisher
         # unconditionally, and after the link check went in it was reporting
         # "根据Crossref publisher 'laser society of japan' 判断出版商为 JSTAGE"
         # -- a name that cannot produce that answer. A log line that credits
         # the wrong input is how a wrong judgement stays invisible.
-        _basis = f"link 域名 '{_cr_link[:60]}'" if _cr_link else \
+        _basis = f"URL 域名 '{_cr_link[:60]}'" if _cr_link else \
             f"publisher '{crossref_publisher}'"
         matched_publisher = _crossref_headless_publisher(crossref_data)
         if matched_publisher:

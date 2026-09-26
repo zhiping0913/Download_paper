@@ -124,6 +124,7 @@ python complete_paper_extraction.py --file dois.txt         # 批量（主程序
 | `10.1093` | OupHandler | 无头 | 完整 |
 | `10.1145` | ACMHandler | **有头** | 完整（开放获取有正文，gated 的只有摘要）|
 | `10.1073` / pnas.org | PNASHandler | 有头 | 完整（复用 ACM 那套 Atypon 遍历）|
+| `10.7498` / iphy.ac.cn | IPhyHandler | 无头 | 完整（正文来自单独的 XHR）|
 | `10.1109` | IEEEHandler | 有头 | 完整（REST 接口） |
 | `10.1021` | ACSHandler | 有头 | 完整 |
 | `10.1002` | WileyHandler | 有头 | 完整 |
@@ -1902,6 +1903,72 @@ PNAS 自己的部分只剩四件：
 40 条参考文献、1 个补充材料、4 张表（Table 1 是图 + note，S1 的单元格里有公式）。
 ACM 回归：`3728480` 正文逐行相同（摘要多出真实的 Highlights 段），
 `3712285.3771783` 只剩两处改进。
+
+### iphy（中科院物理所平台，`10.7498`、`*.iphy.ac.cn`）
+
+物理学报（Acta Physica Sinica）等刊。`doi.org` 落到
+`https://wulixb.iphy.ac.cn/article/doi/{doi}`。**按域名路由**（一个平台好几个刊），
+`10.7498` 前缀只用于导航前的猜测。
+
+- 落地页的**原始响应里书目信息有两份**，按语言分：`div.info-cn` / `div.info-en`
+  各有 `h2.article-tit` 和 `.article-author`；摘要是
+  `div.article-abstract.abstract-cn` / `.abstract-en`。**两种语言都留** ——
+  目录名用中文标题（`_dir_title`），`metadata.json` 里中英都写，两种文字都能搜到
+  （与 J-STAGE、RCSI 同一套约定）
+- ⚠️ **正文不在页面里**，是页面加载时自己 POST 的一条 XHR：
+
+  ```
+  POST https://wulixb.iphy.ac.cn/data/article/articleFulltextData
+  id=<articleId>&language=cn        (application/x-www-form-urlencoded)
+  ```
+
+  所以先从**捕获**里拿（`/article/articlefulltextdata` 已加进 `DEFAULT_API_HARVEST`），
+  捕获落空才自己 POST 一次，并打印是哪条路。实测该篇：`✓ 复用捕获的正文响应
+  （75,066 字符）`，零重复请求
+- 📌 **`articleId` 是 UUID，页面只在 PDF 按钮的 onclick 里印过一次**：
+  `previewPdf(this.href, '058edf31-…')`。没有任何 data 属性带它
+- 📌 这个响应比 HTML 好伺候得多：`data.secList` 是章节树，每节的 `paraContents`
+  按 `sortNum` 给出段落 / 独立公式 / 图 / 表，**公式全是 LaTeX**
+  （`<tex-math>$…$</tex-math>`）—— 没有 MathML、没有公式图、也没有 MathJax 能吃掉的东西。
+  不是每篇都有正文，空答案也是答案
+- **图片下载链接要用段落的 UUID 构造**：`/article/exportImg?id=<para id>&type=para`。
+  ⚠️ 条目里的 `paraImgSrc`（`15-20260331-1.jpg`）只是个裸文件名、没有路径，拼不出 URL
+- **表格直接转**（`paraContent` 就是 `<table>`）。⚠️ **注在表格自己的 `<tfoot>` 里**
+  （"注: SE采用Intel Xeon…"）：留在原处会渲染成最后一行跨列数据，看着像数据不像脚注，
+  所以摘出来放表格下面
+- ⚠️ **图注/表注自己也带公式和 `<i>`**，必须走同一条公式管道，`get_text()` 会把
+  `<tex-math>` 原样印出来
+- ⚠️ **pandoc 的智能标点要关掉**（`convert_html_to_markdown(..., smart=False)`）：
+  作者用 **en dash 当负号**，而 pandoc 默认把它写成 `--` —— 实测表格里
+  `–5674.984` 变成 `--5674.984`，一个数字看着多长了一个符号。
+  ⚠️ 默认仍是 True，只有 iphy 传 False：既有语料全是按智能标点产出的，改默认会让
+  新旧产物无法比对
+- ⚠️ **`{ref-type="…"}` 要清掉**：正文交叉引用带这个属性，pandoc 认不得就原样留成花括号后缀
+- **补充材料的链接是落地 URL 把 `/article/doi` 换成 `/supplement/download`**。
+  ⚠️ **没有补充材料的文章，这个端点回 200 + 空 body**（实测另外 4 个 10.7498 的 DOI：
+  `Content-Length: 0`、连 `Content-Type` 都没有）。所以先 **HEAD** 一下看声明长度 ——
+  不然每篇没有补充材料的文章都要把整条下载阶梯走完（5 次尝试、每次之间 90 秒节流）
+  才得到空手。有文件时回的是 `application/pdf` + 真实长度
+- ✅ 实测 `10.7498/aps.75.20260331`：md 351 行、13 张图（`figure_N.png`）、
+  16 个独立公式、5 张表（含 2 处表注）、补充材料 105,176 字节 PDF、中英标题/作者/摘要齐全
+
+### 无头判据的第二个来源：`resource.primary.URL`
+
+❌ **只看 `message.link` 不够：很多记录根本没有它**。iphy 的 10.7498 记录
+`link` 是 `null`，于是判据掉到 publisher 名那条路 —— 而那个名字是
+"Acta Physica Sinica, Chinese Physical Society and Institute of Physics,
+Chinese Academy of Sciences"，任何 token 都匹配不上，结果一篇本可无头的文章
+每次都起有头浏览器。
+
+📌 现在的顺序是 **`link[0]` → `resource.primary.URL` → publisher 名**。
+第二项是 Crossref 的**规范落地页**，几乎每条记录都有，而且和 `link` 一样指向
+**文章真正住在哪**。日志里那句也跟着改成 `URL 域名 '…'`。
+
+- ✅ 六种输入实测：iphy(无 link、有 resource) → `iphy`；Optica(resource) → None（正确，
+  它要有头）；J-STAGE(link) → `jstage`；无 link 无 resource 只有名字 → `oup`；
+  Elsevier(resource) → None；Nature(link) → `nature`
+- ⚠️ 「URL 认出了一个已知但不在无头名单里的出版商 → 直接返回 None」这条规则照旧
+  适用于新来源：那是一个**答案**（该用有头），不是回退去看更模糊的名字的理由
 
 ### RCSI（journals.rcsi.science）
 
