@@ -837,6 +837,17 @@ MIME_TO_EXT = {
     'audio/mp4': '.m4a',
     'audio/wav': '.wav',
     'audio/ogg': '.ogg',
+    # ⚠️ Images belong here too. Without them a JPEG supplement lands with
+    # **no extension at all** -- measured on iphy's cover-image attachment,
+    # which saved as "supplemental--exportSupplementary" and gave a reader no
+    # way to tell what the file was.
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/gif': '.gif',
+    'image/tiff': '.tif',
+    'image/bmp': '.bmp',
+    'image/webp': '.webp',
+    'image/svg+xml': '.svg',
 }
 
 
@@ -2570,6 +2581,14 @@ async def download_supplemental_materials(
                                 if key and not key.startswith('http'):
                                     chapter_title = key
                                     desc_value = val
+
+                # A handler that knows the real name may say so. ⚠️ Needed
+                # when the URL carries none: iphy's supplements come from
+                # /article/exportSupplementary?id=<uuid>, so the basename is
+                # the endpoint and every file would be called
+                # "supplemental--exportSupplementary".
+                if isinstance(link, dict) and link.get('filename'):
+                    chapter_title = str(link['filename']).strip()
 
                 # 如果没有找到chapter标题，从URL中提取文件名
                 if not chapter_title:

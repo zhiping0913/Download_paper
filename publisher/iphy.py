@@ -34,6 +34,8 @@ MathJax to eat. Not every article has one; an empty answer is an answer.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 from pathlib import Path
@@ -170,6 +172,37 @@ class IPhyHandler(PublisherHandler):
             out[index] = [k.strip() for k in text.split('/') if k.strip()]
         return out[0], out[1]
 
+    #: The page hides the whole article record in a base64 JS variable.
+    _META_BLOB_RE = re.compile(
+        r"""article_meta_data\s*=\s*['"]([A-Za-z0-9+/=\s]+)['"]""")
+
+    @classmethod
+    def meta_blob(cls, html: str) -> dict:
+        """The article record the page embeds as ``article_meta_data``.
+
+        📌 This is the platform's own source of truth and it is **in the raw
+        response**: ``allData.article = JSON.parse(Base64.decode(article_meta_data))``.
+        It carries the article UUID, both titles, both abstracts, the keyword
+        pairs, the authors in both languages, volume/issue/year and -- the
+        reason it was hunted down -- the **supplements** with their ids.
+
+        ⚠️ It is **base64**, which is why searching the HTML for a supplement
+        id finds nothing. Measured while chasing CPL's
+        ``exportSupplementary?id=302d912f-…``: the id is in no response body,
+        no script, no XHR -- 106 harvested responses, zero hits -- because on
+        the wire it only exists inside this blob.
+        """
+        match = cls._META_BLOB_RE.search(html or '')
+        if not match:
+            return {}
+        try:
+            raw = base64.b64decode(re.sub(r'\s+', '', match.group(1)))
+            data = json.loads(raw.decode('utf-8'))
+        except (ValueError, UnicodeDecodeError, binascii.Error) as exc:
+            print(f"  ⚠️  article_meta_data 解不开（{type(exc).__name__}: {exc}）")
+            return {}
+        return data if isinstance(data, dict) else {}
+
     @staticmethod
     def article_id_from_html(html: str) -> str:
         """The platform's own UUID for the article.
@@ -180,44 +213,114 @@ class IPhyHandler(PublisherHandler):
         match = re.search(r"previewPdf\(this\.href,\s*'([0-9a-fA-F-]{36})'", html or '')
         return match.group(1) if match else ''
 
+    @classmethod
+    def _blob_metadata(cls, blob: dict) -> dict:
+        """Bibliography from the decoded ``article_meta_data``.
+
+        Preferred over the DOM because it is structured: the two titles, the
+        two abstracts (as HTML, formulas included), the keyword pairs and the
+        author names in both languages are separate fields rather than text
+        that has to be split on punctuation.
+        """
+        authors_cn, authors_en = [], []
+        for author in blob.get('authors') or []:
+            # ⚠️ Filter on authorRoleType, NOT authorType: CPL records every
+            # author with authorType "org" while wulixb uses "author", so the
+            # obvious-looking field drops **every author** on one of the two
+            # journals. Measured: 0 authors for 10.1088/0256-307X/41/11/111201.
+            role = (author.get('authorRoleType') or 'author').strip().lower()
+            if role and role != 'author':
+                continue
+            name_cn = cls._clean(author.get('authorNameCn') or '')
+            name_en = cls._clean(author.get('authorNameEn') or '')
+            if name_cn and name_cn not in authors_cn:
+                authors_cn.append(name_cn)
+            if name_en and name_en not in authors_en:
+                authors_en.append(name_en)
+
+        keywords_cn, keywords_en = [], []
+        for keyword in blob.get('keywords') or []:
+            word_cn = cls._clean(keyword.get('keywordCn') or '')
+            word_en = cls._clean(keyword.get('keywordEn') or '')
+            if word_cn:
+                keywords_cn.append(word_cn)
+            if word_en:
+                keywords_en.append(word_en)
+
+        pages = '-'.join(str(p) for p in (blob.get('fpage'), blob.get('lpage')) if p)
+        return {
+            '_title_cn': cls._clean(blob.get('titleCn') or ''),
+            '_title_en': cls._clean(blob.get('titleEn') or ''),
+            '_authors_cn': authors_cn,
+            '_authors_en': authors_en,
+            # ⚠️ The abstracts are HTML with <inline-formula> inside, so they
+            # go through the same pipeline as the body, not get_text().
+            '_abstract_cn': cls._fragment_md(blob.get('abstractinfoCn') or ''),
+            '_abstract_en': cls._fragment_md(blob.get('abstractinfoEn') or ''),
+            '_keywords_cn': keywords_cn,
+            '_keywords_en': keywords_en,
+            'doi': (blob.get('doi') or '').strip(),
+            'volume': str(blob.get('volume') or '').strip(),
+            'issue': str(blob.get('issue') or '').strip(),
+            'year': str(blob.get('year') or '').strip(),
+            'pages': pages,
+        }
+
     async def extract_metadata(self, page) -> dict:
         html = await self.get_page_html(page)
         self._landing_html = html
         if not html:
             return {}
         soup = BeautifulSoup(html, 'html.parser')
+        blob = self.meta_blob(html)
+        self._meta_blob_cache = blob
 
-        title_cn, authors_cn = self._info_block(soup, 'cn')
-        title_en, authors_en = self._info_block(soup, 'en')
-        abstract_cn = self._abstract(soup, 'cn')
-        abstract_en = self._abstract(soup, 'en')
-        keywords_cn, keywords_en = self._keywords(soup)
+        if blob:
+            fields = self._blob_metadata(blob)
+        else:
+            # Fallback: scrape the rendered bibliography. Kept because the
+            # blob is an implementation detail of the platform's templates,
+            # and a page that stops shipping it should still produce metadata.
+            print("  ⚠️  页面没有 article_meta_data，改从 DOM 读书目信息")
+            title_cn, authors_cn = self._info_block(soup, 'cn')
+            title_en, authors_en = self._info_block(soup, 'en')
+            keywords_cn, keywords_en = self._keywords(soup)
+            fields = {
+                '_title_cn': title_cn, '_title_en': title_en,
+                '_authors_cn': authors_cn, '_authors_en': authors_en,
+                '_abstract_cn': self._abstract(soup, 'cn'),
+                '_abstract_en': self._abstract(soup, 'en'),
+                '_keywords_cn': keywords_cn, '_keywords_en': keywords_en,
+                'doi': self._meta(soup, 'citation_doi') or (self.doi or ''),
+                'volume': self._meta(soup, 'citation_volume'),
+                'issue': self._meta(soup, 'citation_issue'),
+                'year': '',
+                'pages': '',
+            }
 
-        date = self._meta(soup, 'citation_date') or self._meta(soup, 'citation_publication_date')
-        year_match = re.search(r'\b(19|20|21)\d{2}\b', date)
+        if not fields.get('year'):
+            date = (self._meta(soup, 'citation_date')
+                    or self._meta(soup, 'citation_publication_date'))
+            match = re.search(r'\b(19|20|21)\d{2}\b', date)
+            fields['year'] = match.group(0) if match else ''
 
+        title_cn, title_en = fields['_title_cn'], fields['_title_en']
+        authors_cn, authors_en = fields['_authors_cn'], fields['_authors_en']
         # Both languages in the searchable fields; the folder keeps the
         # Chinese title via _dir_title (organize_paper_output prefers it).
-        return {
+        # ⚠️ English-only journals on this platform (CPL) have an empty
+        # titleCn, so the folder must fall back to the English one.
+        metadata = dict(fields)
+        metadata.update({
             'title': ' '.join(t for t in (title_cn, title_en) if t),
             '_dir_title': title_cn or title_en,
-            '_title_cn': title_cn,
-            '_title_en': title_en,
             'authors': authors_cn + [a for a in authors_en if a not in authors_cn],
-            '_authors_cn': authors_cn,
-            '_authors_en': authors_en,
-            'abstract': abstract_cn or abstract_en,
-            '_abstract_cn': abstract_cn,
-            '_abstract_en': abstract_en,
-            '_keywords_cn': keywords_cn,
-            '_keywords_en': keywords_en,
-            'doi': self._meta(soup, 'citation_doi') or (self.doi or ''),
+            'abstract': fields['_abstract_cn'] or fields['_abstract_en'],
+            'doi': fields.get('doi') or (self.doi or ''),
             'journal': self._meta(soup, 'citation_journal_title'),
-            'volume': self._meta(soup, 'citation_volume'),
-            'issue': self._meta(soup, 'citation_issue'),
-            'year': year_match.group(0) if year_match else '',
             'publisher': self._meta(soup, 'citation_publisher'),
-        }
+        })
+        return metadata
 
     async def extract_references(self, html: str) -> list:
         # The reference list is loaded by yet another XHR
@@ -263,7 +366,9 @@ class IPhyHandler(PublisherHandler):
         own session and Referer, and the form encoding has to match what the
         site's own script sends (``id=<uuid>&language=cn``).
         """
-        article_id = self.article_id_from_html(getattr(self, '_landing_html', '') or '')
+        # The blob's own id first; the onclick regex is the fallback.
+        article_id = ((getattr(self, '_meta_blob_cache', None) or {}).get('id') or '').strip() \
+            or self.article_id_from_html(getattr(self, '_landing_html', '') or '')
         if not article_id:
             print("  ⚠️  页面里找不到 articleId，无法请求正文")
             return ''
@@ -280,7 +385,8 @@ class IPhyHandler(PublisherHandler):
         }"""
         try:
             return await evaluate_with_timeout(
-                page, snippet, [url, f"id={article_id}&language=cn"]) or ''
+                page, snippet,
+                [url, f"id={article_id}&language={self.page_type()}"]) or ''
         except Exception as exc:
             print(f"  ⚠️  正文 POST 失败: {type(exc).__name__}: {exc}")
             return ''
@@ -468,15 +574,69 @@ class IPhyHandler(PublisherHandler):
         except OSError as exc:
             print(f"  ⚠️  {name} 保存失败: {exc}")
 
-    def _supplemental_if_any(self, url: str) -> List[str]:
-        """``[url]`` when the platform actually has a file behind it.
+    def page_type(self) -> str:
+        """``en`` or ``cn`` -- which language surface the article landed on.
 
-        ⚠️ iphy answers the supplement endpoint with **200 and an empty body**
-        for an article that has none (measured on four other 10.7498 DOIs:
-        ``Content-Length: 0`` and no ``Content-Type``), so the URL alone
-        proves nothing. Without this check every article without supplements
-        would walk the whole download ladder -- five attempts with a 90 s
-        throttle between them -- to end up with nothing.
+        The platform serves both (``/en/article/id/…`` vs ``/article/doi/…``)
+        and every derived request has to agree with the page, including the
+        fulltext POST's ``language`` and the supplement download's
+        ``pageType``.
+        """
+        landed = (getattr(self, '_landing_url', '') or '').lower()
+        return 'en' if re.search(r'://[^/]+/en(/|$)', landed) else 'cn'
+
+    def supplements_from_blob(self, blob: dict) -> Tuple[List[dict], Dict[str, str]]:
+        """``(urls, {url: description})`` from ``article_meta_data.supplements``.
+
+        📌 This is the method the page itself uses: every attachment is a
+        record with its own UUID, and the download endpoint is
+        ``/article/exportSupplementary?id=<that uuid>&pageType=<en|cn>``.
+        ⚠️ The id is **not** the article's -- CPL's
+        ``10.1088/0256-307X/41/11/111201`` is article ``6df20af1-…`` while its
+        attachment is ``302d912f-…``.
+
+        ⚠️ The description matters here more than usual: ``fileType`` says
+        what the file actually is, and not every attachment is supplementary
+        material in the scholarly sense -- ``firstFig`` is the cover
+        thumbnail the site shows under "Other Related Supplements", while
+        ``file`` is the real supplement (a 102 KB PDF on the wulixb sample).
+        Nothing is dropped, but the markdown says which is which.
+        """
+        urls: List[dict] = []
+        descriptions: Dict[str, str] = {}
+        seen = set()
+        site, page_type = self._site(), self.page_type()
+        for item in blob.get('supplements') or []:
+            item_id = (item.get('id') or '').strip()
+            if not item_id:
+                continue
+            url = f"{site}/article/exportSupplementary?id={item_id}&pageType={page_type}"
+            if url in seen:
+                continue
+            seen.add(url)
+            name = (self._clean(item.get('nameEn') or '')
+                    or self._clean(item.get('nameCn') or '')
+                    or self._clean(item.get('fileName') or '')
+                    or item_id)
+            extension = (item.get('fileLastName') or '').strip().lstrip('.')
+            # ⚠️ Name the file ourselves: the URL's basename is the endpoint
+            # ("exportSupplementary"), so every attachment of every article
+            # would land under the same name with no extension.
+            filename = f"{name}.{extension}" if extension else name
+            urls.append({'url': url, 'filename': filename})
+            parts = [p for p in (name, (item.get('fileType') or '').strip(),
+                                 (item.get('fileSize') or '').strip()) if p]
+            descriptions[url] = ' — '.join(parts) if parts else item_id
+        return urls, descriptions
+
+    def _supplemental_by_doi(self, url: str) -> List[str]:
+        """The DOI-shaped endpoint, used only when the blob is missing.
+
+        ⚠️ iphy answers it with **200 and an empty body** for an article that
+        has none (measured on four other 10.7498 DOIs: ``Content-Length: 0``
+        and no ``Content-Type``), so the URL alone proves nothing, and a
+        wrong guess costs the whole download ladder -- five attempts with a
+        90 s throttle between them. Hence the HEAD.
 
         A HEAD, not a GET: the point is to learn whether a file is there
         without pulling it twice. This is a file endpoint, which is the one
@@ -494,9 +654,9 @@ class IPhyHandler(PublisherHandler):
             print(f"  ⚠️  补充材料探测失败（{type(exc).__name__}），仍按有处理")
             return [url]
         if declared > 0:
-            print(f"  ✓ 补充材料: 1 个（{declared:,} 字节）")
+            print(f"  ✓ 补充材料: 1 个（{declared:,} 字节，按 DOI 端点）")
             return [url]
-        print("  ✓ 补充材料: 无（端点返回空）")
+        print("  ✓ 补充材料: 无（DOI 端点返回空）")
         return []
 
     async def extract_all(self, page=None, doi: str = None, captured: dict = None) -> dict:
@@ -531,6 +691,16 @@ class IPhyHandler(PublisherHandler):
         if not body_md:
             print("  ⚠️  这篇没有正文数据 —— md 只会有摘要")
 
+        blob = getattr(self, '_meta_blob_cache', None) or {}
+        if blob:
+            supplemental_urls, supplemental_descriptions = self.supplements_from_blob(blob)
+            print(f"  ✓ 补充材料: {len(supplemental_urls)} 个"
+                  + (f"（{'; '.join(supplemental_descriptions.values())[:90]}）"
+                     if supplemental_urls else "（article_meta_data 里没有）"))
+        else:
+            supplemental_urls = self._supplemental_by_doi(self.supplemental_url())
+            supplemental_descriptions = {}
+
         pdf_url = await self.get_pdf_url(doi)
         print(f"  ✓ PDF: {pdf_url or '(未取到)'}")
 
@@ -539,8 +709,8 @@ class IPhyHandler(PublisherHandler):
             'links': {
                 'pdf_url': pdf_url,
                 'figure_urls': figure_urls,
-                'supplemental_urls': self._supplemental_if_any(self.supplemental_url()),
-                'supplemental_descriptions': {},
+                'supplemental_urls': supplemental_urls,
+                'supplemental_descriptions': supplemental_descriptions,
             },
             # The body is JSON, not the page; landing it as page.html would
             # only duplicate page_raw.html.
@@ -597,10 +767,14 @@ class IPhyHandler(PublisherHandler):
 
         if supplemental_urls or supplemental_downloads:
             md.extend(['---', '', '## 补充材料', ''])
-            for url in supplemental_urls:
-                name = url.rsplit('/', 1)[-1]
-                local = next((str(f) for f in supplemental_downloads), '')
-                md.append(f"- [{local or name}](<{local or url}>)")
+            descriptions = kwargs.get('supplemental_descriptions') or {}
+            for index, entry in enumerate(supplemental_urls):
+                url = entry.get('url', '') if isinstance(entry, dict) else entry
+                label = descriptions.get(url) or (
+                    entry.get('filename') if isinstance(entry, dict) else '') or url
+                local = (supplemental_downloads[index]
+                         if index < len(supplemental_downloads) else '')
+                md.append(f"- [{label}](<{local or url}>)")
             md.append('')
 
         return '\n'.join(md).rstrip() + '\n'

@@ -1944,11 +1944,42 @@ ACM 回归：`3728480` 正文逐行相同（摘要多出真实的 Highlights 段
   ⚠️ 默认仍是 True，只有 iphy 传 False：既有语料全是按智能标点产出的，改默认会让
   新旧产物无法比对
 - ⚠️ **`{ref-type="…"}` 要清掉**：正文交叉引用带这个属性，pandoc 认不得就原样留成花括号后缀
-- **补充材料的链接是落地 URL 把 `/article/doi` 换成 `/supplement/download`**。
-  ⚠️ **没有补充材料的文章，这个端点回 200 + 空 body**（实测另外 4 个 10.7498 的 DOI：
-  `Content-Length: 0`、连 `Content-Type` 都没有）。所以先 **HEAD** 一下看声明长度 ——
-  不然每篇没有补充材料的文章都要把整条下载阶梯走完（5 次尝试、每次之间 90 秒节流）
-  才得到空手。有文件时回的是 `application/pdf` + 真实长度
+### iphy 的真身：`article_meta_data`（base64）
+
+📌 **平台把整条文章记录塞在页面的一个 base64 变量里**：
+`allData.article = JSON.parse(Base64.decode(article_meta_data))`。解出来有
+文章 UUID、中英标题、中英摘要（HTML，含公式）、关键词对、中英作者、卷期年页、
+参考文献，以及**补充材料清单**。而且它**在原始响应里**，所以这条路完全可离线。
+
+- ❌ **找那个补充材料 id 花了很久，因为它在 base64 里**：CPL 的
+  `exportSupplementary?id=302d912f-…` 这个 id **在任何响应正文里都搜不到** ——
+  被动 CDP 收了 **106 条响应**、route 级拦截、页面内 hook 掉 XHR/fetch、
+  文档与所有脚本全搜过，**零命中**，而渲染后的 DOM 里它就在那儿。
+  谜底是 `article_meta_data`：网线上它只以 base64 形式存在
+- **补充材料 = `supplements[]`，下载端点是
+  `/article/exportSupplementary?id=<该条的 uuid>&pageType=<en|cn>`**。
+  ⚠️ 那个 id **不是文章的**：CPL `10.1088/0256-307X/41/11/111201` 文章是
+  `6df20af1-…`，附件是 `302d912f-…`
+- ⚠️ **`fileType` 要写进说明里**：附件不都是学术意义上的补充材料 ——
+  `firstFig` 是站点在 "Other Related Supplements" 下展示的**封面缩略图**
+  （CPL 那篇 37KB JPEG），`file` 才是真补充材料（wulixb 那篇 102KB PDF）。
+  一个都不丢，但 md 里要能看出哪个是哪个
+- ⚠️ **文件名要自己给**（`link` 用 dict 带 `filename`）：URL 的 basename 是端点名，
+  否则每篇每个附件都叫 `supplemental--exportSupplementary`、**连扩展名都没有**
+- ⚠️ **`MIME_TO_EXT` 原来没有图片类型**，所以那个 JPEG 落盘时一个后缀都没有。
+  已补 jpg/png/gif/tif/bmp/webp/svg —— 这是全局的表，别家有图片附件时同样受益
+- ⚠️ **作者要按 `authorRoleType` 过滤，不能按 `authorType`**：CPL 把每位作者记成
+  `authorType: "org"`，wulixb 记成 `"author"` —— 用后者过滤会让**其中一刊的作者
+  全部消失**（实测 CPL 变成 0 位）
+- **`pageType` / fulltext 的 `language` 要跟页面语种一致**：平台同时提供
+  `/en/article/id/…` 和 `/article/doi/…` 两套界面，CPL 的正文 POST 是 `language=en`
+- ❌ 旧的 `/supplement/download/{doi}` 只留作**兜底**（blob 缺失时）。它对 wulixb 能用，
+  但 ⚠️ **没有补充材料的文章回 200 + 空 body**（实测另外 4 个 10.7498 的 DOI：
+  `Content-Length: 0`、连 `Content-Type` 都没有），所以那条路要先 **HEAD** 看声明长度，
+  不然每篇都要白走完整条下载阶梯（5 次尝试、每次间隔 90 秒）
+- ✅ 实测 CPL `10.1088/0256-307X/41/11/111201`（`--json` 指定 link 绕开 IOP 路由）：
+  md 339 行、15 张图、4 张表、69,334 字符正文、补充材料 1 个（封面缩略图）；
+  这篇**没有独立公式**（`paraType=formula` 计数为 0，全是行内公式），不是丢了
 - ✅ 实测 `10.7498/aps.75.20260331`：md 351 行、13 张图（`figure_N.png`）、
   16 个独立公式、5 张表（含 2 处表注）、补充材料 105,176 字节 PDF、中英标题/作者/摘要齐全
 
