@@ -9,6 +9,7 @@ from publisher import APSHandler, AIPHandler, CambridgeHandler
 from publisher.nature import NatureHandler
 from publisher.iop import IOPHandler
 from publisher.jstage import JStageHandler
+from publisher.pnas import PNASHandler
 from publisher.rcsi import RCSIHandler
 from publisher.springer_book import SpringerBookHandler
 from publisher.optica import OpticaHandler
@@ -49,6 +50,14 @@ def detect_publisher_from_url(url: str) -> str:
     # prefixes.
     if 'journals.rcsi.science' in url_lower:
         return 'rcsi'
+
+    # PNAS. Atypon, same markup as ACM -- see publisher/pnas.py. Matched by
+    # domain first so a doi.org link that has already landed is recognised,
+    # and by the 10.1073 prefix below for the pre-navigation guess.
+    if 'pnas.org' in url_lower:
+        return 'pnas'
+    if '10.1073' in url_lower:
+        return 'pnas'
 
     # Springer Book/Chapter detection (BEFORE general Springer/Nature detection)
     # Springer book paths include /book/, /chapter/, /referencework/, /referenceworkentry/
@@ -272,6 +281,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return JStageHandler(**kwargs)
     elif publisher == 'rcsi':
         return RCSIHandler(**kwargs)
+    elif publisher == 'pnas':
+        return PNASHandler(**kwargs)
     elif publisher == 'arxiv':
         # ArXiv uses APS-like handler
         kwargs.setdefault('journal_prefix', 'arxiv')
