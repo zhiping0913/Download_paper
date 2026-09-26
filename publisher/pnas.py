@@ -6,21 +6,27 @@ floats wrapped in ``div.figure-wrap``, ``section#supplementary-materials``,
 ``section#bibliography``. So this handler is :class:`ACMHandler` with the
 differences overridden rather than a second copy of the walker.
 
-What actually differs:
+📌 What PNAS needed that ACM had not shown yet lives in **acm.py**, not
+here: MathML formulas (PNAS ships no LaTeX source), a table rendered as a
+picture, div-based lists (``role="list"``), and more than one
+``section[role="doc-abstract"]``. None of that is PNAS-specific -- Atypon
+serves it to whoever configures it that way, and ACM turned out to have the
+multi-abstract case too ("Highlights"). Anything else discovered here
+belongs there as well.
 
-  * **Math is MathML**, not ``span.core-tex``. PNAS has no LaTeX source on
-    the page at all -- 152 ``<math>`` elements in the sample article -- so
-    the formulas go through the shared MathML→LaTeX converter.
-  * **Two abstracts.** ``section#executive-summary-abstract`` (the
-    "Significance" paragraph) sits beside ``section#abstract``; both are part
-    of what a reader means by the abstract.
-  * **A table can be a picture.** Table 1 of 10.1073/pnas.1522200113 is a
-    JPEG with a note under it, while Tables S1–S3 are real ``<table>``
-    markup, one of them carrying formulas.
-  * **Lists are divs** (``role="list"`` / ``role="listitem"``), with the
-    publisher's own "*i*)" labels.
+What is genuinely PNAS's own:
+
   * **The PDF needs a query string**: ``/doi/pdf/{doi}?download=true``.
-    Without it the link opens the reader.
+    ``citation_pdf_url`` does not carry it, and without it the link opens the
+    in-page reader instead of downloading.
+  * **Back matter placement.** Data Availability and Acknowledgments sit in
+    ``section#backmatter``, outside the body container, and the numbered
+    footnotes live in ``section.core-article-notes`` -- inside the page's
+    "Information & Authors" tab.
+  * **Metadata comes from ``citation_*``**, which PNAS fills in completely,
+    so there is no need to scrape the byline markup.
+  * The section is called **Supporting Information**, not Supplemental
+    Material.
 """
 
 from __future__ import annotations
@@ -28,9 +34,8 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Optional, Tuple
 
-from bs4 import BeautifulSoup, NavigableString
+from bs4 import BeautifulSoup
 
-from html_to_md_converter import mathml_to_latex_pandoc
 from publisher.acm import ACMHandler
 
 
@@ -64,94 +69,6 @@ class PNASHandler(ACMHandler):
         if not doi:
             return None
         return f"{self.SITE_BASE}/doi/pdf/{doi}?download=true"
-
-    # ------------------------------------------------------------------
-    # Math (MathML, not LaTeX source)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _latex_from_mathml(math_el) -> str:
-        """LaTeX for one ``<math>``, or '' when it converts to nothing."""
-        try:
-            latex = mathml_to_latex_pandoc(str(math_el)) or ''
-        except Exception as exc:
-            print(f"  ⚠️  MathML 转换失败: {type(exc).__name__}: {exc}")
-            return ''
-        latex = latex.strip()
-        # The shared converter hands back a display or inline wrapper
-        # depending on the source; strip either, the caller re-wraps.
-        for opener, closer in (('$$', '$$'), ('\\[', '\\]'),
-                               ('\\(', '\\)'), ('$', '$')):
-            if latex.startswith(opener) and latex.endswith(closer) and len(latex) > len(opener) + len(closer):
-                latex = latex[len(opener):-len(closer)].strip()
-                break
-        return re.sub(r'\s+', ' ', latex).strip()
-
-    @classmethod
-    def _stash_inline_math(cls, fragment, formulas: List[str]) -> None:
-        """Inline ``<math>`` → ``$…$`` token.
-
-        ⚠️ Display formulas are left alone here: they are reached through
-        ``div.display-formula`` by the body walk, and converting them inline
-        too would print each one twice.
-        """
-        for math_el in fragment.find_all('math'):
-            if math_el.find_parent('div', class_='display-formula') is not None:
-                continue
-            latex = cls._latex_from_mathml(math_el)
-            if not latex:
-                math_el.decompose()
-                continue
-            formulas.append(f"${latex}$")
-            math_el.replace_with(f"DPMATH{len(formulas) - 1:04d}ZZ")
-
-    @classmethod
-    def _render_display_formula(cls, div) -> List[str]:
-        """``div.display-formula`` → a ``$$`` block, with its label as a tag."""
-        math_el = div.find('math')
-        if math_el is None:
-            return super()._render_display_formula(div)
-        latex = cls._latex_from_mathml(math_el)
-        if not latex:
-            return []
-        label_el = div.find('div', class_='label')
-        label = label_el.get_text('', strip=True) if label_el else ''
-        if label:
-            latex += f"\\tag{{{cls._bare_label(label)}}}"
-        return ['$$\n' + latex + '\n$$']
-
-    # ------------------------------------------------------------------
-    # Abstract: Significance + Abstract
-    # ------------------------------------------------------------------
-
-    @classmethod
-    def _extract_abstract(cls, soup: BeautifulSoup) -> str:
-        """Both abstract sections, in the order the page prints them.
-
-        PNAS puts a plain-language "Significance" paragraph in
-        ``section#executive-summary-abstract`` right above the abstract
-        proper. Both carry ``role="doc-abstract"``; dropping the first one
-        loses the part written for readers outside the field.
-        """
-        parts: List[str] = []
-        for section_id in ('executive-summary-abstract', 'abstract'):
-            section = soup.find('section', id=section_id)
-            if section is None:
-                continue
-            heading = section.find(['h2', 'h3'])
-            title = heading.get_text(' ', strip=True) if heading else ''
-            paragraphs = [cls._inline_md(p.decode_contents())
-                          for p in section.find_all('div', attrs={'role': 'paragraph'})]
-            text = '\n\n'.join(p for p in paragraphs if p)
-            if not text:
-                continue
-            # The workflow prints this under its own "## Abstract" heading, so
-            # the section names go inline as bold leads rather than headings.
-            parts.append(f"**{title}.** {text}" if title and section_id != 'abstract'
-                         else text)
-        if parts:
-            return '\n\n'.join(parts)
-        return super()._extract_abstract(soup)
 
     # ------------------------------------------------------------------
     # Back matter

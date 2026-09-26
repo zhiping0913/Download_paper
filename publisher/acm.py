@@ -35,6 +35,7 @@ from bs4 import BeautifulSoup, NavigableString
 from html_to_md_converter import (
     cleanup_markdown,
     convert_html_to_markdown,
+    mathml_to_latex_pandoc,
     remove_newlines_in_paragraph,
 )
 from publisher.base import PublisherHandler
@@ -240,34 +241,58 @@ class ACMHandler(PublisherHandler):
 
     @classmethod
     def _extract_abstract(cls, soup: BeautifulSoup) -> str:
-        """Return the abstract as markdown. Empty string if no abstract."""
-        section = soup.find('section', attrs={'id': 'abstract'})
-        if not section:
-            # Fallback: any element with property="abstract"
-            section = soup.find(attrs={'property': 'abstract'})
-        if not section:
+        """Every abstract the page carries, as markdown, in document order.
+
+        ⚠️ Atypon articles routinely have **more than one**, each a
+        ``section[role="doc-abstract"]``: ACM prints "Highlights" beside the
+        abstract (8 paragraphs in 10.1145/3728480), PNAS prints
+        "Significance" (``#executive-summary-abstract``). Reading only
+        ``#abstract`` silently drops whichever one is not it -- and those are
+        the plain-language summaries, the part written for readers outside
+        the field.
+
+        Each section is rendered through the body walk, so its paragraphs,
+        lists and formulas go through the same pipeline as the article. The
+        section's own heading becomes a bold lead-in rather than a heading,
+        because the workflow already prints this under "## Abstract" --
+        except for a section actually titled "Abstract", which needs no lead.
+        """
+        sections = soup.find_all(attrs={'role': 'doc-abstract'})
+        if not sections:
+            single = (soup.find('section', attrs={'id': 'abstract'})
+                      or soup.find(attrs={'property': 'abstract'}))
+            sections = [single] if single is not None else []
+        if not sections:
             return ''
 
-        # Each ACM abstract paragraph is wrapped in <div role="paragraph">.
-        # Feeding the div straight to pandoc emits a fenced-div wrapper
-        # ("::: {role=\"paragraph\"}"). Wrap the div's INNER HTML in a
-        # <p> tag so pandoc renders a plain paragraph instead.
-        # ⚠️ Through _inline_md, not straight to pandoc: ACM abstracts carry
-        # span.core-tex math too, and pandoc would turn it into
-        # "[\$\\(\\sqrt{m}\\)\$]{role=\"math\"}".
-        paragraphs: List[str] = []
-        for p in section.find_all('div', attrs={'role': 'paragraph'}):
-            md = cls._inline_md(p.decode_contents())
-            if md:
-                paragraphs.append(md)
-        if paragraphs:
-            return '\n\n'.join(paragraphs)
-        # Fallback: strip <h2>Abstract</h2> then take rest as one block.
-        section_copy = BeautifulSoup(str(section), 'html.parser')
-        h2 = section_copy.find('h2')
-        if h2:
-            h2.decompose()
-        return cls._convert_paragraph_to_md(str(section_copy)).strip()
+        parts: List[str] = []
+        for section in sections:
+            # ⚠️ Skip the machine-written one. Atypon marks it
+            # `data-ai-generated` and gives it role="doc-abstract" like the
+            # rest, so a blanket "every doc-abstract" rule pulls in an
+            # AI summary plus its disclaimer and its UI text ("Click here to
+            # comment on the accuracy…") -- measured on
+            # 10.1145/3712285.3771783. The publisher's own flag is the
+            # judgement here; we do not second-guess it by reading the prose.
+            if section.has_attr('data-ai-generated'):
+                print("  ⏭️  跳过 AI 生成的摘要（data-ai-generated）")
+                continue
+            # A copy: this soup is also what the body walk runs on, and the
+            # heading has to come out before rendering.
+            fragment = BeautifulSoup(str(section), 'html.parser')
+            heading = fragment.find(['h2', 'h3'])
+            title = heading.get_text(' ', strip=True) if heading else ''
+            if heading is not None:
+                heading.decompose()
+            blocks = cls._walk(fragment, 2, {})
+            text = '\n\n'.join(b for b in blocks if b).strip()
+            if not text:
+                continue
+            if title and title.lower() not in ('abstract', 'abstract.'):
+                parts.append(f"**{title}.** {text}")
+            else:
+                parts.append(text)
+        return '\n\n'.join(parts)
 
     @classmethod
     def _convert_paragraph_to_md(cls, html_fragment: str) -> str:
@@ -307,6 +332,14 @@ class ACMHandler(PublisherHandler):
     #: than sweeping into the surrounding inline text.
     _BLOCK_TAGS = frozenset({'section', 'figure', 'table', 'ul', 'ol', 'h1',
                              'h2', 'h3', 'h4', 'h5', 'h6'})
+
+    @classmethod
+    def _wraps_blocks(cls, el) -> bool:
+        """True when *el* contains block content rather than running text."""
+        for descendant in el.find_all(True, recursive=True):
+            if descendant.name in cls._BLOCK_TAGS or cls._is_block_div(descendant):
+                return True
+        return False
 
     @staticmethod
     def _is_block_div(el) -> bool:
@@ -371,14 +404,50 @@ class ACMHandler(PublisherHandler):
         """``(9)`` → ``9``; the ``\\tag`` macro adds its own parentheses."""
         return (label or '').strip().strip('()').strip()
 
+    @staticmethod
+    def _latex_from_mathml(math_el) -> str:
+        """LaTeX for one ``<math>``, or '' when it converts to nothing.
+
+        Atypon serves either form and the handler cannot tell in advance
+        which: ACM writes the author's ``span.core-tex`` LaTeX, PNAS ships
+        MathML only (152 ``<math>`` elements in 10.1073/pnas.1522200113 and
+        not one line of LaTeX source). So both paths live here rather than in
+        one publisher's subclass.
+        """
+        try:
+            latex = mathml_to_latex_pandoc(str(math_el)) or ''
+        except Exception as exc:
+            print(f"  ⚠️  MathML 转换失败: {type(exc).__name__}: {exc}")
+            return ''
+        latex = latex.strip()
+        # The shared converter returns a display or inline wrapper depending
+        # on the source; strip whichever it used, the caller re-wraps.
+        for opener, closer in (('$$', '$$'), ('\\[', '\\]'),
+                               ('\\(', '\\)'), ('$', '$')):
+            if (latex.startswith(opener) and latex.endswith(closer)
+                    and len(latex) > len(opener) + len(closer)):
+                latex = latex[len(opener):-len(closer)].strip()
+                break
+        return re.sub(r'\s+', ' ', latex).strip()
+
     @classmethod
     def _stash_inline_math(cls, fragment, formulas: List[str]) -> None:
         """Replace each inline formula with a token, appending its markdown.
 
-        ACM writes the author's LaTeX into ``span.core-tex``. Other Atypon
-        sites on this handler carry MathML instead, which is why this is a
-        hook rather than a few lines inside :meth:`_inline_md`.
+        ⚠️ Display formulas are skipped: the body walk reaches them through
+        ``div.display-formula``, and converting them here as well prints each
+        one twice.
         """
+        for math_el in fragment.find_all('math'):
+            if math_el.find_parent('div', class_='display-formula') is not None:
+                continue
+            latex = cls._latex_from_mathml(math_el)
+            if not latex:
+                math_el.decompose()
+                continue
+            formulas.append(f"${latex}$")
+            math_el.replace_with(f"DPMATH{len(formulas) - 1:04d}ZZ")
+
         for span in fragment.find_all('span', class_='core-tex'):
             tex = cls._inline_tex(span.get_text())
             target = span.parent if (span.parent is not None
@@ -480,6 +549,15 @@ class ACMHandler(PublisherHandler):
                 continue
 
             if not (name in cls._BLOCK_TAGS or cls._is_block_div(child)):
+                if name == 'div' and cls._wraps_blocks(child):
+                    # A structural wrapper with block content inside: recurse
+                    # instead of handing it to pandoc as inline HTML.
+                    # ⚠️ ACM's Highlights sit in <div id="highlightsAccordion">,
+                    # and as inline it came out as a literal
+                    # "::: {#highlightsAccordion}" fence in the markdown.
+                    flush()
+                    blocks.extend(cls._walk(child, level, figures))
+                    continue
                 inline_buffer.append(str(child))
                 continue
 
@@ -531,15 +609,27 @@ class ACMHandler(PublisherHandler):
 
     @classmethod
     def _render_display_formula(cls, div) -> List[str]:
-        span = div.find('span', class_='core-tex')
-        if span is None:
-            return []
         label_div = div.find('div', class_='label')
         # ⚠️ No separator: the label is one token with markup inside it
         # ("(P<sub>ϵ</sub>)"), and ' ' would split it into "(P ϵ)".
         label = label_div.get_text('', strip=True) if label_div else ''
-        tex = cls._display_tex(span.get_text(), label)
-        return [tex] if tex else []
+
+        span = div.find('span', class_='core-tex')
+        if span is not None:
+            tex = cls._display_tex(span.get_text(), label)
+            return [tex] if tex else []
+
+        # MathML instead of LaTeX source (PNAS). The converter gives a bare
+        # expression, so the $$ wrapper and the \tag are added here.
+        math_el = div.find('math')
+        if math_el is None:
+            return []
+        latex = cls._latex_from_mathml(math_el)
+        if not latex:
+            return []
+        if label:
+            latex += f"\\tag{{{cls._bare_label(label)}}}"
+        return ['$$\n' + latex + '\n$$']
 
     @classmethod
     def _render_figure_wrap(cls, wrap, level: int,
