@@ -71,6 +71,27 @@ def env_seconds(name: str, default: float) -> float:
         return float(default)
 
 
+def env_bytes(name: str, default: int) -> int:
+    """Read a byte count from the environment.
+
+    Accepts a plain integer, or a number with a ``K``/``M``/``G`` suffix
+    ("200M"). A value that does not parse keeps *default* and says so -- a
+    typo in a launch script should not stop a batch. ``0`` is returned as 0,
+    which callers read as "no limit".
+    """
+    raw = (os.environ.get(name) or '').strip().upper()
+    if not raw:
+        return int(default)
+    multiplier = 1
+    if raw and raw[-1] in ('K', 'M', 'G'):
+        multiplier = {'K': 1024, 'M': 1024 ** 2, 'G': 1024 ** 3}[raw[-1]]
+        raw = raw[:-1].strip()
+    try:
+        return int(float(raw) * multiplier)
+    except ValueError:
+        print(f"⚠️  {name} 不是字节数，沿用默认 {default}")
+        return int(default)
+
 # Hard cap on any single "pull bytes out of the browser" call -- an in-page
 # fetch or a response-body read. Generous on purpose: this is a deadlock
 # breaker, not a performance knob. It should only ever fire on a connection
