@@ -216,17 +216,21 @@ DP_SUPPLEMENTAL_TIMEOUT = _env_seconds('DP_SUPPLEMENTAL_TIMEOUT', 300)
 # slow link can still need more, which is what raising this is for.
 DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT = _env_seconds('DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT', 300)
 
-# Supplemental size cap — a supplement bigger than this is NOT archived.
+# Supplemental size cap — a supplement bigger than this is NOT kept.
 # Default: 200 MB. Conference recordings are the reason: ACM's
-# 10.1145/3712285.3771783 lists a **364 MB** MP4 of the talk, which is not
+# 10.1145/3712285.3771783 ships a **364 MB** MP4 of the talk, which is not
 # the paper and outweighs everything else in the directory put together.
 #
-# ⚠️ It is a cap on *what to keep*, not a deadlock breaker, and it is checked
-# BEFORE the transfer: a limit enforced only after the bytes arrived saves
-# disk but not the download. The pre-check reads the declared
-# Content-Length; a server that declines to declare one is downloaded and
-# then measured, because the alternative -- skipping everything of unknown
-# size -- would drop ordinary files.
+# 📌 It is checked on the file that landed, not before the transfer. A
+# pre-check would mean one more request to a host that may be behind a bot
+# check -- ACM answers HEAD with a challenge page, so it learns nothing --
+# and a declared Content-Length is not always the size on disk anyway. The
+# cost of deciding afterwards is bandwidth for a file we were going to
+# refuse; the benefit is one rule, applied to the real number.
+#
+# ⚠️ This is a cap on *what to keep*, not a deadlock breaker. The circuit
+# breakers that bound a transfer which will never end are separate and
+# unchanged (DP_HTTP_TOTAL_TIMEOUT, the trickle watchdog).
 #
 # Accepts "200M" / "2G"; 0 disables the cap.
 DP_SUPPLEMENTAL_MAX_BYTES = env_bytes('DP_SUPPLEMENTAL_MAX_BYTES',
@@ -1982,7 +1986,6 @@ async def _download_all_resources(
                 download_page,
                 force_headed,
                 article_url=_article_url,
-                declared_sizes=links.get('supplemental_sizes') or {},
             )
             downloads['supplemental'] = list(descriptions.keys())
             # Keep the labels too, keyed by the name on disk. figshare serves
@@ -2457,7 +2460,6 @@ async def download_supplemental_materials(
     page=None,
     force_headed: bool = False,
     article_url: str = None,
-    declared_sizes: dict = None,
 ) -> tuple:
     """在浏览器中打开新标签页下载补充材料文件（保持登录态）
 
@@ -2610,37 +2612,6 @@ async def download_supplemental_materials(
 
                 print(f"  📥 下载补充材料 ({i}/{len(supplemental_links)}): {chapter_title}")
                 print(f"     URL: {url}")
-
-                # Size cap, checked before a single byte is transferred.
-                if DP_SUPPLEMENTAL_MAX_BYTES > 0:
-                    # ⚠️ The publisher's own number first, and a HEAD only if
-                    # there isn't one. On a site behind a bot check the HEAD
-                    # comes back as the challenge page -- measured on ACM,
-                    # where the pre-check learned nothing and a 364 MB video
-                    # got fetched in full before being discarded. The page
-                    # itself had printed "364.07 MB" all along.
-                    declared = int((declared_sizes or {}).get(url) or 0)
-                    if declared:
-                        print(f"     出版商声明大小: "
-                              f"{declared / (1024 * 1024):.1f} MB")
-                    else:
-                        head_cookies = await _cookies_for_requests(
-                            url, context=context, page=page)
-                        declared = await asyncio.to_thread(
-                            _declared_content_length, url, article_url,
-                            head_cookies)
-                    if declared and declared > DP_SUPPLEMENTAL_MAX_BYTES:
-                        print(f"    ⏭️  跳过：{declared / (1024 * 1024):.1f} MB "
-                              f"超过上限 {DP_SUPPLEMENTAL_MAX_BYTES / (1024 * 1024):.0f} MB"
-                              f"（DP_SUPPLEMENTAL_MAX_BYTES）")
-                        oversized.append(url)
-                        # ⚠️ break, not continue: this loop is the RETRY loop,
-                        # and "too big" is a decision, not a failure. A
-                        # continue re-decides it once per retry -- measured on
-                        # ACM: the same video was announced skipped 5 times
-                        # and counted 5 times.
-                        success = True
-                        break
 
                 # For media/binary files, first try APIRequestContext to fetch bytes directly.
                 # This shares cookies with the browser context but skips the renderer,
@@ -2978,11 +2949,18 @@ async def download_supplemental_materials(
                         downloaded_descriptions[saved_name] = (
                             desc_value if desc_value else chapter_title)
 
-                # Post-transfer half of the cap. It only ever fires when the
-                # server declared no Content-Length, which is why the check
-                # exists in two places rather than one.
+                # The size cap, applied to what actually landed. There is
+                # deliberately no pre-transfer check: a HEAD request is one
+                # more request to a host that may be behind a bot check (ACM
+                # answers it with a challenge page), and the size it declares
+                # is not always the size on disk. Downloading and then
+                # measuring is one fewer moving part, and the only cost is
+                # bandwidth for a file we were going to refuse.
                 if (downloaded_count > count_before
                         and DP_SUPPLEMENTAL_MAX_BYTES > 0):
+                    # The entry this iteration just added: the counter moved,
+                    # and every rung records its saved name here before
+                    # incrementing it, so the newest key is this file.
                     saved_rel = next(
                         (name for name in reversed(list(downloaded_descriptions))
                          if name), '')
@@ -2990,10 +2968,9 @@ async def download_supplemental_materials(
                     if saved_path is not None and saved_path.is_file():
                         actual = saved_path.stat().st_size
                         if actual > DP_SUPPLEMENTAL_MAX_BYTES:
-                            print(f"    ⏭️  丢弃：{actual / (1024 * 1024):.1f} MB "
-                                  f"超过上限 "
-                                  f"{DP_SUPPLEMENTAL_MAX_BYTES / (1024 * 1024):.0f} MB"
-                                  f"（服务器没有声明长度，只能下完再量）")
+                            print(f"    ⏭️  丢弃：{_fmt_bytes(actual)} 超过上限 "
+                                  f"{_fmt_bytes(DP_SUPPLEMENTAL_MAX_BYTES)}"
+                                  f"（DP_SUPPLEMENTAL_MAX_BYTES）")
                             try:
                                 saved_path.unlink()
                             except OSError as exc:
@@ -3025,8 +3002,8 @@ async def download_supplemental_materials(
     if downloaded_count > 0:
         print(f"\n  ✓ 成功下载 {downloaded_count} 个补充材料")
     if oversized:
-        print(f"  ⏭️  {len(oversized)} 个补充材料因超过 "
-              f"{DP_SUPPLEMENTAL_MAX_BYTES / (1024 * 1024):.0f} MB 未归档")
+        print(f"  ⏭️  {len(oversized)} 个补充材料下载后因超过 "
+              f"{_fmt_bytes(DP_SUPPLEMENTAL_MAX_BYTES)} 被丢弃")
 
     return downloaded_count, downloaded_descriptions
 
@@ -3089,28 +3066,18 @@ async def _fetch_image_as_bytes(page, url: str) -> bytes:
 # see the aliases near the top of this module.
 
 
-def _declared_content_length(url: str, referer: str = None,
-                             cookies: dict = None) -> int:
-    """The server's declared size for *url*, or 0 when it will not say.
+def _fmt_bytes(size: int) -> str:
+    """A human-readable byte count.
 
-    A HEAD request, because the point is to learn the size **without**
-    transferring the body. ⚠️ 0 means "unknown", never "empty": plenty of
-    servers answer HEAD with 405, omit Content-Length on a chunked response,
-    or redirect. The caller must treat unknown as "go ahead and download",
-    otherwise one unhelpful server drops every supplement it serves.
+    ⚠️ Not always MB: a 100 KB cap printed with "%.0f MB" reads as
+    "超过上限 0 MB", which looks like the cap is broken.
     """
-    try:
-        resp = requests.head(url, headers=_http_asset_headers(referer),
-                             cookies=cookies or None, timeout=(15, 20),
-                             allow_redirects=True)
-        length = resp.headers.get('Content-Length')
-        # A gzip'd body's declared length is the compressed size, so it says
-        # nothing about what lands on disk.
-        if length and not resp.headers.get('Content-Encoding'):
-            return int(length)
-    except (requests.RequestException, ValueError, OSError) as exc:
-        print(f"    ⚠️  取不到声明长度（{type(exc).__name__}），按未知处理")
-    return 0
+    size = float(size)
+    for unit in ('B', 'KB', 'MB', 'GB'):
+        if size < 1024 or unit == 'GB':
+            return f"{size:.0f} {unit}" if unit in ('B', 'KB') else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
 
 
 def _http_download_to(url: str, dest: Path, referer: str = None,
