@@ -123,6 +123,7 @@ python complete_paper_extraction.py --file dois.txt         # 批量（主程序
 | `10.1017` | CambridgeHandler | 无头 | 完整 |
 | `10.1093` | OupHandler | 无头 | 完整 |
 | `10.1145` | ACMHandler | **有头** | 完整（开放获取有正文，gated 的只有摘要）|
+| `10.1073` / pnas.org | PNASHandler | 有头 | 完整（复用 ACM 那套 Atypon 遍历）|
 | `10.1109` | IEEEHandler | 有头 | 完整（REST 接口） |
 | `10.1021` | ACSHandler | 有头 | 完整 |
 | `10.1002` | WileyHandler | 有头 | 完整 |
@@ -1826,6 +1827,56 @@ Atypon 平台，**正文就在原始响应里**（`page_raw.html`），公式是
   只取 heading 会把后者丢掉，两截用 `—` 连起来
 - 这篇的补充材料是 **364 MB 的报告录像**，正是 `DP_SUPPLEMENTAL_MAX_BYTES` 的由来。
   ⚠️ ACM 的补充材料主机**用验证页回答 HEAD**，所以那条上限不做传输前预检
+
+### PNAS (`10.1073`, pnas.org)
+
+PNAS 跑在 **Atypon** 上，和 ACM 是同一套页面骨架（`div.core-container` +
+`section[id^=sec-]` + `div.figure-wrap` + `section#supplementary-materials`
++ `section#bibliography`）。所以 `PNASHandler` **继承 `ACMHandler`**，只覆盖不同的
+地方，而不是再抄一份遍历器。
+
+差异只有这些：
+
+- **公式是 MathML，不是 `span.core-tex`** —— 整页没有一处 LaTeX 源（样本里 152 个
+  `<math>`），走共享的 MathML→LaTeX。⚠️ 行内那一步要**跳过 `div.display-formula`
+  里的 `<math>`**，否则独立公式会被打印两次（行内一次、块级一次）
+- **两个摘要**：`section#executive-summary-abstract`（Significance，写给外行的那段）
+  紧挨着 `section#abstract`，两个都带 `role="doc-abstract"`。**都算摘要**，
+  Significance 以加粗小标题的形式排在前面
+- ⚠️ **表格可以是一张图**：`10.1073/pnas.1522200113` 的 Table 1 是 JPEG + 一条 note，
+  而 Table S1–S3 是真表格（S1 的单元格里还有公式）。只认 `<table>` 的话，这张表会
+  渲染成"一个标题下面什么都没有"
+- ⚠️ **note 要在整个 `<figure>` 里找**：ACM 把它嵌在 `<figcaption>` 内，PNAS 放在
+  figcaption **旁边**。两家都要在渲染 caption **之前**摘出来
+- ⚠️ **float 的编号两家写法不同**：ACM 是 `span.core-label`，PNAS 直接写在
+  `header > div.label`（"Table 1."）。取不到就只剩图注，看不出是第几张
+- ⚠️ **列表是 div**（`role="list"` / `role="listitem"`），标签在 `div.label` 里，
+  是出版商自己的编号（"*i*)"），**原样保留**——正文里引用的就是它。
+  📌 顺带修好了 ACM：`div[role=list]` 以前被当行内文本丢给 pandoc，SC25 那篇的
+  Highlights 变成了 `::: {data-type="bullet"}` 围栏。⚠️ 但**纯圆点的 label 要丢掉**，
+  否则是 `- • …`（markdown 的点加页面的点）
+- ⚠️ **表格是图时不给 alt**：上面那行图注已经写着 "Table 1."，而下载键里的编号是
+  槽位号不是印在纸上的号，写成 `![Figure 4]` 会和图注直接打架
+- ❌ **只遍历 `section[id^=sec-]` 是不够的**：float 可以停在**两个 section 之间**，
+  和它们平级。这篇的 Fig. 1 就是 —— 结果它既没被编号也没进 md，而**日志里一个字
+  都不会说**。现在遍历的是**装着这些 section 的 `div.core-container`**
+- **后置段按 id 取**（`BACK_MATTER_IDS`）：PNAS 多了 `data-availability` 和
+  `acknowledgments`（在 `section#backmatter` 里，不在正文容器内）。
+  📌 另外**编号脚注（`*`、`†`）既不在正文也没有 id**，它们在
+  `section.core-article-notes` —— 在页面的"Information & Authors" 标签页里。
+  不取的话正文里那些标记指向空气
+- ⚠️ **脚注标记要用锚点自己的字，用方括号包起来**。拿 href 里的数字去顶替等于**给脚注
+  重新编号** —— 那串数字是元素 id。实测 SC25 那篇：`href="#fn6"` 而页面印的是 **1**，
+  旧代码输出 `[6]`。⚠️ 空不空是**逐个锚点**的事、不是逐家出版商：同一页上
+  `#fn5` 是空的（回落到 href 数字）、`#fn6` 有字。方括号也必要 —— 页面上它是上标，
+  纯文本里会直接贴着前一个词（`…[[7], [48]].1`）
+- ⚠️ **段落开头是 `#` 要转义**：这篇的脚注标记里就有 `#`，于是
+  `# A few coins with Hebrew characters…` 成了一个一级标题。本 handler 的标题**只**
+  来自 `<h*>`，所以段落开头的 `#`/`>`/`|` 一律是字面量
+- **PDF 是 `/doi/pdf/{doi}?download=true`**。⚠️ 那个查询串不可省，而
+  `citation_pdf_url` **不带它** —— 不带就打开 PNAS 的在线阅读器，download 事件永远
+  不触发，整个重试预算白烧
+- 元数据全部取 `citation_*`（PNAS 把该有的都声明了），不必像 ACM 那样去扒署名区
 
 ### RCSI（journals.rcsi.science）
 

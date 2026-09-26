@@ -53,6 +53,14 @@ class ACMHandler(PublisherHandler):
 
     ACM_BASE = 'https://dl.acm.org'
 
+    #: Host that relative URLs on the page resolve against. Split out from
+    #: ACM_BASE because the Atypon markup this handler understands is also
+    #: what PNAS serves -- see publisher/pnas.py.
+    SITE_BASE = ACM_BASE
+
+    #: What the publisher calls the supplemental section in its own page.
+    SUPPLEMENTAL_HEADING = 'Supplemental Material'
+
     def __init__(self, page=None, captured_data_dir=None, doi: str = None):
         super().__init__(page=page, captured_data_dir=captured_data_dir, doi=doi)
         self.actual_base_url = self.ACM_BASE
@@ -307,6 +315,7 @@ class ACMHandler(PublisherHandler):
         classes = el.get('class') or []
         role = el.get('role') or ''
         return ('display-formula' in classes
+                or role == 'list' 
                 # ⚠️ div.figure-wrap has no role and no heading: it is a plain
                 # div holding <header> (the "Table 1:" label) + <figure>. Left
                 # to the inline path it goes to pandoc as raw HTML, and the
@@ -363,6 +372,25 @@ class ACMHandler(PublisherHandler):
         return (label or '').strip().strip('()').strip()
 
     @classmethod
+    def _stash_inline_math(cls, fragment, formulas: List[str]) -> None:
+        """Replace each inline formula with a token, appending its markdown.
+
+        ACM writes the author's LaTeX into ``span.core-tex``. Other Atypon
+        sites on this handler carry MathML instead, which is why this is a
+        hook rather than a few lines inside :meth:`_inline_md`.
+        """
+        for span in fragment.find_all('span', class_='core-tex'):
+            tex = cls._inline_tex(span.get_text())
+            target = span.parent if (span.parent is not None
+                                     and span.parent.get('role') == 'math'
+                                     and len(span.parent.find_all(recursive=False)) == 1) else span
+            if not tex:
+                target.replace_with('')
+                continue
+            formulas.append(tex)
+            target.replace_with(f"DPMATH{len(formulas) - 1:04d}ZZ")
+
+    @classmethod
     def _inline_md(cls, element) -> str:
         """Markdown for one inline run, with the LaTeX carried through.
 
@@ -384,6 +412,18 @@ class ACMHandler(PublisherHandler):
         # with JavaScript, so the response holds <a href="#fn5"><sup></sup></a>
         # and pandoc renders a linkless "[](#fn5)". The number is in the href.
         for ref in fragment.find_all('a', attrs={'role': 'doc-noteref'}):
+            marker = ref.get_text(' ', strip=True)
+            if marker:
+                # The printed marker, in brackets: "1", "*", "†" as the page
+                # shows it. ⚠️ Bracketed because the marker is a superscript
+                # on the page and butts straight against the preceding word
+                # in plain text ("…[[7], [48]].1"). ⚠️ And taken from the
+                # anchor rather than from the href, whose digits are an
+                # element id -- using those renumbers the footnotes whenever
+                # the two disagree.
+                ref.replace_with(f"[{marker}]" if not marker.startswith('[')
+                                 else marker)
+                continue
             number = re.search(r'(\d+)$', ref.get('href') or '')
             ref.replace_with(f"[{number.group(1)}]" if number else '')
         for roled in fragment.find_all(attrs={'role': True}):
@@ -400,16 +440,7 @@ class ACMHandler(PublisherHandler):
             # brackets, and the escaped form never matches on the way back.
             img.replace_with(f"DPINLINEFIG{img['data-dp-asset'].split('_')[-1]}ZZ")
         formulas: List[str] = []
-        for span in fragment.find_all('span', class_='core-tex'):
-            tex = cls._inline_tex(span.get_text())
-            target = span.parent if (span.parent is not None
-                                     and span.parent.get('role') == 'math'
-                                     and len(span.parent.find_all(recursive=False)) == 1) else span
-            if not tex:
-                target.replace_with('')
-                continue
-            formulas.append(tex)
-            target.replace_with(f"DPMATH{len(formulas) - 1:04d}ZZ")
+        cls._stash_inline_math(fragment, formulas)
         md = cls._convert_paragraph_to_md('<p>' + fragment.div.decode_contents() + '</p>')
         for index, tex in enumerate(formulas):
             md = md.replace(f"DPMATH{index:04d}ZZ", tex)
@@ -434,7 +465,7 @@ class ACMHandler(PublisherHandler):
             md = cls._inline_md(''.join(inline_buffer))
             inline_buffer.clear()
             if md:
-                blocks.append(md)
+                blocks.append(cls._escape_block_start(md))
 
         for child in node.children:
             if isinstance(child, NavigableString):
@@ -472,6 +503,8 @@ class ACMHandler(PublisherHandler):
                 blocks.extend(cls._render_figure(child, level, figures))
             elif role == 'paragraph':
                 blocks.extend(cls._walk(child, level, figures))
+            elif role == 'list':
+                blocks.extend(cls._render_div_list(child, level, figures))
             elif role == 'doc-footnote':
                 blocks.extend(cls._render_footnote(child))
             elif 'biblioentry' in classes:
@@ -483,6 +516,18 @@ class ACMHandler(PublisherHandler):
 
         flush()
         return blocks
+
+    @staticmethod
+    def _escape_block_start(md: str) -> str:
+        """Escape a first character that would turn a paragraph into a block.
+
+        ⚠️ Measured on PNAS 10.1073/pnas.1522200113, whose footnote markers
+        include "#": the note came out as ``# A few coins with Hebrew
+        characters…`` -- a top-level heading in the middle of the notes.
+        Headings in this handler only ever come from ``<h*>`` elements, so a
+        paragraph starting with one of these characters is always literal.
+        """
+        return '\\' + md if md[:1] in ('#', '>', '|') else md
 
     @classmethod
     def _render_display_formula(cls, div) -> List[str]:
@@ -505,7 +550,11 @@ class ACMHandler(PublisherHandler):
         the ``<figure>``, in ``span.core-label`` -- it is nowhere inside the
         figure, so it has to be read here and handed down.
         """
-        label_el = wrap.find('span', class_='core-label')
+        # ACM wraps the number in span.core-label; PNAS writes it straight
+        # into the header's div.label ("Table 1."). Take whichever is there.
+        label_el = (wrap.find('span', class_='core-label')
+                    or (wrap.find('header').find('div', class_='label')
+                        if wrap.find('header') is not None else None))
         label = label_el.get_text(' ', strip=True) if label_el else ''
         blocks: List[str] = []
         for figure in wrap.find_all('figure', recursive=True):
@@ -526,14 +575,18 @@ class ACMHandler(PublisherHandler):
         the table readable.
         """
         blocks: List[str] = []
+        # ⚠️ The notes are looked for in the whole <figure>, not just inside
+        # the caption: ACM nests them in <figcaption>, PNAS puts them beside
+        # it. Either way they must come out BEFORE the caption is rendered,
+        # or the symbol definitions end up glued to the caption sentence.
+        notes_el = figure.find('div', class_='notes')
+        notes = ''
+        if notes_el is not None:
+            notes = cls._inline_md(notes_el.decode_contents())
+            notes_el.extract()
         caption_el = figure.find('figcaption')
         caption = ''
-        notes = ''
         if caption_el is not None:
-            notes_el = caption_el.find('div', class_='notes')
-            if notes_el is not None:
-                notes = cls._inline_md(notes_el.decode_contents())
-                notes_el.extract()
             caption = cls._inline_md(caption_el.decode_contents())
             caption_el.extract()
 
@@ -547,6 +600,18 @@ class ACMHandler(PublisherHandler):
             md = cls._convert_table_to_md(table)
             if md:
                 blocks.append(md)
+        else:
+            # ⚠️ Not every "table" is markup. PNAS ships Table 1 of
+            # 10.1073/pnas.1522200113 as a JPEG, and with only the <table>
+            # branch the figure rendered as a caption with nothing under it.
+            for img in figure.find_all('img'):
+                key = img.get('data-dp-asset')
+                if key:
+                    # No alt text: the caption right above already says
+                    # "Table 1.", and "![Figure 4]" under it would contradict
+                    # it -- the number in the key is the download slot, not
+                    # the float's printed number.
+                    blocks.append(f"DPINLINEFIG{key.split('_')[-1]}ZZ")
         if notes:
             blocks.append(notes)
         return blocks
@@ -663,6 +728,41 @@ class ACMHandler(PublisherHandler):
         return f"{label} {number.group(1)}." if number else f"{label}."
 
     @classmethod
+    def _render_div_list(cls, div, level: int, figures: Dict[str, str]) -> List[str]:
+        """An Atypon list built from divs, not ``<ul>``.
+
+        ``<div role="list">`` wraps ``<div role="listitem">``, each holding an
+        optional ``div.label`` ("*i*)") and a ``div.content``. The label is
+        the publisher's own numbering, so it is kept verbatim and the item is
+        written as a markdown list item -- renumbering it would silently
+        disagree with the cross-references in the text.
+        """
+        items: List[str] = []
+        for item in div.find_all(attrs={'role': 'listitem'}, recursive=False):
+            label_el = item.find('div', class_='label')
+            label = ''
+            if label_el is not None:
+                label = cls._inline_md(label_el.decode_contents())
+                label_el.extract()
+            # ⚠️ A label that is just a bullet glyph is the markdown bullet
+            # said twice ("- • Information geometric…"). Numbered labels
+            # ("i)", "1.") are the publisher's own and are kept, because the
+            # running text refers to them.
+            if label.strip() in ('•', '·', '-', '–', '—', '*'):
+                label = ''
+            body = cls._walk(item, level, figures)
+            text = '\n\n'.join(b for b in body if b)
+            if not text:
+                continue
+            first, _, rest = text.partition('\n')
+            lines = [f"- {label} {first}".replace('-  ', '- ')]
+            if rest:
+                # Continuation lines are indented so they stay in the item.
+                lines.extend('  ' + line if line else '' for line in rest.split('\n'))
+            items.append('\n'.join(lines))
+        return ['\n'.join(items)] if items else []
+
+    @classmethod
     def _render_footnote(cls, div) -> List[str]:
         label_div = div.find('div', class_='label')
         label = label_div.get_text(' ', strip=True) if label_div else ''
@@ -671,7 +771,7 @@ class ACMHandler(PublisherHandler):
         text = ' '.join(cls._walk(div, 2, {}))
         if not text:
             return []
-        return [f"{label} {text}".strip() if label else text]
+        return [cls._escape_block_start(f"{label} {text}".strip() if label else text)]
 
     @classmethod
     def _render_biblioentry(cls, div) -> List[str]:
@@ -686,6 +786,37 @@ class ACMHandler(PublisherHandler):
         return [f"{label} {text}".strip()]
 
     # -- locating the article ------------------------------------------
+
+    #: Back-matter sections that belong in the body markdown, by id. The
+    #: reference list and the supplemental files are NOT here -- the workflow
+    #: wants those as data, not prose.
+    BACK_MATTER_IDS = ('footnotes', 'appendix')
+
+    @classmethod
+    def _back_matter_nodes(cls, soup: BeautifulSoup) -> List:
+        """The back-matter sections to append after the body, in order."""
+        nodes = []
+        for section_id in cls.BACK_MATTER_IDS:
+            node = soup.find('section', id=section_id)
+            if node is not None:
+                nodes.append(node)
+        return nodes
+
+    @classmethod
+    def _body_container(cls, soup: BeautifulSoup):
+        """The ``div.core-container`` that holds the numbered sections.
+
+        ⚠️ Walking the sections directly is not the same thing: a float can
+        be parked **between** them, as a sibling of the sections rather than
+        inside one. PNAS does exactly that with Fig. 1 of
+        10.1073/pnas.1522200113 -- with a section-only walk the figure was
+        neither numbered nor rendered, and nothing in the log said so.
+        """
+        sections = cls._body_sections(soup)
+        if not sections:
+            return None
+        container = sections[0].find_parent('div', class_='core-container')
+        return container if container is not None else None
 
     @staticmethod
     def _body_sections(soup: BeautifulSoup) -> List:
@@ -708,7 +839,8 @@ class ACMHandler(PublisherHandler):
         them skipped an image (ACS has been bitten by exactly that). Both
         read the number off the markup instead.
         """
-        containers = cls._body_sections(soup)
+        body = cls._body_container(soup)
+        containers = [body] if body is not None else cls._body_sections(soup)
         appendix = soup.find('section', id='appendix')
         if appendix is not None:
             containers.append(appendix)
@@ -750,7 +882,7 @@ class ACMHandler(PublisherHandler):
             return ''
         if url.startswith('http'):
             return url
-        return cls.ACM_BASE + ('' if url.startswith('/') else '/') + url
+        return cls.SITE_BASE + ('' if url.startswith('/') else '/') + url
 
     @classmethod
     def extract_supplemental_from_html(cls, html_content: str) -> Tuple[List[str], Dict[str, str]]:
@@ -808,18 +940,14 @@ class ACMHandler(PublisherHandler):
 
         figures: Dict[str, str] = {}
         blocks: List[str] = []
-        for section in cls._body_sections(soup):
-            blocks.extend(cls._walk(section, 2, figures))
+        body = cls._body_container(soup)
+        for container in ([body] if body is not None else cls._body_sections(soup)):
+            blocks.extend(cls._walk(container, 2, figures))
 
-        footnotes = soup.find('section', id='footnotes')
-        if footnotes is not None:
-            rendered = cls._walk(footnotes, 2, figures)
-            if len(rendered) > 1:
-                blocks.extend(rendered)
-
-        appendix = soup.find('section', id='appendix')
-        if appendix is not None:
-            rendered = cls._walk(appendix, 2, figures)
+        for node in cls._back_matter_nodes(soup):
+            rendered = cls._walk(node, 2, figures)
+            # A section with nothing but its heading is not worth printing:
+            # an empty "## Footnote" reads as a failed extraction.
             if len(rendered) > 1:
                 blocks.extend(rendered)
 
@@ -1036,7 +1164,8 @@ class ACMHandler(PublisherHandler):
             ])
 
         if supplemental_urls or supplemental_downloads:
-            md_parts.extend(['---', '', '## Supplemental Material', ''])
+            md_parts.extend(['---', '',
+                             f"## {self.SUPPLEMENTAL_HEADING}", ''])
             for url in supplemental_urls:
                 description = supplemental_descriptions.get(url, '')
                 name = url.rsplit('/', 1)[-1]
