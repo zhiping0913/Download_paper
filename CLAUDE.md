@@ -28,6 +28,21 @@ python complete_paper_extraction.py --doi "<DOI>" --pdf-only      # 只下 PDF�
 python complete_paper_extraction.py --file dois.txt         # 批量（主程序自己就会批处理）
 ```
 
+## 补充材料大小上限（`DP_SUPPLEMENTAL_MAX_BYTES`，默认 200 MB）
+
+超过上限的补充材料**不归档**。接受 `200M` / `2G` 这种写法，`0` 表示不限。
+
+- 📌 **由来是会议录像**：ACM 的 `10.1145/3712285.3771783` 列了一个 **364 MB 的
+  报告视频**，它不是论文，却比目录里其它所有东西加起来还大
+- ⚠️ **这是「留不留」的上限，不是死锁断路器**，而且必须在**传输之前**判 ——
+  只在字节到齐之后才拦，省的是磁盘不是下载。预检发 **HEAD** 读声明长度
+- ⚠️ **服务器不声明长度时按「未知」处理、照常下载**，下完再量、超了就删。
+  反过来（未知即跳过）会让一个不肯给 `Content-Length` 的服务器把它供的
+  补充材料全部丢掉。所以这个上限**有两处判断**，各管一种情形
+- ⚠️ **`Content-Encoding` 存在时声明长度不可比**（那是压缩后的大小），此时也按未知处理
+- ⚠️ 「因超限跳过」「下载失败」「这篇本来没有」是**三个不同的答案**，日志分别打印 ——
+  否则产出目录事后没法自证
+
 ## 跳过补充材料（`--supplemental=False` / `DP_SUPPLEMENTAL=0`）
 
 默认 `True`，照常下。`False` 时**只跳过下载**，链接仍写进 Markdown ——
@@ -1738,6 +1753,41 @@ Atypon 平台，**正文就在原始响应里**（`page_raw.html`），公式是
 - **必须有头** — ACM 对 headless Chromium 有 Cloudflare 硬拦截。不要把 `'acm'` 加进 `HEADLESS_ACCESSIBLE_PUBLISHERS`
 - ✅ 实测 `10.1145/3728480`：md 943 行、84 个独立公式、2 张算法图
   （823×468 / 825×752 JPEG）、74 条参考文献、1 个补充材料、正文里远程图片链接 0 处
+
+**第二篇样本 `10.1145/3712285.3771783`（SC25 Gordon Bell）暴露的另一套 float 结构：**
+
+- ❌ **`div.figure-wrap` 之前完全没被认出来**。它是个**没有 role、没有标题**的普通
+  div（`<header>` 放编号 + `<figure>` 放内容），于是走了行内路径 —— 整张表以
+  `<table>` 原样进了 md，一行长达 1,800 字符。⚠️ 教训是：**ACM 的 float 有两种包装**，
+  `10.1145/3728480` 里 `figure` 直接躺在 section 下，这一篇全部裹在 `figure-wrap` 里
+- 📌 **编号（"Table 1:"、"Figure 6:"）只在 `figure-wrap > header > span.core-label` 里**，
+  `<figure>` 内部一个字都没有 —— 所以必须在容器层读出来、传给渲染函数
+- **表格** = `figure.table > div.table-wrap > table`，`figcaption` 里装着
+  `div.caption`（说明）和 `div.notes`（**表脚注**，如
+  `* Numerically unstable; † MI300A is always unified`）。⚠️ **脚注要先摘出来再渲染
+  caption**，否则符号定义会黏在说明句子末尾 —— 而表里的 `*` 和 `†` 全靠它才读得懂
+- ⚠️ **表格单元格必须先转成 markdown、再用不透明 token 占位交给 pandoc**。把单元格的
+  markdown 直接当表格输入喂回 pandoc 会被**二次转义**，实测这一篇：`**FP64**` 变成
+  `\*\*FP64\*\*`、`^*^` 变成 `\^\\\*\^`
+- ⚠️ **表格用 `gfm` writer 而不是默认的 markdown**：pandoc 的 markdown writer 偏好
+  simple/multiline 表格，对齐依赖列宽，单元格一长就散架；pipe 表格什么内容都扛得住。
+  单元格 md 同时压成一行 —— pipe 行里有换行就等于表格结束
+- ⚠️ **占位符不能写成 `[INLINEFIG_4]`**：pandoc 会转义方括号（`\[INLINEFIG_4\]`），
+  转义后的形状再也匹配不上。改用 `DPINLINEFIG4ZZ` 这类不透明 token
+- **行内图**（`span.inline-graphic`，这一篇 19 个 `imginl*.svg`）也要走占位符，
+  否则 md 里留的是 `dl.acm.org` 的远程链接。行内那种**不给 alt**（`![](file)`）——
+  给了 "Figure N" 会读成一个独立插图
+- ⚠️ **公式编号对 `align` 也必须给**：`_display_tex` 原来只在剥掉 `equation` 外壳时才
+  加 `\tag`，而这一篇 9 个公式里 **7 个是 `align`**，编号全丢。现在 `align` 这类保留
+  环境的，把 `\tag{N}` 插在 `\end{...}` 之前
+- ⚠️ **脚注引用在原始响应里是空的**：`<a href="#fn5" role="doc-noteref"><sup></sup></a>`
+  —— 编号由 JS 填，所以 pandoc 只能渲染出一个没有文字的 `[](#fn5)`。编号从 href 取
+- **`div.sr-only` 是给屏幕阅读器的图片描述**（"A rendering of 33 interacting rocket
+  thrusters."），与 caption 重复，要删掉，否则变成一句游荡的正文
+- **补充材料的说明有两截**：`div.heading`（文件类型 + 论文标题）和紧邻的一个 div
+  （**文件到底是什么** —— "Recording of the presentation of … at SC25."）。
+  只取 heading 会把后者丢掉，两截用 `—` 连起来
+- 这篇的补充材料是 **364 MB 的报告录像**，正是下面那条大小上限的由来
 
 ### RCSI（journals.rcsi.science）
 

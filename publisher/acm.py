@@ -307,6 +307,11 @@ class ACMHandler(PublisherHandler):
         classes = el.get('class') or []
         role = el.get('role') or ''
         return ('display-formula' in classes
+                # ⚠️ div.figure-wrap has no role and no heading: it is a plain
+                # div holding <header> (the "Table 1:" label) + <figure>. Left
+                # to the inline path it goes to pandoc as raw HTML, and the
+                # whole table lands in the markdown as one long <table> tag.
+                or 'figure-wrap' in classes
                 or role in ('paragraph', 'doc-footnote')
                 or 'biblioentry' in classes)
 
@@ -341,6 +346,15 @@ class ACMHandler(PublisherHandler):
             if label:
                 inner += f"\\tag{{{cls._bare_label(label)}}}"
             return '$$\n' + inner + '\n$$' if inner else ''
+        # ⚠️ The label has to be carried into align too, or the numbering
+        # disappears for most of the article -- this sample numbers 9
+        # equations and 7 of them are `align`. \tag goes just inside the
+        # environment, which is where amsmath accepts it.
+        if label and '\\tag' not in tex:
+            tex = re.sub(r'(\s*)\\end\{(\w+\*?)\}\s*$',
+                         lambda m: f"\\tag{{{cls._bare_label(label)}}}"
+                                   f"{m.group(1)}\\end{{{m.group(2)}}}",
+                         tex, count=1)
         return tex
 
     @staticmethod
@@ -366,8 +380,25 @@ class ACMHandler(PublisherHandler):
         # renders as a trailing {target="_blank"}.
         for anchor in fragment.find_all('a', attrs={'target': True}):
             del anchor['target']
-        for math_span in fragment.find_all(attrs={'role': 'math'}):
-            del math_span['role']
+        # ⚠️ Footnote markers come through EMPTY -- ACM fills the number in
+        # with JavaScript, so the response holds <a href="#fn5"><sup></sup></a>
+        # and pandoc renders a linkless "[](#fn5)". The number is in the href.
+        for ref in fragment.find_all('a', attrs={'role': 'doc-noteref'}):
+            number = re.search(r'(\d+)$', ref.get('href') or '')
+            ref.replace_with(f"[{number.group(1)}]" if number else '')
+        for roled in fragment.find_all(attrs={'role': True}):
+            del roled['role']
+        # Screen-reader duplicates of the caption ("A rendering of 33
+        # interacting rocket thrusters."), which otherwise read as stray prose.
+        for hidden in fragment.select('.sr-only'):
+            hidden.decompose()
+        # Inline images are ACM's inline math: little SVGs sitting in the
+        # sentence. They get the same placeholder treatment as the floats, so
+        # the markdown points at the downloaded file instead of dl.acm.org.
+        for img in fragment.find_all('img', attrs={'data-dp-asset': True}):
+            # ⚠️ An opaque token, not "[INLINEFIG_4]": pandoc escapes literal
+            # brackets, and the escaped form never matches on the way back.
+            img.replace_with(f"DPINLINEFIG{img['data-dp-asset'].split('_')[-1]}ZZ")
         formulas: List[str] = []
         for span in fragment.find_all('span', class_='core-tex'):
             tex = cls._inline_tex(span.get_text())
@@ -435,6 +466,8 @@ class ACMHandler(PublisherHandler):
                 blocks.extend(cls._walk(child, level, figures))
             elif 'display-formula' in classes:
                 blocks.extend(cls._render_display_formula(child))
+            elif 'figure-wrap' in classes:
+                blocks.extend(cls._render_figure_wrap(child, level, figures))
             elif name == 'figure':
                 blocks.extend(cls._render_figure(child, level, figures))
             elif role == 'paragraph':
@@ -464,18 +497,131 @@ class ACMHandler(PublisherHandler):
         return [tex] if tex else []
 
     @classmethod
-    def _render_figure(cls, figure, level: int, figures: Dict[str, str]) -> List[str]:
+    def _render_figure_wrap(cls, wrap, level: int,
+                            figures: Dict[str, str]) -> List[str]:
+        """``div.figure-wrap`` = the float's number plus the float itself.
+
+        The number ("Table 1:", "Figure 3:") lives in a ``<header>`` beside
+        the ``<figure>``, in ``span.core-label`` -- it is nowhere inside the
+        figure, so it has to be read here and handed down.
+        """
+        label_el = wrap.find('span', class_='core-label')
+        label = label_el.get_text(' ', strip=True) if label_el else ''
+        blocks: List[str] = []
+        for figure in wrap.find_all('figure', recursive=True):
+            blocks.extend(cls._render_figure(figure, level, figures, label))
+        if not blocks and label:
+            blocks.append(f"**{label}**")
+        return blocks
+
+    @classmethod
+    def _render_table(cls, figure, label: str) -> List[str]:
+        """Caption, the table itself, then its notes.
+
+        ``figcaption`` holds ``div.caption`` (the prose) and ``div.notes``
+        (the table's footnote: "* Numerically unstable; † MI300A is always
+        unified"). ⚠️ The notes must be pulled out before the caption is
+        rendered, or the symbol definitions end up glued to the end of the
+        caption sentence -- and they are exactly what makes the numbers in
+        the table readable.
+        """
+        blocks: List[str] = []
+        caption_el = figure.find('figcaption')
+        caption = ''
+        notes = ''
+        if caption_el is not None:
+            notes_el = caption_el.find('div', class_='notes')
+            if notes_el is not None:
+                notes = cls._inline_md(notes_el.decode_contents())
+                notes_el.extract()
+            caption = cls._inline_md(caption_el.decode_contents())
+            caption_el.extract()
+
+        heading = ' '.join(part for part in (label, caption) if part)
+        if heading:
+            blocks.append(f"**{heading}**")
+
+        wrap = figure.find('div', class_='table-wrap') or figure
+        table = wrap.find('table')
+        if table is not None:
+            md = cls._convert_table_to_md(table)
+            if md:
+                blocks.append(md)
+        if notes:
+            blocks.append(notes)
+        return blocks
+
+    @classmethod
+    def _convert_table_to_md(cls, table) -> str:
+        """The table as a GitHub-style pipe table, cells already converted.
+
+        Two things make this its own function rather than a call to the
+        paragraph pipeline:
+
+        ⚠️ **Each cell is replaced by an opaque token before pandoc sees the
+        table.** A cell's markdown is produced first (it may hold math, bold
+        or a footnote marker); handing that markdown back to pandoc as table
+        input gets it escaped a second time -- measured on this article:
+        ``**FP64**`` came out as ``\\*\\*FP64\\*\\*`` and ``^*^`` as
+        ``\\^\\\\\\*\\^``.
+
+        ⚠️ **The writer is ``gfm``, not the default.** pandoc's markdown
+        writer prefers simple/multiline tables, whose alignment depends on
+        column widths and breaks as soon as a cell is long; a pipe table
+        survives any cell content. Cell markdown is flattened to one line for
+        the same reason -- a newline inside a pipe row ends the table.
+        """
+        import pypandoc
+
+        fragment = BeautifulSoup(str(table), 'html.parser')
+        # ACM's inline border styling produces nothing in markdown and bloats
+        # every cell; the alignment hints are not markdown either.
+        for el in fragment.find_all(True):
+            for attr in ('style', 'data-xml-align', 'data-xml-valign',
+                         'class', 'width', 'height'):
+                if attr in el.attrs:
+                    del el[attr]
+
+        cells: List[str] = []
+        for cell in fragment.find_all(['td', 'th']):
+            md = re.sub(r'\s+', ' ', cls._inline_md(cell.decode_contents())).strip()
+            cells.append(md)
+            cell.clear()
+            cell.append(NavigableString(f"DPCELL{len(cells) - 1:04d}ZZ"))
+
+        try:
+            md = pypandoc.convert_text(str(fragment), 'gfm', format='html',
+                                       extra_args=['--wrap=none'])
+        except Exception as exc:
+            print(f"  ⚠️  表格转换失败: {type(exc).__name__}: {exc}")
+            return ''
+        for index, text in enumerate(cells):
+            md = md.replace(f"DPCELL{index:04d}ZZ", text)
+        return md.strip()
+
+    @classmethod
+    def _render_figure(cls, figure, level: int, figures: Dict[str, str],
+                       label: str = '') -> List[str]:
         """A statement block, an image, or both.
 
         Lemma / Theorem / Proof are set off from the running text on the
         page; a blockquote is the markdown that says the same thing without
         inventing a heading level for something that is not a section.
         """
+        if 'table' in (figure.get('class') or []) or figure.find('table'):
+            return cls._render_table(figure, label)
+
+        # The screen-reader description repeats the caption; keep one of them.
+        for hidden in figure.select('.sr-only'):
+            hidden.decompose()
+
         caption_el = figure.find('figcaption')
         caption = ''
         if caption_el is not None:
             caption = cls._inline_md(caption_el.decode_contents())
             caption_el.extract()
+        if label:
+            caption = ' '.join(part for part in (label, caption) if part)
 
         image_md: List[str] = []
         for img in figure.find_all('img'):
@@ -606,17 +752,38 @@ class ACMHandler(PublisherHandler):
             return url
         return cls.ACM_BASE + ('' if url.startswith('/') else '/') + url
 
+    #: "364.07 MB" / "219.05 KB" as ACM prints it next to the download link.
+    _SIZE_RE = re.compile(r'^\s*([\d.]+)\s*(B|KB|MB|GB)\s*$', re.IGNORECASE)
+    _SIZE_UNITS = {'b': 1, 'kb': 1024, 'mb': 1024 ** 2, 'gb': 1024 ** 3}
+
     @classmethod
-    def extract_supplemental_from_html(cls, html_content: str) -> Tuple[List[str], Dict[str, str]]:
-        """``(urls, {url: description})`` from the Supplemental Material section."""
+    def _declared_size(cls, item) -> int:
+        """Bytes, from the size ACM prints beside the link. 0 if absent.
+
+        📌 Worth reading out even though the downloader can ask the server:
+        ACM's supplemental host is behind the same bot check as the article,
+        so a HEAD request comes back as a challenge page with no useful
+        length. The page has already told us.
+        """
+        for li in item.find_all('li'):
+            match = cls._SIZE_RE.match(li.get_text(' ', strip=True))
+            if match:
+                return int(float(match.group(1))
+                           * cls._SIZE_UNITS[match.group(2).lower()])
+        return 0
+
+    @classmethod
+    def extract_supplemental_from_html(cls, html_content: str) -> Tuple[List[str], Dict[str, str], Dict[str, int]]:
+        """``(urls, {url: description}, {url: declared_bytes})``."""
         if not html_content:
-            return [], {}
+            return [], {}, {}
         soup = BeautifulSoup(html_content, 'html.parser')
         section = soup.find('section', id='supplementary-materials')
         if section is None:
-            return [], {}
+            return [], {}, {}
         urls: List[str] = []
         descriptions: Dict[str, str] = {}
+        sizes: Dict[str, int] = {}
         for item in section.find_all('div', class_='core-supplementary-material'):
             anchor = item.find('a', href=True)
             if anchor is None:
@@ -625,11 +792,24 @@ class ACMHandler(PublisherHandler):
             if url in urls:
                 continue
             urls.append(url)
-            heading = item.find('div', class_='heading')
-            if heading is not None:
-                descriptions[url] = re.sub(
-                    r'\s+', ' ', heading.get_text(' ', strip=True)).strip()
-        return urls, descriptions
+            # ⚠️ Two parts, and the second is the interesting one:
+            # div.heading is the file type plus the paper's own title, while
+            # the sibling div holds what the file actually is ("Recording of
+            # the presentation of ... at SC25."). Taking only the heading
+            # threw that away.
+            description = item.find('div', class_='core-description')
+            parts: List[str] = []
+            if description is not None:
+                for piece in description.find_all('div', recursive=False):
+                    text = re.sub(r'\s+', ' ', piece.get_text(' ', strip=True)).strip()
+                    if text and text not in parts:
+                        parts.append(text)
+            if parts:
+                descriptions[url] = ' — '.join(parts)
+            declared = cls._declared_size(item)
+            if declared:
+                sizes[url] = declared
+        return urls, descriptions, sizes
 
     @classmethod
     def extract_article_text_from_html(cls, html_content: str) -> Tuple[str, str]:
@@ -764,7 +944,7 @@ class ACMHandler(PublisherHandler):
             metadata['references'] = await self.extract_references(fulltext_html)
 
             figure_urls = self.extract_figures_from_html(fulltext_html)
-            supplemental_urls, supplemental_descriptions = (
+            supplemental_urls, supplemental_descriptions, supplemental_sizes = (
                 self.extract_supplemental_from_html(fulltext_html))
 
             _, body_md = self.extract_article_text_from_html(fulltext_html)
@@ -785,6 +965,9 @@ class ACMHandler(PublisherHandler):
                     'figure_urls': figure_urls,
                     'supplemental_urls': supplemental_urls,
                     'supplemental_descriptions': supplemental_descriptions,
+                    # The size ACM printed, so the downloader's cap does not
+                    # have to ask a host that answers HEAD with a bot check.
+                    'supplemental_sizes': supplemental_sizes,
                 },
                 'fulltext_data': fulltext_html,
                 'journal_name': 'acm',
@@ -913,16 +1096,22 @@ class ACMHandler(PublisherHandler):
         remote URL rather than vanishing: a missing image should be visible
         in the markdown, not silently absent.
         """
-        def replace(match):
+        def replace(match, inline: bool):
             number = match.group(1)
             filename = figure_filenames.get(number) or figure_filenames.get(int(number)) \
                 if figure_filenames else None
+            # An inline graphic is a symbol inside a sentence, so it gets no
+            # "Figure N" alt text -- that would read as a float.
+            alt = '' if inline else f"Figure {number}"
             if filename:
-                return f"![Figure {number}]({filename})"
+                return f"![{alt}]({filename})"
             info = figure_urls.get(f'fig_{number}')
             url = info.get('url') if isinstance(info, dict) else info
             if url:
-                return f"![Figure {number}]({url})"
+                return f"![{alt}]({url})"
             return f"*[Figure {number} 未下载]*"
 
-        return re.sub(r'\[FIGURE_(\d+)\]', replace, body_md)
+        body_md = re.sub(r'DPINLINEFIG(\d+)ZZ',
+                         lambda m: replace(m, inline=True), body_md)
+        return re.sub(r'\[FIGURE_(\d+)\]',
+                      lambda m: replace(m, inline=False), body_md)
