@@ -977,7 +977,8 @@ class ACMHandler(PublisherHandler):
         """Whether *img* is worth saving next to the markdown.
 
         Yes for anything inside a ``<figure>`` (the floats, including a table
-        printed as a picture) and for a **display** formula's image.
+        printed as a picture), for a **display** formula's image, and for an
+        image that is the only thing in its paragraph.
 
         ❌ No for an image sitting in the running text. Old Atypon articles
         render every formula as a picture -- inline ones included -- and a
@@ -987,7 +988,18 @@ class ACMHandler(PublisherHandler):
         """
         if img.find_parent('figure') is not None:
             return True
-        return img.find_parent('div', class_='display-formula') is not None
+        if img.find_parent('div', class_='display-formula') is not None:
+            return True
+        # Alone in its paragraph: a displayed graphic that simply was not
+        # wrapped in a <figure>. ⚠️ This is the difference between ACM's
+        # algorithm diagram and the symbols in the sentence next to it --
+        # both are span.inline-graphic and neither declares a size, but the
+        # diagram's paragraph holds nothing else (measured: 0 characters of
+        # text, against 414-873 for every inline symbol in the same article).
+        # ❌ Do NOT use the file name for this: "img1" vs "imginl1" is
+        # Atypon's naming habit, not a contract.
+        block = img.find_parent(attrs={'role': 'paragraph'})
+        return block is not None and not block.get_text(strip=True)
 
     @classmethod
     def extract_figures_from_html(cls, html_content: str) -> Dict[str, dict]:
