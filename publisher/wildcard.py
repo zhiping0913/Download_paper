@@ -664,6 +664,61 @@ async def goto_and_capture_document(page, url: str, *, tries: int = 3,
     return ''
 
 
+def html_table_to_markdown(table_el, cell_to_md) -> str:
+    """One HTML ``<table>`` as a GitHub-style pipe table.
+
+    *cell_to_md* renders a cell's inner HTML (it is the caller's own formula
+    pipeline, so the math in a cell survives).
+
+    Two things this does that a plain pandoc call does not:
+
+    ⚠️ **Each cell becomes an opaque token before pandoc sees the table.**
+    The cell's markdown is produced first; handing that markdown back to
+    pandoc as table input gets it escaped a second time -- measured on ACM:
+    ``**FP64**`` came out as ``\\*\\*FP64\\*\\*`` and ``^*^`` as
+    ``\\^\\\\\\*\\^``.
+
+    ⚠️ **The writer is ``gfm``.** pandoc's markdown writer prefers
+    simple/multiline tables, whose alignment depends on column widths and
+    breaks as soon as a cell is long; a pipe table survives any cell content.
+    Cell markdown is flattened to one line for the same reason -- a newline
+    inside a pipe row ends the table.
+    """
+    import pypandoc
+
+    fragment = BeautifulSoup(str(table_el), 'html.parser')
+    # Presentational attributes produce nothing in markdown and bloat every
+    # cell; the alignment hints are not markdown either.
+    for el in fragment.find_all(True):
+        for attr in ('style', 'class', 'width', 'height', 'valign', 'align',
+                     'data-xml-align', 'data-xml-valign'):
+            if attr in el.attrs:
+                del el[attr]
+
+    # ⚠️ A <br> inside a cell becomes pandoc's hard line break ("\\" plus a
+    # newline), and a newline inside a pipe row ends the table -- flattened to
+    # a space here, since a pipe cell is one line by construction.
+    for br in fragment.find_all('br'):
+        br.replace_with(NavigableString(' '))
+
+    cells = []
+    for cell in fragment.find_all(['td', 'th']):
+        md = re.sub(r'\s+', ' ', cell_to_md(cell.decode_contents())).strip()
+        cells.append(md)
+        cell.clear()
+        cell.append(NavigableString(f"DPCELL{len(cells) - 1:04d}ZZ"))
+
+    try:
+        md = pypandoc.convert_text(str(fragment), 'gfm', format='html',
+                                   extra_args=['--wrap=none'])
+    except Exception as exc:
+        print(f"  ⚠️  表格转换失败: {type(exc).__name__}: {exc}")
+        return ''
+    for index, text in enumerate(cells):
+        md = md.replace(f"DPCELL{index:04d}ZZ", text)
+    return md.strip()
+
+
 def parse_article_html(html: str) -> BeautifulSoup:
     """Parse *html* the way a browser would, falling back when lxml is absent.
 

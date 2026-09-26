@@ -100,9 +100,16 @@ def remove_newlines_in_paragraph(text, klass=None, body_type=None):
 
     return text.strip()
 
-def convert_html_to_markdown(html_content):
+def convert_html_to_markdown(html_content, smart: bool = True):
     """
     使用pypandoc将HTML转换为Markdown
+
+    ``smart=False`` 关掉 pandoc 的智能标点：pandoc 默认把 en dash 写成 ``--``、
+    em dash 写成 ``---``、给引号加反斜杠。那对 pandoc 自己是可逆的，对读者不是 ——
+    ⚠️ 实测 iphy 的表格里 ``–5674.984``（作者用 en dash 当负号）变成
+    ``--5674.984``，一个数字看上去多了一个符号。
+    ⚠️ 默认保持 True：既有语料全是按智能标点产出的，改默认会让新旧产物无法比对
+    （见 CLAUDE.md 里那条"表示悄悄漂移"的教训）。
 
     关键处理:
     1. 提取并保存MathJax LaTeX公式
@@ -135,7 +142,7 @@ def convert_html_to_markdown(html_content):
         # 4. 使用pypandoc转换
         md = pypandoc.convert_text(
             html_content,
-            'md',
+            'md' if smart else 'markdown-smart',
             format='html',
             extra_args=['--wrap=none']
         )

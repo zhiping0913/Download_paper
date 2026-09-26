@@ -285,6 +285,7 @@ DEFAULT_API_HARVEST = (
     '/supplemental/10.',     # APS: the supplemental listing
     '/article/fulltexthtml', # SPIE: the body the landing page fetches itself
     '/article/supplemental', # SPIE: its supplemental listing, same idea
+    '/article/articlefulltextdata',  # iphy (Acta Physica Sinica): the body
 )
 
 
@@ -1022,6 +1023,11 @@ def fetch_crossref(doi: str) -> dict:
                 # flow for why the publisher name is not.
                 'link': [entry.get('URL') for entry in (work.get('link') or [])
                          if entry.get('URL')],
+                # Crossref's canonical landing URL. ⚠️ Kept because 'link'
+                # is often absent -- iphy's 10.7498 records have none, while
+                # resource.primary.URL points straight at wulixb.iphy.ac.cn.
+                'resource_url': (((work.get('resource') or {}).get('primary')
+                                  or {}).get('URL') or ''),
             }
 
             # Extract authors
@@ -1381,7 +1387,7 @@ def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
 RAW_HTML_PUBLISHERS = frozenset({
     'iop', 'sciencedirect', 'aps', 'optica', 'cambridge',
     'acs', 'wiley', 'ieee', 'spie', 'aip', 'nature', 'mdpi', 'acm', 'oup', 'science', 'researching',
-    'opticsjournal', 'jstage', 'rcsi', 'pnas',
+    'opticsjournal', 'jstage', 'rcsi', 'pnas', 'iphy',
 })
 
 

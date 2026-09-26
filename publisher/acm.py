@@ -39,7 +39,11 @@ from html_to_md_converter import (
     remove_newlines_in_paragraph,
 )
 from publisher.base import PublisherHandler
-from publisher.wildcard import init_extract_all_page, set_actual_base_url
+from publisher.wildcard import (
+    html_table_to_markdown,
+    init_extract_all_page,
+    set_actual_base_url,
+)
 
 
 class ACMHandler(PublisherHandler):
@@ -738,51 +742,8 @@ class ACMHandler(PublisherHandler):
 
     @classmethod
     def _convert_table_to_md(cls, table) -> str:
-        """The table as a GitHub-style pipe table, cells already converted.
-
-        Two things make this its own function rather than a call to the
-        paragraph pipeline:
-
-        ⚠️ **Each cell is replaced by an opaque token before pandoc sees the
-        table.** A cell's markdown is produced first (it may hold math, bold
-        or a footnote marker); handing that markdown back to pandoc as table
-        input gets it escaped a second time -- measured on this article:
-        ``**FP64**`` came out as ``\\*\\*FP64\\*\\*`` and ``^*^`` as
-        ``\\^\\\\\\*\\^``.
-
-        ⚠️ **The writer is ``gfm``, not the default.** pandoc's markdown
-        writer prefers simple/multiline tables, whose alignment depends on
-        column widths and breaks as soon as a cell is long; a pipe table
-        survives any cell content. Cell markdown is flattened to one line for
-        the same reason -- a newline inside a pipe row ends the table.
-        """
-        import pypandoc
-
-        fragment = BeautifulSoup(str(table), 'html.parser')
-        # ACM's inline border styling produces nothing in markdown and bloats
-        # every cell; the alignment hints are not markdown either.
-        for el in fragment.find_all(True):
-            for attr in ('style', 'data-xml-align', 'data-xml-valign',
-                         'class', 'width', 'height'):
-                if attr in el.attrs:
-                    del el[attr]
-
-        cells: List[str] = []
-        for cell in fragment.find_all(['td', 'th']):
-            md = re.sub(r'\s+', ' ', cls._inline_md(cell.decode_contents())).strip()
-            cells.append(md)
-            cell.clear()
-            cell.append(NavigableString(f"DPCELL{len(cells) - 1:04d}ZZ"))
-
-        try:
-            md = pypandoc.convert_text(str(fragment), 'gfm', format='html',
-                                       extra_args=['--wrap=none'])
-        except Exception as exc:
-            print(f"  ⚠️  表格转换失败: {type(exc).__name__}: {exc}")
-            return ''
-        for index, text in enumerate(cells):
-            md = md.replace(f"DPCELL{index:04d}ZZ", text)
-        return md.strip()
+        """The table as a pipe table, cells through this handler's pipeline."""
+        return html_table_to_markdown(table, cls._inline_md)
 
     @classmethod
     def _render_figure(cls, figure, level: int, figures: Dict[str, str],
