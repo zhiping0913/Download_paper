@@ -258,6 +258,28 @@ class OupHandler(PublisherHandler):
             else:
                 container.decompose()
 
+        # Supplement cross-refs. OUP emits a pair for every "SI Appendix"
+        # mention: an EMPTY navigation span, then an anchor to a **signed,
+        # expiring** CDN URL.
+        #
+        #   <span class="link link-data-supplement" data-supplement-target="sup1"></span>
+        #   <span class="content-section supplementary-material">
+        #     <a path-from-xml="sup1" href="https://…?Expires=…&Signature=…">SI Appendix</a>
+        #   </span>
+        #
+        # pandoc keeps the unknown attributes, so the markdown ends up with
+        # `[]{supplement-target="sup1"}` followed by a 700-character signed
+        # URL -- measured 14 times in 10.1093/pnasnexus/pgag197. ⚠️ The link
+        # is not worth keeping even shortened: the signature expires, and the
+        # file itself is downloaded into supplemental/ anyway. Keep the words.
+        for span in soup.find_all('span', attrs={'data-supplement-target': True}):
+            span.decompose()
+        for a_tag in soup.find_all('a', attrs={'path-from-xml': True}):
+            del a_tag['path-from-xml']
+            if 'silverchair-cdn.com' in (a_tag.get('href') or ''):
+                a_tag.replace_with(
+                    NavigableString(a_tag.get_text(' ', strip=True)))
+
         # Anchor wrappers around external links we want to keep as text.
         for a_tag in soup.find_all('a', class_='link-uri'):
             text = a_tag.get_text(' ', strip=True)
@@ -552,6 +574,27 @@ class OupHandler(PublisherHandler):
     )
 
     @classmethod
+    def _boxed_text_to_md(cls, box, skip_headings, state) -> str:
+        """Render a boxed aside (e.g. "Significance Statement").
+
+        The box's own title is a ``<span class="label title-label">`` rather
+        than a heading tag, so it is promoted to one here; the rest of the box
+        goes through the ordinary body walk, which keeps its paragraphs,
+        formulas and lists on the same pipeline as the article.
+        """
+        parts = []
+        label_el = box.find('span', class_='title-label')
+        if label_el is not None:
+            title = re.sub(r'\s+', ' ', label_el.get_text(' ', strip=True)).strip()
+            if title:
+                parts.extend([f"### {title}", ''])
+            label_el.extract()
+        inner = []
+        cls._walk_body(box, inner, skip_headings, state)
+        parts.extend(inner)
+        return '\n'.join(parts).strip()
+
+    @classmethod
     def extract_article_text_from_html(cls, html_content: str):
         """Extract abstract + body, returning ``(abstract_md, body_md)``.
 
@@ -712,6 +755,18 @@ class OupHandler(PublisherHandler):
                 # inside (paragraphs, figures, headings) is still picked up.
                 if any(w in classes for w in cls._BODY_WRAPPER_CLASSES):
                     cls._walk_body(child, body_parts, skip_headings, state)
+                    continue
+
+                # Boxed matter: PNAS Nexus prints the "Significance
+                # Statement" as <div class="boxed-text"> holding a
+                # <span class="label title-label"> and its paragraphs. It is a
+                # direct child of the fulltext widget, so without this branch
+                # it fell through to the "skip everything else" line below and
+                # the statement never reached the markdown at all.
+                if 'boxed-text' in classes:
+                    box_md = cls._boxed_text_to_md(child, skip_headings, state)
+                    if box_md:
+                        body_parts.extend([box_md, ''])
                     continue
 
                 # Article-metadata-panel, keyword groups, dataSuppLink, etc.
