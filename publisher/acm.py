@@ -752,38 +752,17 @@ class ACMHandler(PublisherHandler):
             return url
         return cls.ACM_BASE + ('' if url.startswith('/') else '/') + url
 
-    #: "364.07 MB" / "219.05 KB" as ACM prints it next to the download link.
-    _SIZE_RE = re.compile(r'^\s*([\d.]+)\s*(B|KB|MB|GB)\s*$', re.IGNORECASE)
-    _SIZE_UNITS = {'b': 1, 'kb': 1024, 'mb': 1024 ** 2, 'gb': 1024 ** 3}
-
     @classmethod
-    def _declared_size(cls, item) -> int:
-        """Bytes, from the size ACM prints beside the link. 0 if absent.
-
-        📌 Worth reading out even though the downloader can ask the server:
-        ACM's supplemental host is behind the same bot check as the article,
-        so a HEAD request comes back as a challenge page with no useful
-        length. The page has already told us.
-        """
-        for li in item.find_all('li'):
-            match = cls._SIZE_RE.match(li.get_text(' ', strip=True))
-            if match:
-                return int(float(match.group(1))
-                           * cls._SIZE_UNITS[match.group(2).lower()])
-        return 0
-
-    @classmethod
-    def extract_supplemental_from_html(cls, html_content: str) -> Tuple[List[str], Dict[str, str], Dict[str, int]]:
-        """``(urls, {url: description}, {url: declared_bytes})``."""
+    def extract_supplemental_from_html(cls, html_content: str) -> Tuple[List[str], Dict[str, str]]:
+        """``(urls, {url: description})`` from the Supplemental Material section."""
         if not html_content:
-            return [], {}, {}
+            return [], {}
         soup = BeautifulSoup(html_content, 'html.parser')
         section = soup.find('section', id='supplementary-materials')
         if section is None:
-            return [], {}, {}
+            return [], {}
         urls: List[str] = []
         descriptions: Dict[str, str] = {}
-        sizes: Dict[str, int] = {}
         for item in section.find_all('div', class_='core-supplementary-material'):
             anchor = item.find('a', href=True)
             if anchor is None:
@@ -806,10 +785,7 @@ class ACMHandler(PublisherHandler):
                         parts.append(text)
             if parts:
                 descriptions[url] = ' — '.join(parts)
-            declared = cls._declared_size(item)
-            if declared:
-                sizes[url] = declared
-        return urls, descriptions, sizes
+        return urls, descriptions
 
     @classmethod
     def extract_article_text_from_html(cls, html_content: str) -> Tuple[str, str]:
@@ -944,7 +920,7 @@ class ACMHandler(PublisherHandler):
             metadata['references'] = await self.extract_references(fulltext_html)
 
             figure_urls = self.extract_figures_from_html(fulltext_html)
-            supplemental_urls, supplemental_descriptions, supplemental_sizes = (
+            supplemental_urls, supplemental_descriptions = (
                 self.extract_supplemental_from_html(fulltext_html))
 
             _, body_md = self.extract_article_text_from_html(fulltext_html)
@@ -965,9 +941,6 @@ class ACMHandler(PublisherHandler):
                     'figure_urls': figure_urls,
                     'supplemental_urls': supplemental_urls,
                     'supplemental_descriptions': supplemental_descriptions,
-                    # The size ACM printed, so the downloader's cap does not
-                    # have to ask a host that answers HEAD with a bot check.
-                    'supplemental_sizes': supplemental_sizes,
                 },
                 'fulltext_data': fulltext_html,
                 'journal_name': 'acm',

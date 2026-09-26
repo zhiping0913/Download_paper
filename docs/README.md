@@ -155,7 +155,7 @@ export DP_PDF_DOWNLOAD_TIMEOUT=30             # 判「下载是否开始」
 export DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT=60    # 判「下载是否完成」，慢网再调大
 export DP_SUPPLEMENTAL_TIMEOUT=60
 export DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT=120  # 大文件 DOCX/MP4 再调大
-export DP_SUPPLEMENTAL_MAX_BYTES=200M         # 超过就不归档（0=不限）；预检发 HEAD
+export DP_SUPPLEMENTAL_MAX_BYTES=200M         # 下完一量超过就删（0=不限）
 export DP_FIGURE_TIMEOUT=60
 export DP_INPAGE_FETCH_TIMEOUT=90             # 页面内 fetch / 读响应体的死锁断路器
 export DP_HTTP_TOTAL_TIMEOUT=600              # 单个直接下载的总时限（视频靠它兜底）
