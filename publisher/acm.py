@@ -504,6 +504,24 @@ class ACMHandler(PublisherHandler):
         # Inline images are ACM's inline math: little SVGs sitting in the
         # sentence. They get the same placeholder treatment as the floats, so
         # the markdown points at the downloaded file instead of dl.acm.org.
+        # An inline image with no download slot is a formula/symbol picture
+        # (see _is_downloadable_asset). Point at the publisher's copy --
+        # ⚠️ absolutised, because the page's src is site-relative and a
+        # "/cms/…" link in the markdown resolves to nothing on disk.
+        for img in fragment.find_all('img'):
+            if img.get('data-dp-asset'):
+                continue
+            src_url = cls._absolute((img.get('src') or '').strip())
+            if not src_url:
+                img.decompose()
+                continue
+            # ⚠️ Rewrite the tag and let pandoc render it. Substituting the
+            # markdown text here instead gets it escaped on the way through
+            # ("\![\](https://…)"), because to pandoc it is literal text.
+            img['src'] = src_url
+            for attr in ('width', 'height', 'loading', 'class'):
+                if attr in img.attrs:
+                    del img[attr]
         for img in fragment.find_all('img', attrs={'data-dp-asset': True}):
             # ⚠️ An opaque token, not "[INLINEFIG_4]": pandoc escapes literal
             # brackets, and the escaped form never matches on the way back.
@@ -623,6 +641,18 @@ class ACMHandler(PublisherHandler):
         # expression, so the $$ wrapper and the \tag are added here.
         math_el = div.find('math')
         if math_el is None:
+            # ⚠️ Older articles have no formula source at all: the equation
+            # IS a JPEG (10.1073/pnas.0601855103 renders all five that way).
+            # Before this branch the images were downloaded -- they take a
+            # numbering slot -- and then never referenced, so the equations
+            # were simply missing from the markdown while the figure numbers
+            # jumped 1, 2, 5, 6, 8.
+            img = div.find('img')
+            key = img.get('data-dp-asset') if img is not None else ''
+            if key:
+                # No alt text: "Figure 7" under an equation is wrong, and the
+                # number is only the download slot.
+                return [f"DPINLINEFIG{key.split('_')[-1]}ZZ"]
             return []
         latex = cls._latex_from_mathml(math_el)
         if not latex:
@@ -937,8 +967,27 @@ class ACMHandler(PublisherHandler):
         index = 0
         for container in containers:
             for img in container.find_all('img'):
+                if not cls._is_downloadable_asset(img):
+                    continue
                 index += 1
                 img['data-dp-asset'] = f'fig_{index}'
+
+    @staticmethod
+    def _is_downloadable_asset(img) -> bool:
+        """Whether *img* is worth saving next to the markdown.
+
+        Yes for anything inside a ``<figure>`` (the floats, including a table
+        printed as a picture) and for a **display** formula's image.
+
+        ❌ No for an image sitting in the running text. Old Atypon articles
+        render every formula as a picture -- inline ones included -- and a
+        symbol-sized JPEG is not usable on its own: recovering the formula
+        would mean OCR'ing it. Those are referenced at the publisher's URL
+        instead, the same call SPIE's handler makes.
+        """
+        if img.find_parent('figure') is not None:
+            return True
+        return img.find_parent('div', class_='display-formula') is not None
 
     @classmethod
     def extract_figures_from_html(cls, html_content: str) -> Dict[str, dict]:
