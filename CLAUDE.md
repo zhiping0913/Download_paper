@@ -1944,6 +1944,17 @@ ACM 回归：`3728480` 正文逐行相同（摘要多出真实的 Highlights 段
   84,390 / 45,182 / 84,509），**没有回归**
 - 📌 新版那份原始响应留在
   `<scratchpad>/mdpi_newlayout_fixture.html`，可离线回归
+- ❌ **摘要的公式也丢了，病根在取值顺序**：`extract_metadata` 原来是
+  `meta.get('abstract')` 优先、取不到才读渲染出来的摘要段。而 `citation_abstract`
+  是**纯文本** meta —— 实测新版那篇：meta 给 1,353 字符、`$…$` **0 处**，
+  而摘要段渲染出来是 1,434 字符、**8 处**公式。现在**先读摘要段**（走和正文同一条
+  MathJax→LaTeX 管道），取不到才回落 meta
+- 📌 **旧版之所以看不出这个毛病**：它的响应里根本没有 `citation_abstract`，
+  于是一直走的是摘要段那条路。这也是为什么我重跑（拿到旧版）的产物里公式是对的 ——
+  只有新版会同时提供 meta，于是命中那个错误的优先级
+- 📌 顺手核过别家：IOP 走 `extract_abstract_with_fallbacks` + 公式管道、APS 用
+  `abstract_html` 覆盖 meta、Cambridge / Science 读渲染后的摘要、Optica 只在没有
+  摘要时才用 meta —— **只有 MDPI 是反的**，所以这次只改 MDPI
 
 ### Taylor & Francis (`10.1080`, tandfonline.com)
 
