@@ -324,6 +324,7 @@ Cloudflare 也不算数 —— clearance cookie 绑定在签发它的主机上�
 - `10.1145`、`dl.acm.org` -> `acm` **(开放获取的文章抓全文：正文/公式/算法图/补充材料/参考文献；仍被登录墙挡住的只有摘要。必须有头访问)**
 - `10.1073`、`pnas.org` -> `pnas` **(Atypon，与 ACM 同一套页面骨架，PNASHandler 继承 ACMHandler；必须有头访问)**
 - `10.7498`、`*.iphy.ac.cn` -> `iphy` **(物理学报等中科院物理所刊；正文来自页面自己 POST 的 articleFulltextData XHR，可无头)**
+- `10.1080`、`tandfonline.com` -> `tandf` **(abstract-only：网页公式多为图片，只抓摘要 + PDF + 补充材料；必须有头访问)**
 - `sciencedirect.com`、`10.1016` -> `nature` (Elsevier 回退)
 - `epj-conferences.org`、`10.1051` -> `nature` (EDP Sciences 回退)
 - `arxiv.org` -> `arxiv`

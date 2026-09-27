@@ -125,6 +125,7 @@ python complete_paper_extraction.py --file dois.txt         # 批量（主程序
 | `10.1145` | ACMHandler | **有头** | 完整（开放获取有正文，gated 的只有摘要）|
 | `10.1073` / pnas.org | PNASHandler | 有头 | 完整（复用 ACM 那套 Atypon 遍历）|
 | `10.7498` / iphy.ac.cn | IPhyHandler | 无头 | 完整（正文来自单独的 XHR）|
+| `10.1080` / tandfonline.com | TandFHandler | 有头 | **abstract-only** — 见下 |
 | `10.1109` | IEEEHandler | 有头 | 完整（REST 接口） |
 | `10.1021` | ACSHandler | 有头 | 完整 |
 | `10.1002` | WileyHandler | 有头 | 完整 |
@@ -1903,6 +1904,34 @@ PNAS 自己的部分只剩四件：
 40 条参考文献、1 个补充材料、4 张表（Table 1 是图 + note，S1 的单元格里有公式）。
 ACM 回归：`3728480` 正文逐行相同（摘要多出真实的 Highlights 段），
 `3712285.3771783` 只剩两处改进。
+
+### Taylor & Francis (`10.1080`, tandfonline.com)
+
+**刻意只抓摘要。** ⚠️ 这家的网页公式**大多是图片**，不是 MathJax 也不是 LaTeX，
+而且有真标记的只是近几年的文章。抓正文会得到一篇公式全是无法还原的图片的稿子 ——
+**一个悄悄丢掉数学的正文比没有正文更糟**，所以这个 handler 不假装有正文，
+md 里明说「正文见 paper.pdf」。
+
+- **元数据和摘要全在 `<script type="application/ld+json">`** 的 `ScholarlyArticle`
+  节点里：标题、摘要、作者、关键词、日期、页码范围，纯文本、已装配好，不用爬 DOM
+- ⚠️ **那些节点是嵌套的**：一个 `<script>` 里是个列表，第二个元素是 `@graph` 包装，
+  文章节点在里面。只看顶层只会找到一个 `BreadcrumbList`
+- **PDF 用页面自己的 "Download PDF" 链接**（`/doi/pdf/{doi}`）。⚠️ **不要用它先展示的
+  `/doi/epdf/...?needAccess=true`** —— 那是在线阅读器，导航过去永远不会触发下载
+- **补充材料在 `div.supplemental-material-container`**：每个文件一个
+  `div.supplement-box`，文件名在 `<h3>`、链接是
+  `/action/downloadSupplement?doi=…&file=…`。📌 文件名要作为 `filename` 提示传下去 ——
+  URL 的 basename 是 `downloadSupplement`，不给提示的话每篇每个文件都叫这个名字
+- ⚠️ **`isAccessibleForFree` 不要转成 `access: False`**。它说的是「这篇是否免费」，
+  不是「我们能不能读」—— 机构订阅正是它看不见的那种情况，而错误的 `False` 会
+  **静默跳过一篇本来能下的文章**（见 access 判定那节）
+- ✅ 实测 `10.1080/14685248.2018.1462496`：标题 / 4 位作者 / 摘要 1,334 字符 /
+  4 个关键词 / 页码 463-492 全部来自 ld+json，`paper.pdf` 5.65 MB（31 页），md 37 行
+- 📌 **那个 `.avi` 补充材料本机拿不到，而这是正确结果**：直接请求 403、浏览器标签页
+  回来的是 `text/html` 403、一次性 Chrome 拿回的是网页。这篇 `isAccessibleForFree`
+  是 `false` 且本机没有 T&F 订阅 —— 链接照常写进 md（指向远程），日志明说
+  「通常是该文章没有访问权限/需订阅」。⚠️ 有意思的是**同一篇的 PDF 下得到** ——
+  所以「补充材料 403」不能用来推断整篇没权限，更不该据此返回 `access: False`
 
 ### iphy（中科院物理所平台，`10.7498`、`*.iphy.ac.cn`）
 
