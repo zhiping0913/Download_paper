@@ -1905,6 +1905,46 @@ PNAS 自己的部分只剩四件：
 ACM 回归：`3728480` 正文逐行相同（摘要多出真实的 Highlights 段），
 `3712285.3771783` 只剩两处改进。
 
+### MDPI 的新版页面（`div.html-body` 不再存在）
+
+❌ **正文整段拿不到，而且不报错。** 用户报告 MDPI 抓不到正文，实测
+`10.3390/sym17111873` 的那份响应：`html-body` **0 个**，而 `html-p` 71、
+`html-fig-wrap` 12、`html-table_show` 2 全都在 —— handler 只认
+`div.html-body`，于是返回空正文，md 只剩 152 行的摘要壳子。
+
+- 📌 **新版是个 Nuxt 应用，而且一份响应里有三个 `<html>` 文档**：外壳
+  （`div#__nuxt` + `__NUXT_DATA__`）之后**追加**了带全文的第二份文档，在那份里
+  每个章节各自装在 `<div id="Introduction">` / `#Results` / `#Discussion` … 里，
+  **整份文档没有任何 html-body 包装**
+- 📌 **两版共享的是章节本身**：`<section id="secN-<刊>-<id>">`（如
+  `sec2dot1-symmetry-17-01873`）里是 `<h2>` + `div.html-p`。所以兜底直接遍历
+  这些 section（只取最外层的，嵌套的交给 walker 自己递归）—— 判据是**结构**，
+  不是某个开关
+- ⚠️ **参考文献也一起坏了**：新版的条目是
+  `<li class="html-x" data-content="1.">`，**没有 `id="B{N}-…"`**，而提取器正是按
+  那个 id 匹配的 —— 实测 59 条一条都没取到。兜底改为直接取
+  `section#html-references_list` 里的 `<li>`
+- ⚠️ **引用标记从 `<a class="html-bibr">` 变成了 `<span class="html-reference">`**，
+  还带 `reference-link` / `aria-label` / `role` / `tabindex`。pandoc 会把不认识的属性
+  原样印成花括号后缀，于是正文里到处是
+  `[56]{aria-label="Reference 56" reference-link="#B56-…" role="link" tabindex="0"}`
+- 📌 顺带修掉一处**两版共有**的老毛病：只带 `style` 的布局 div（表脚注、
+  `clear:both` 占位）被 pandoc 渲染成 `::: {style="text-indent:0em;"}` 围栏。
+  ⚠️ 要**unwrap 整个元素**，不能只删属性 —— 删掉属性后 pandoc 会改印一个字面的
+  `<div>` 标签，两种都会进 md
+- ⚠️ **新旧两版是同一个 URL 交替供给的**（同一篇文章，用户那次拿到新版，我这次
+  重跑拿到旧版），所以两条路都得留着，不能按"日期/刊物"去猜
+- ✅ 实测同一篇 `10.3390/sym17111873` 两版对照：新版（用户那份响应，
+  705,066 字节、`<html>`×3）正文 48,433 字符 / 59 条参考文献 / 6 图；
+  旧版（我重跑拿到的，583,904 字节、`<html>`×1）正文 50,297 字符 / 59 条 / 6 图。
+  端到端产出 474 行、13 个独立公式、5 张表、6 张图全部本地化，
+  `:::` 与属性残留各 **0** 处
+- ⚠️ 旧版的三篇对照（`s26144433` / `ijerph23070890` / `healthcare14142050`）
+  正文长度与改前逐字节一致（84,444 / 45,263 / 84,563 → 去掉 `:::` 围栏后
+  84,390 / 45,182 / 84,509），**没有回归**
+- 📌 新版那份原始响应留在
+  `<scratchpad>/mdpi_newlayout_fixture.html`，可离线回归
+
 ### Taylor & Francis (`10.1080`, tandfonline.com)
 
 **刻意只抓摘要。** ⚠️ 这家的网页公式**大多是图片**，不是 MathJax 也不是 LaTeX，
