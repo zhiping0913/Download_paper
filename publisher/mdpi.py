@@ -226,6 +226,37 @@ class MDPIHandler(PublisherHandler):
             else:
                 a.decompose()
 
+        # ⚠️ The new layout writes the same cross-reference as a SPAN with
+        # its own attributes:
+        #   <span class="html-reference" reference-link="#B1-…"
+        #         aria-label="Reference 1" role="link" tabindex="0">1</span>
+        # pandoc keeps attributes it does not understand and prints them as a
+        # brace suffix, so the markdown filled up with
+        # `[56]{aria-label="Reference 56" reference-link="#B56-…" role="link"
+        # tabindex="0"}`. Same treatment as the anchor: keep the number.
+        for span in soup.select('span.html-reference, [reference-link]'):
+            text = span.get_text(' ', strip=True)
+            span.replace_with(NavigableString(text) if text else '')
+
+        # Layout-only wrappers: a <div> whose sole attribute is style. MDPI
+        # uses them for table footnotes ("* A dash (--) indicates …") and for
+        # clear:both spacers.
+        # ⚠️ Unwrapped, not stripped of the attribute: pandoc turns a div WITH
+        # attributes into a fenced div ("::: {style=\"text-indent:0em;\"}")
+        # and a div WITHOUT them into a literal <div> tag -- both end up in
+        # the markdown. Only removing the element itself leaves prose.
+        for div in soup.find_all('div'):
+            if set(div.attrs) == {'style'}:
+                div.unwrap()
+
+        # Anything else carrying these presentational attributes would leak
+        # the same way.
+        for el in soup.find_all(attrs={'aria-label': True}):
+            del el['aria-label']
+        for attr in ('role', 'tabindex'):
+            for el in soup.find_all(attrs={attr: True}):
+                del el[attr]
+
         # Figure / equation cross-refs — keep as plain text labels.
         for a in soup.select('a.html-fig, a.html-disp-formula'):
             a.replace_with(NavigableString(a.get_text(' ', strip=True)))
@@ -578,6 +609,73 @@ class MDPIHandler(PublisherHandler):
             return True
         return False
 
+    #: An article section's own id/class: "sec2dot1-symmetry-17-01873".
+    _SECTION_RE = re.compile(r'^sec\d+(?:dot\d+)*-')
+
+    @classmethod
+    def _body_containers(cls, soup) -> List:
+        """The element(s) holding the article body, in document order.
+
+        ❌ **``div.html-body`` is not always there.** MDPI's newer article page
+        is a Nuxt app whose response carries the full text as a **second HTML
+        document appended after the shell**, and in that copy each section
+        sits in its own ``<div id="Introduction">`` / ``#Results`` / … with no
+        ``html-body`` wrapper anywhere. Keying on that one div produced an
+        **empty body with no error** -- measured on
+        10.3390/sym17111873: ``html-body`` 0, while ``html-p`` 71,
+        ``html-fig-wrap`` 12 and ``html-table_show`` 2 were all present.
+
+        📌 What both layouts DO share is the section markup itself:
+        ``<section id="secN-<journal>-<id>">`` holding an ``<h2>`` and
+        ``div.html-p``. So the fallback walks those directly -- the top-level
+        ones only, since the walker recurses into subsections itself.
+        """
+        body = soup.find('div', class_='html-body')
+        if body is not None:
+            return [body]
+        sections = [s for s in soup.find_all('section', id=cls._SECTION_RE)
+                    if s.find_parent('section', id=cls._SECTION_RE) is None]
+        if sections:
+            print(f"  ↪ MDPI 新版页面：没有 html-body，按 {len(sections)} 个"
+                  f" section[id^=secN-] 取正文")
+        return sections
+
+    @classmethod
+    def _back_sections(cls, soup) -> List:
+        """Back-matter sections, whichever layout the page uses.
+
+        The old page groups them as the direct children of
+        ``div.html-back``; the new one gives each its own
+        ``<div id="Funding">``-style wrapper, so there is no container to
+        iterate and they are found by their own class instead
+        (``section.html-notes`` / ``section.html-ack``).
+
+        ⚠️ The old branch stays exactly what it was -- **every** direct-child
+        section ``_is_back_skip`` allows, not only the notes. Narrowing it to
+        the note classes silently dropped the figure gallery and the footnote
+        group from every old-layout article: measured 84,444 → 71,110
+        characters of body on 10.3390/s26144433 before this was caught.
+        """
+        back = soup.find('div', class_='html-back')
+        if back is not None:
+            return [sec for sec in back.children
+                    if getattr(sec, 'name', None) == 'section'
+                    and not cls._is_back_skip(sec)]
+        # 📌 Insurance, not a measured need: the new-layout sample still has
+        # a div.html-back (in the shell copy), so this branch did not run for
+        # it. It is here because the new page ALSO repeats the same sections
+        # in per-section wrappers, and a page that ships only those would
+        # otherwise lose its back matter silently.
+        out = []
+        for sec in soup.find_all('section'):
+            classes = set(sec.get('class') or [])
+            if not (classes & {'html-notes', 'html-ack'}):
+                continue
+            if cls._is_back_skip(sec):
+                continue
+            out.append(sec)
+        return out
+
     @classmethod
     def extract_article_text_from_html(cls, html_content: str) -> Tuple[str, str]:
         """Return ``(abstract_md, body_md)``."""
@@ -587,32 +685,23 @@ class MDPIHandler(PublisherHandler):
 
         abstract_md = cls._extract_abstract(soup)
 
-        body = soup.find('div', class_='html-body')
-        if body is None:
-            return abstract_md, ''
-
-        # MDPI splits each table into a wrapper inside html-body (caption only)
+        # MDPI splits each table into a wrapper inside the body (caption only)
         # and a separate html-table_show display block holding the real
         # <table>. Build the wrapper→table map once for the walker.
         table_index = cls._build_table_index(soup)
 
         body_parts: List[str] = []
-        cls._walk_body(body, body_parts, table_index)
+        containers = cls._body_containers(soup)
+        if not containers:
+            return abstract_md, ''
+        for container in containers:
+            cls._walk_body(container, body_parts, table_index)
 
-        # Back-matter (Funding / Acknowledgments / Conflicts of Interest /
-        # Abbreviations / …) sits in a sibling <div class="html-back"> next
-        # to html-body. Walk those sections in document order too, skipping
-        # the ones with dedicated handling.
-        back = soup.find('div', class_='html-back')
-        if back is not None:
-            for sec in back.children:
-                if not getattr(sec, 'name', None):
-                    continue
-                if sec.name != 'section':
-                    continue
-                if cls._is_back_skip(sec):
-                    continue
-                cls._walk_body(sec, body_parts, table_index)
+        # Back-matter (Author Contributions / Funding / Acknowledgments /
+        # Conflicts of Interest / …) in document order, skipping the sections
+        # with dedicated handling.
+        for sec in cls._back_sections(soup):
+            cls._walk_body(sec, body_parts, table_index)
 
         body_md = '\n'.join(body_parts).strip()
         body_md = re.sub(r'\n{3,}', '\n\n', body_md)
@@ -641,6 +730,18 @@ class MDPIHandler(PublisherHandler):
         text_refs: List[str] = []
         dois: List[str] = []
         ref_li_iter = soup.find_all('li', id=re.compile(r'^B\d+-'))
+        if not ref_li_iter:
+            # ⚠️ The new layout drops the ids: an entry is
+            # ``<li class="html-x" data-content="1.">`` and nothing else, so
+            # the B{N}- pattern matches nothing and the reference list came
+            # out **empty** (measured: 59 entries present, 0 extracted).
+            # Fall back to the list itself, which both layouts spell the same.
+            section = soup.find('section', id='html-references_list')
+            if section is not None:
+                ref_li_iter = section.find_all('li')
+                if ref_li_iter:
+                    print(f"  ↪ MDPI 新版页面：参考文献 <li> 没有 id，"
+                          f"按 html-references_list 取 {len(ref_li_iter)} 条")
         for li in ref_li_iter:
             # Capture DOI before we strip decoration links.
             doi = ''
