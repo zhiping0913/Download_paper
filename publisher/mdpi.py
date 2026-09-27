@@ -791,9 +791,19 @@ class MDPIHandler(PublisherHandler):
             for a in meta['authors'][1:]:
                 author_with_affiliations.append({'author': a, 'affiliations': []})
 
-        abstract = meta.get('abstract', '')
-        if not abstract and html_content:
+        # ⚠️ The rendered abstract first, the citation_abstract meta only as a
+        # fallback -- not the other way round. The meta tag is **plain text**:
+        # its formulas arrive as flattened characters, so an abstract that the
+        # page shows as math came out with none. Measured on the new-layout
+        # 10.3390/sym17111873: citation_abstract 1,353 characters with **0**
+        # `$…$`, while the abstract section renders 1,434 with 8. Reading the
+        # section runs it through the same MathJax→LaTeX pipeline as the body,
+        # which is the project's rule for every element.
+        abstract = ''
+        if html_content:
             abstract, _ = self.extract_article_text_from_html(html_content)
+        if not abstract:
+            abstract = meta.get('abstract', '')
 
         return {
             'title': meta.get('title') or 'MDPI Article',
