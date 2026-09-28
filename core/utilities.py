@@ -1308,7 +1308,13 @@ def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
                          or '')
 
         metadata_json = {
-            'doi': doi,
+            # ⚠️ Normally the DOI that was asked for. A handler may override it
+            # with _canonical_doi when the article has more than one and one of
+            # them is the record: UFN publishes a Russian and an English
+            # edition with unrelated DOIs, and the output has to be the same
+            # whichever one was typed. Explicit key, so no other publisher's
+            # metadata.json can change by accident.
+            'doi': metadata.get('_canonical_doi') or doi,
             'link': resolved_link,
             'title': title,
             'year': year,
@@ -1336,9 +1342,12 @@ def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
             'supplemental': supplemental_files if supplemental_files else []
         }
 
-        # Add additional_doi field for books with multiple chapters
-        if metadata.get('additional_doi'):
-            metadata_json['additional_doi'] = metadata['additional_doi']
+        # Add additional_doi field for books with multiple chapters, and the
+        # matching title/author lists for an article that exists in more than
+        # one edition (UFN's Russian and English versions).
+        for key in ('additional_doi', 'additional_title', 'additional_author'):
+            if metadata.get(key):
+                metadata_json[key] = metadata[key]
 
         # Add ISBN field if present
         if metadata.get('ISBN'):
@@ -1387,7 +1396,7 @@ def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
 RAW_HTML_PUBLISHERS = frozenset({
     'iop', 'sciencedirect', 'aps', 'optica', 'cambridge',
     'acs', 'wiley', 'ieee', 'spie', 'aip', 'nature', 'mdpi', 'acm', 'oup', 'science', 'researching',
-    'opticsjournal', 'jstage', 'rcsi', 'pnas', 'iphy', 'tandf',
+    'opticsjournal', 'jstage', 'rcsi', 'pnas', 'iphy', 'tandf', 'ufn',
 })
 
 
