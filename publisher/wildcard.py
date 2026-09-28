@@ -20,6 +20,7 @@ from html_to_md_converter import (
     mathml_to_latex_pandoc,
     remove_newlines_in_paragraph,
 )
+from config import CHROME_PATH
 from core.utilities import (
     pick_raw_article_html,
 )
@@ -563,7 +564,15 @@ async def init_extract_all_page(handler, page=None, doi: str = None, handler_nam
     if page is None:
         print(f"  ✓ {handler_name}未收到page，使用无头浏览器访问")
         managed_playwright = await async_playwright().start()
-        managed_browser = await managed_playwright.chromium.launch(headless=True)
+        # ⚠️ Launch the detected Chrome, not Playwright's bundled Chromium: a
+        # machine that installed Chrome but never ran `playwright install`
+        # has no ~/.cache/ms-playwright, and this call then fails with
+        # "Executable doesn't exist at …/chrome-headless-shell" -- which
+        # reads as a publisher failure and is not one.
+        _launch_kwargs = {'headless': True}
+        if CHROME_PATH:
+            _launch_kwargs['executable_path'] = CHROME_PATH
+        managed_browser = await managed_playwright.chromium.launch(**_launch_kwargs)
         managed_context = await managed_browser.new_context(accept_downloads=True)
         page = await managed_context.new_page()
         handler.configure(page=page, doi=doi)

@@ -103,6 +103,7 @@ from config import (
     BATCH_SLEEP_MAX,
     BATCH_SLEEP_MIN,
     CHROME_DEBUG_PORT,
+    CHROME_PATH,
     CHROME_PROFILE,
     CHROME_PROFILE_SOURCE_DIR,
     FRESH_PROFILE,
@@ -307,6 +308,9 @@ HEADLESS_ACCESSIBLE_PUBLISHERS = [
     # site challenges a headless browser: the preload passed on the first
     # poll, cf=✗, and the body XHR was captured.
     'iphy',
+    # UFN / Physics-Uspekhi. Plain Apache, no bot manager: all four probe
+    # pages loaded in a headless Chrome.
+    'ufn',
     ]
 
 
@@ -759,20 +763,25 @@ def _crossref_headless_publisher(crossref_data: dict):
     links = list(crossref_data.get('link') or [])
     # ⚠️ 'link' is the full-text link and plenty of records have none -- every
     # 10.7498 (iphy) record, for one. resource.primary.URL is the canonical
-    # landing page and is there instead, so it is consulted before falling
-    # back to the much fuzzier publisher name.
+    # landing page and is there instead, so it is consulted too, before
+    # falling back to the much fuzzier publisher name.
     links.append(crossref_data.get('resource_url') or '')
-    first_link = next((u for u in links if u), '')
-    if first_link:
-        token = detect_publisher_from_url(first_link)
-        if token and token not in ('', 'unknown'):
-            for publisher_name in HEADLESS_ACCESSIBLE_PUBLISHERS:
-                if token == publisher_name.lower():
-                    return publisher_name
-            # A known publisher that is simply not on the headless list: that
-            # is an answer, not a reason to fall back to the fuzzier name
-            # match.
-            return None
+    for candidate in [u for u in links if u]:
+        token = detect_publisher_from_url(candidate)
+        # ⚠️ Keep looking when a candidate is unrecognised -- do NOT stop at
+        # the first URL. Physics-Uspekhi's English DOI lists
+        # stacks.iop.org/…/pdf as its link (detector: unknown) while its
+        # resource.primary.URL says ufn.ru; stopping at the link threw away
+        # the one candidate that knew the answer.
+        if not token or token in ('', 'unknown'):
+            continue
+        for publisher_name in HEADLESS_ACCESSIBLE_PUBLISHERS:
+            if token == publisher_name.lower():
+                return publisher_name
+        # A known publisher that is simply not on the headless list: that is
+        # an answer, not a reason to keep looking or to fall back to the
+        # fuzzier name match.
+        return None
 
     crossref_publisher = (crossref_data.get('publisher') or '').lower()
     if not crossref_publisher:
@@ -1348,7 +1357,15 @@ class SharedBrowserSession:
 
         launch_kwargs = {"headless": True, "accept_downloads": True,
                          "args": chrome_password_store_args()}
-        chrome_path = os.environ.get("CHROME_PATH", "").strip()
+        # ⚠️ config.CHROME_PATH, not just the environment variable. config
+        # detects the real Chrome and the whole program runs on it (the
+        # startup banner prints it); reading only os.environ meant that
+        # WITHOUT an exported CHROME_PATH this one call fell back to
+        # Playwright's bundled Chromium -- which this machine does not have
+        # (no ~/.cache/ms-playwright), so every headless run died with
+        # "Executable doesn't exist at …/chrome-headless-shell". It looked
+        # like a publisher problem and was a launch-argument problem.
+        chrome_path = os.environ.get("CHROME_PATH", "").strip() or CHROME_PATH
         if chrome_path:
             launch_kwargs["executable_path"] = chrome_path
         # A persistent context owns the browser; there is no separate object.
@@ -4136,7 +4153,10 @@ async def complete_extraction_workflow(
                     prepare_profile_dir(_hl_dir, quiet=True)
                     _hl_kwargs = {'headless': True, 'accept_downloads': True,
                                   'args': chrome_password_store_args()}
-                    _chrome_path = os.environ.get('CHROME_PATH', '').strip()
+                    # Same fallback as ensure_headless_context: the detected
+                    # Chrome, not Playwright's bundled Chromium.
+                    _chrome_path = (os.environ.get('CHROME_PATH', '').strip()
+                                    or CHROME_PATH)
                     if _chrome_path:
                         _hl_kwargs['executable_path'] = _chrome_path
                     headless_browser = None
