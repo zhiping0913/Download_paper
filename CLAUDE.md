@@ -126,7 +126,7 @@ python complete_paper_extraction.py --file dois.txt         # 批量（主程序
 | `10.1073` / pnas.org | PNASHandler | 有头 | 完整（复用 ACM 那套 Atypon 遍历）|
 | `10.7498` / iphy.ac.cn | IPhyHandler | 无头 | 完整（正文来自单独的 XHR）|
 | `10.1080` / tandfonline.com | TandFHandler | 有头 | **abstract-only** — 见下 |
-| `10.3367` / ufn.ru | UFNHandler | 有头 | **abstract-only**（俄英双版）— 见下 |
+| `10.3367` / ufn.ru | UFNHandler | 无头 | **abstract-only**（俄英双版）— 见下 |
 | `10.1109` | IEEEHandler | 有头 | 完整（REST 接口） |
 | `10.1021` | ACSHandler | 有头 | 完整 |
 | `10.1002` | WileyHandler | 有头 | 完整 |
@@ -2019,6 +2019,44 @@ ACM 回归：`3728480` 正文逐行相同（摘要多出真实的 Highlights 段
 - 📌 产出目录里会同时有 `page_raw.html`（主流程落的那份，内容是本次实际访问的那一版）
   和 `page_ru.html` / `page_en.html`（handler 落的两版）。**落地那一版因此存了两遍** ——
   主流程对每家都落 `page_raw.html`，这里不为它破例
+- ✅ **无头可用**（已加进 `HEADLESS_ACCESSIBLE_PUBLISHERS`）：站点是裸 Apache、
+  没有 bot manager，四次探针（2023 俄/英、1961 英、1960 俄）全部在 headless Chrome
+  里正常加载。实测 `🟢 无头直连路径` 与有头那次对比：`paper.md` 逐字节相同、
+  `paper.pdf` md5 相同、`metadata.json` 只差 `extracted_at`
+- 📌 **`10.1070` 那个英文 DOI 也能走无头**，但需要下面那条判据修好之后才行
+
+### ❌ 无头启动只读 `os.environ['CHROME_PATH']`（三处，已修）
+
+把 UFN 加进无头名单后第一次跑，失败在这里：
+
+```
+BrowserType.launch_persistent_context: Executable doesn't exist at
+…/.cache/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell
+```
+
+- 📌 **和出版商无关**：无头浏览器的启动只读**环境变量** `CHROME_PATH`，而
+  `config.py` 自己探测出的那个（启动横幅里印的 `/opt/google/chrome/chrome`）它不看。
+  没导出这个变量时 Playwright 回落到自带 Chromium，而本机**没有**
+  `~/.cache/ms-playwright`（从没跑过 `playwright install`）
+- ⚠️ **报出来的样子像「这家出版商不支持无头」**，而真相是启动参数缺了一个。
+  凡是不经 `examples/launch.sh` 直接跑的运行，iphy、AIP、Cambridge 等同样会中招
+- 三处都改成 `os.environ.get('CHROME_PATH') or config.CHROME_PATH`：
+  `BrowserSession.ensure_headless_context`、Phase 0 预检那处、以及
+  `wildcard.init_extract_all_page` 里 handler 自建的那个无头浏览器
+  （后者原来是裸的 `chromium.launch(headless=True)`，连环境变量都不看）
+
+### 无头判据：多个候选 URL 要逐个看，不能只看第一个
+
+❌ 原来是「取 `link` 与 `resource_url` 里第一个非空的」。UFN 英文版的 DOI
+`10.1070/PU1961v003n05ABEH003322` 的 `link[0]` 是
+`stacks.iop.org/0038-5670/3/i=5/a=R04/pdf`（检测器答 **unknown**），而它的
+`resource.primary.URL` 明写着 `ufn.ru` —— 停在第一个候选就把唯一知道答案的那个丢了。
+现在**逐个候选**看，遇到 unknown 继续往下；第一个认出**已知**出版商的候选拍板
+（在名单里→无头，不在→None，仍然不回退看名字）。
+
+✅ 六种输入实测：ufn 俄文 DOI → `ufn`；ufn 英文 DOI（IOP 的 link）→ `ufn`；
+Optica → None；Elsevier → None；Nature → `nature`；iphy → `iphy`
+
 
 ### Taylor & Francis (`10.1080`, tandfonline.com)
 
