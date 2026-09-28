@@ -12,6 +12,7 @@ from publisher.jstage import JStageHandler
 from publisher.iphy import IPhyHandler
 from publisher.pnas import PNASHandler
 from publisher.tandf import TandFHandler
+from publisher.ufn import UFNHandler
 from publisher.rcsi import RCSIHandler
 from publisher.springer_book import SpringerBookHandler
 from publisher.optica import OpticaHandler
@@ -59,6 +60,16 @@ def detect_publisher_from_url(url: str) -> str:
     # iphy (Institute of Physics, CAS): one platform, several journals
     # (wulixb, cpb, …), so match the shared domain, and the 10.7498 prefix for
     # the pre-navigation guess.
+    # UFN / Physics-Uspekhi. ⚠️ Domain only. The English edition's DOI is an
+    # IOP one (10.1070/PU…) because IOP publishes it, and that prefix also
+    # belongs to other IOP journals -- so it must not be routed here; the
+    # landed domain is what settles it. 10.3367 is UFN's own prefix and is
+    # safe as the pre-navigation guess.
+    if 'ufn.ru' in url_lower:
+        return 'ufn'
+    if '10.3367' in url_lower:
+        return 'ufn'
+
     # Taylor & Francis. ⚠️ abstract-only by design -- see publisher/tandf.py.
     if 'tandfonline.com' in url_lower:
         return 'tandf'
@@ -303,6 +314,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return IPhyHandler(**kwargs)
     elif publisher == 'tandf':
         return TandFHandler(**kwargs)
+    elif publisher == 'ufn':
+        return UFNHandler(**kwargs)
     elif publisher == 'arxiv':
         # ArXiv uses APS-like handler
         kwargs.setdefault('journal_prefix', 'arxiv')

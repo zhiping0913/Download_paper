@@ -3655,7 +3655,12 @@ async def complete_extraction_workflow(
             except Exception:
                 pass
         if landing_url:
-            metadata['_landing_url'] = landing_url
+            # ⚠️ Do not overwrite a URL the handler chose. UFN publishes two
+            # editions of every article and pins the Russian one so that the
+            # same paper produces the same metadata.json whichever edition's
+            # DOI was typed; landing_url is whichever page this run happened
+            # to navigate.
+            metadata.setdefault('_landing_url', landing_url)
 
         # Save HTML to the per-DOI capture directory: page_raw.html, the
         # raw server HTTP response, and nothing else. See below for why

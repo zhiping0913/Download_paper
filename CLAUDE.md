@@ -126,6 +126,7 @@ python complete_paper_extraction.py --file dois.txt         # 批量（主程序
 | `10.1073` / pnas.org | PNASHandler | 有头 | 完整（复用 ACM 那套 Atypon 遍历）|
 | `10.7498` / iphy.ac.cn | IPhyHandler | 无头 | 完整（正文来自单独的 XHR）|
 | `10.1080` / tandfonline.com | TandFHandler | 有头 | **abstract-only** — 见下 |
+| `10.3367` / ufn.ru | UFNHandler | 有头 | **abstract-only**（俄英双版）— 见下 |
 | `10.1109` | IEEEHandler | 有头 | 完整（REST 接口） |
 | `10.1021` | ACSHandler | 有头 | 完整 |
 | `10.1002` | WileyHandler | 有头 | 完整 |
@@ -1955,6 +1956,69 @@ ACM 回归：`3728480` 正文逐行相同（摘要多出真实的 Highlights 段
 - 📌 顺手核过别家：IOP 走 `extract_abstract_with_fallbacks` + 公式管道、APS 用
   `abstract_html` 覆盖 meta、Cambridge / Science 读渲染后的摘要、Optica 只在没有
   摘要时才用 meta —— **只有 MDPI 是反的**，所以这次只改 MDPI
+
+### UFN / Physics-Uspekhi（`10.3367`、ufn.ru）
+
+**只抓摘要 + PDF**：站点不提供 HTML 正文。
+
+⚠️ **每篇文章有俄、英两版，各有自己的 DOI，而两个 DOI 之间没有任何可推导的关系**：
+
+```
+10.3367/UFNr.2023.03.039335      10.3367/UFNe.2023.03.039335
+10.3367/ufnr.0072.196010a.0161   10.1070/PU1961v003n05ABEH003322
+```
+
+要求是**给任一版的 DOI，产出都一样**：俄文版是记录（目录名、title、doi），
+英文版挂在 `additional_doi` / `additional_title` / `additional_author` 上。
+
+- ❌ **别用「把 URL 里的 `/ru/` 换成 `/en/`」找另一版**。新文章确实同路径
+  （`/ru/articles/2023/5/b/` ↔ `/en/articles/2023/5/b/`），但**老文章不是**：
+  `10.3367/ufnr.0072.196010a.0161` 是 `/ru/articles/1960/10/a/`，它的英文版是
+  `/en/articles/1961/5/d/` —— 年、期、序号**全不一样**（译文晚一年发表）。
+  按替换去取会拿回**另一篇文章或 404**，还当成是同一篇
+- 📌 **正解是页面自己的语言切换链接**：俄文页上写着 "English"、英文页上写着
+  "Русский"，那条链接就是出版商对「哪一篇是译文」的声明。四个样本全部命中，
+  包括那对路径不对应的 1960/1961。⚠️ 判据用 **href 形状 + 语种不同于本页**，
+  不用锚文字（文字最容易改；而同语种的邻篇链接因此天然排除）
+- ⚠️ **DOI 必须锚定在那句 `<span class="gray">DOI:</span>` 后面的 `<a>`**。
+  页面上有好几个 `doi.org` 链接，俄文页在印出自己的 DOI **之前**先推销了两次
+  英文版（"English fulltext is available at DOI: …" 和译文的建议引用格式），
+  所以取「第一个 doi.org 链接」会得到**另一版的 DOI** —— 实测俄文页报出了
+  `UFNe…`。这些页面**没有 `citation_doi`**，那段标记是唯一的声明
+- **PDF 只有俄文页声明**（`citation_pdf_url`），英文页没有 —— 所以 PDF 一律从俄文页取，
+  否则用英文 DOI 跑的每一篇都拿不到 PDF
+- 摘要在 `<p itemprop="articleBody" class="mathjax">`，两种语言都要；`mathjax` 这个类
+  说明出版商预期里面有公式，所以走片段转换而不是 `get_text()`
+- 其余书目字段来自 `citation_*`（标题、作者可重复、刊名、卷、期、起止页、日期）
+- ⚠️ **路由只按域名**：英文版的 DOI 可能是 **IOP 的 `10.1070/PU…`**（英文版由 IOP 出版），
+  而那个前缀还属于别的 IOP 刊 —— 不能按它路由。`10.3367` 是 UFN 自己的前缀，
+  可以用作导航前的猜测
+- 📌 `metadata.json` 的 `doi` 走新增的 `_canonical_doi`：正常情况下那一栏是**输入的
+  DOI**，而这里必须是俄文版的。用一个显式键，免得别家出版商的 `metadata.json`
+  被顺带改掉
+- ⚠️ **新刊的 PDF 拿不到，而且它不是 404 而是「跳回文章页」**。实测
+  `https://ufn.ru/ufn2023/ufn2023_5/Russian/r235b.pdf`：HEAD **200**、
+  `Content-Type: text/html`、最终 URL 变成 `https://ufn.ru/ru/articles/2023/5/b/`
+  —— 6,740 字节的落地页。也就是说 `citation_pdf_url` 对未开放的期号是**装作存在**的，
+  于是下载阶梯每一层都在跟一个 HTML 页面较劲（一次性 Chrome 那层日志里
+  `title='Динамика и излучение…' body=2799` 就是它）。老文章则正常：
+  `https://ufn.ru/ufn60/ufn60_10/Russian/r6010a.pdf` HEAD 200 +
+  `application/pdf`
+- 📌 这解释了为什么 2023 那篇会把整轮重试预算烧在 PDF 上。**判据看字节不看状态码**
+  这条核心原则在这里正是要点；要省掉这笔开销，可以在 handler 里对 `citation_pdf_url`
+  先做一次 HEAD（和 iphy 的补充材料同一手法），`text/html` 就当没有 PDF ——
+  尚未实现，先记在这里
+- ⚠️ **`metadata.json` 的 `link` 也要钉住**，否则它会记下「这次恰好访问了哪一版」，
+  两种输入就产生两种结果。handler 把记录版（俄文）的 URL 写进 `metadata['_landing_url']`，
+  而主流程那行改成 `setdefault` —— **不覆盖 handler 已经选好的值**
+- ✅ **等价性实测**（1960/1961 那一对，两个 DOI 各跑一遍）：
+  `paper.md` **逐字节相同**、`paper.pdf` **md5 相同**（3.60 MB）、目录名相同、
+  `metadata.json` **只差 `extracted_at`**。`doi` = 俄文版、
+  `additional_doi/title/author` = 英文版三位作者。
+  ⚠️ `crossref.json` 必然不同（它是按输入的那个 DOI 查的），这一条改不了也不该改
+- 📌 产出目录里会同时有 `page_raw.html`（主流程落的那份，内容是本次实际访问的那一版）
+  和 `page_ru.html` / `page_en.html`（handler 落的两版）。**落地那一版因此存了两遍** ——
+  主流程对每家都落 `page_raw.html`，这里不为它破例
 
 ### Taylor & Francis (`10.1080`, tandfonline.com)
 
