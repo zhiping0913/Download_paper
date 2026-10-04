@@ -156,6 +156,7 @@ export DP_PDF_DOWNLOAD_COMPLETE_TIMEOUT=60    # 判「下载是否完成」，�
 export DP_SUPPLEMENTAL_TIMEOUT=60
 export DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT=120  # 大文件 DOCX/MP4 再调大
 export DP_SUPPLEMENTAL_MAX_BYTES=200M         # 下完一量超过就删（0=不限）
+export DP_PDF=0                               # 跳过 PDF 下载（--pdf=False 同效）
 export DP_FIGURE_TIMEOUT=60
 export DP_INPAGE_FETCH_TIMEOUT=90             # 页面内 fetch / 读响应体的死锁断路器
 export DP_HTTP_TOTAL_TIMEOUT=600              # 单个直接下载的总时限（视频靠它兜底）
@@ -230,6 +231,12 @@ Crossref 响应，只为取文件起一次浏览器。两层的有头/无头都�
 无条件优先。两种情况都照常写 `metadata.json` 和
 `crossref.json`；PDF 未下成则返回 `None`（批次记为失败），但 `metadata.json` 里
 记着 `pdf_link`，可据此重试。
+
+**`--pdf`**（默认 `True`，也可用 `DP_PDF=0`）：`False` 时跳过 PDF 下载，链接仍写进
+`metadata.json` 的 `pdf_link`；跳过时明确打印，否则「本来没有 PDF」和「叫我们别下」
+在产出目录里分辨不出来。缺 PDF 此时**不算失败**。与 `--pdf-only` 同时给出等于什么都
+不下 —— pdf-only 本就跳过图片、补充材料和 Markdown，只剩 `html/` + `metadata.json`
++ `crossref.json`。命令行优先于环境变量。
 
 主流程只负责统一调度，不直接处理具体出版商的网页结构。它的职责是：
 

@@ -616,6 +616,15 @@ DP_SUPPLEMENTAL = not env_off('DP_SUPPLEMENTAL')
 #: to be distinguishable from "set to True" for that to work.
 DP_SUPPLEMENTAL_SET = 'DP_SUPPLEMENTAL' in os.environ
 
+#: Whether to download the paper's own PDF (``--pdf=False`` or ``DP_PDF=0``).
+#: Off is for runs that only want the page-derived product (markdown,
+#: metadata, figures) -- the PDF is the single biggest transfer per paper and
+#: the one most likely to sit behind a bot manager. The link still goes into
+#: ``metadata.json`` (``pdf_link``), so a later run can fetch it.
+#: ``--pdf-only`` together with ``--pdf=False`` therefore downloads nothing at
+#: all: pdf-only already skips figures, supplemental material and markdown.
+DP_PDF = not env_off('DP_PDF')
+
 
 def http_asset_headers(referer: str = None) -> dict:
     headers = {
