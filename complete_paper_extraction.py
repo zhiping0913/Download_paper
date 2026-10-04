@@ -84,6 +84,7 @@ from core.utilities import (
     DP_HTTP_TOTAL_TIMEOUT,
     DP_SUPPLEMENTAL,
     DP_SUPPLEMENTAL_SET,
+    DP_PDF,
     INPAGE_ABORT_JS,
 )
 
@@ -1896,7 +1897,12 @@ async def _download_all_resources(
     try:
         # Download PDF
         pdf_url = links.get('pdf_url')
-        if pdf_url:
+        if pdf_url and not DP_PDF:
+            # Say it out loud: "this article has no PDF link" and "we were
+            # told not to fetch it" look identical in the output directory.
+            print("\n⏭️  跳过 PDF 下载（--pdf=False / DP_PDF=0）"
+                  "—— 链接仍写进 metadata.json")
+        elif pdf_url:
             print("Step 4️⃣  下载论文PDF...")
             print("=" * 80)
             try:
@@ -3511,12 +3517,15 @@ async def _pdf_link_direct_download(
     print("=" * 80)
     if downloads['pdf']:
         print(f"  📕 PDF: {downloads['pdf']}")
+    elif not DP_PDF:
+        print("  ⏭️  PDF: 按要求跳过")
     else:
         print("  ⚠️  PDF 未下载成功")
     print(f"  💾 输出目录: {paper_output_dir}")
     print()
 
-    return str(paper_output_dir) if downloads['pdf'] else None
+    # 刻意不下 PDF 时，缺 PDF 不是失败
+    return str(paper_output_dir) if (downloads['pdf'] or not DP_PDF) else None
 
 
 async def complete_extraction_workflow(
@@ -3827,12 +3836,15 @@ async def complete_extraction_workflow(
             print("=" * 80)
             if downloads['pdf']:
                 print(f"  📕 PDF: {downloads['pdf']}")
+            elif not DP_PDF:
+                print("  ⏭️  PDF: 按要求跳过")
             else:
                 print("  ⚠️  PDF 未下载成功")
             print(f"  💾 输出目录: {paper_output_dir}")
             print()
 
-            return str(paper_output_dir) if downloads['pdf'] else None
+            # 刻意不下 PDF 时，缺 PDF 不是失败
+            return str(paper_output_dir) if (downloads['pdf'] or not DP_PDF) else None
 
         # Step 3.5: Generate markdown with figures
         print("\nStep 3.5️⃣  生成Markdown...")
@@ -5029,6 +5041,19 @@ JSON 格式:
         )
 
         parser.add_argument(
+            '--pdf',
+            type=_parse_bool_flag,
+            nargs='?',
+            const=True,
+            default=None,
+            metavar='True|False',
+            help='是否下载 PDF (默认: True；也可用环境变量 DP_PDF=0)。'
+                 'False 时跳过下载，链接仍写进 metadata.json；'
+                 '与 --pdf-only 同时给出时等于什么都不下 —— pdf-only 本就跳过'
+                 '图片、补充材料和 Markdown'
+        )
+
+        parser.add_argument(
             '--supplemental',
             type=_parse_bool_flag,
             nargs='?',
@@ -5046,6 +5071,10 @@ JSON 格式:
         # whatever DP_SUPPLEMENTAL said at import time. Rebinding the module
         # global is what the call site reads -- it imported the value, not
         # the module.
+        if args.pdf is not None:
+            globals()['DP_PDF'] = args.pdf
+            os.environ['DP_PDF'] = '1' if args.pdf else '0'
+
         if args.supplemental is not None:
             globals()['DP_SUPPLEMENTAL'] = args.supplemental
             globals()['DP_SUPPLEMENTAL_SET'] = True

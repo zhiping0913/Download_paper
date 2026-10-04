@@ -52,6 +52,20 @@ python complete_paper_extraction.py --file dois.txt         # 批量（主程序
   下载后被删，日志 `⏭️ 丢弃：214 KB 超过上限 100 KB`，`supplemental/` 目录不再生成，
   而 md 里**照常列出那个链接**（指向远程）
 
+## 跳过 PDF（`--pdf=False` / `DP_PDF=0`）
+
+默认 `True`，照常下。`False` 时**只跳过 PDF 下载**，链接仍写进 `metadata.json`
+的 `pdf_link` —— 可以据此事后重试。
+
+- ⚠️ 要**明确打印跳过了**：产出目录里「这篇本来没有 PDF 链接」和「叫我们别下」
+  长得一模一样
+- ⚠️ **缺 PDF 不再算失败**：pdf-only 的两条路本来都是
+  `return ... if downloads['pdf'] else None`，不改的话一个刻意不下 PDF 的
+  pdf-only 运行会把整批记成失败
+- 📌 **与 `--pdf-only` 同时给出等于什么都不下**：pdf-only 本来就跳过图片、
+  补充材料和 Markdown，于是只剩 `html/` + `metadata.json` + `crossref.json`
+- ⚠️ 命令行优先于环境变量（同 `--supplemental`）
+
 ## 跳过补充材料（`--supplemental=False` / `DP_SUPPLEMENTAL=0`）
 
 默认 `True`，照常下。`False` 时**只跳过下载**，链接仍写进 Markdown ——
