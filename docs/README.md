@@ -146,6 +146,16 @@ export OUTPUT_DIR_DEFAULT=/home/coze/Download_paper/captured_data  # 完整输�
 仍是 150）。所以在 Windows 上把 `OUTPUT_DIR_DEFAULT` 指向较短的路径（如 `D:\papers`），
 能换来更完整的目录名；根目录深到连下限都放不下时，程序会明确告警而不是静默截断。
 
+**目录名的字符清洗**（`_clean_title_for_directory`）：先把 HTML/MathML 标签换成空格，
+再按 **Windows 的规则**清字符（哪怕跑在 Linux 上 —— Linux 只禁 `/` 和 NUL）：
+`/\:*?"<>|`、ASCII 控制字符 0x00–0x1F 与 DEL、以及**结尾的 `.` 和空格**（结尾那两种
+必须在截断之后再去，截断本身就能把点露在末尾；Windows 会静默丢掉它们，于是创建的目录
+和事后拼出的路径对不上）。半成品 LaTeX 也一并删掉：`$`、`{}`、`^`、`%`、`&`、`!` 在
+文件系统层面合法，但反斜杠早被当非法字符删了，留下的 `$frac{1}{2}$` 到处都读不懂 ——
+`$\alpha_{\rm s}$ in $e^+e^-$` 现在落成 `alpha_rm s in e+e-`。保留设备名
+（`CON`/`COM1`…）不处理：目录名永远带 `{year}--` 前缀，不可能等于保留名。
+⚠️ 既有存档的目录名不会跟着改，重跑同一篇会新建一个名字不同的目录。
+
 **超时配置（单位：秒）：**
 
 ```bash

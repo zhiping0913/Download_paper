@@ -1172,15 +1172,29 @@ def _clean_title_for_directory(title: str, max_len: int = DIR_NAME_MAX) -> str:
     for symbol, name in replacements.items():
         title = title.replace(symbol, f' {name} ')
 
-    # Remove remaining problematic characters for filenames
-    # Keep only alphanumeric, spaces, hyphens, underscores, and parentheses
+    # Characters Windows rejects outright, plus the ASCII control range and
+    # DEL. Control characters are legal on Linux but a title that carries a
+    # stray newline or tab produces a directory nobody can type.
     title = re.sub(r'[/\\:*?"<>|]', '', title)
+    title = re.sub(r'[\x00-\x1f\x7f]', ' ', title)
+
+    # Half-converted LaTeX. The backslash is already gone (it is in the class
+    # above), so what survives of ``$\frac{1}{2}$`` is ``$frac{1}{2}$`` --
+    # legal on every filesystem and unreadable everywhere. These are dropped
+    # rather than spaced out so ``e^+e^-`` reads as ``e+e-`` and not ``e + e -``.
+    title = title.translate({ord(ch): None for ch in '${}^%&!'})
 
     # Collapse multiple spaces and trim
     title = re.sub(r'\s+', ' ', title).strip()
 
     # Limit length but keep it readable
     title = title[:max(1, int(max_len))].strip()
+
+    # ⚠️ Trailing dots and spaces must go *after* truncation -- the cut itself
+    # can expose one. Windows silently drops them from the name it stores, so
+    # the directory created and the path built from the same string afterwards
+    # would not be the same name.
+    title = title.rstrip(' .')
 
     # If title becomes empty after cleaning, use placeholder
     if not title:
