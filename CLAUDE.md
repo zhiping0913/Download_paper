@@ -52,6 +52,60 @@ python complete_paper_extraction.py --file dois.txt         # 批量（主程序
   下载后被删，日志 `⏭️ 丢弃：214 KB 超过上限 100 KB`，`supplemental/` 目录不再生成，
   而 md 里**照常列出那个链接**（指向远程）
 
+## Cloudflare 的框在**关闭的 shadow root** 里（`DOM.getDocument(pierce=true)`）
+
+❌ **用户报告：APS 的挑战页上「日志写了点击区域，实际没点」。已完整复现。**
+
+- 📌 **故意暴露自动化指纹就能稳定复现**（`--enable-automation` +
+  `HeadlessChrome/152` 的 UA + `FRESH_PROFILE=1`），不必等 APS 那个小概率事件
+- 📌 实测那张挑战页（link.aps.org，Ray `a4704dab3eaee047`）：**截图里复选框明明
+  在 (146,304)–(446,369)**，而页面里问到的是
+
+  | 问法 | 答案 |
+  |---|---|
+  | `document.querySelectorAll('iframe').length` | **0** |
+  | `[id^="cf-chl"]` | 命中，但是 **0×0** —— 那是隐藏的 `..._response` input |
+  | 形状像 widget（200–520 × 40–120） | 只有 `<h1>` |
+
+  成因：widget 在一个 **closed shadow root** 里。`querySelectorAll` 不穿透 shadow
+  DOM，而 closed root 的 `.shadowRoot` 是 `null` —— **页面内的脚本没有任何办法够到它**
+- ❌ 于是四级兜底一路落到最后一级 `.main-content`，日志印出
+  `🖱️ 点击挑战区域 (32, 646) [main-content]` —— 一句**声称点了、其实点在空白处**的话。
+  这一级**已删除**：报告"找不到目标"比一个不可能生效的点击有价值
+- ✅ **正解是 `DOM.getDocument(depth=-1, pierce=True)`**（`_find_challenge_iframe_pierced`）：
+  它不是页面脚本，**看得见 closed root**。实测直接报出那个 iframe
+  （`title="Widget containing a Cloudflare security challenge"`、
+  `src=challenges.cloudflare.com/.../turnstile/f/av0`），`DOM.getBoxModel` 给出
+  **300×65 @ (146,304)**，与截图逐像素吻合
+- ✅ 点下去（left+32、垂直居中 → `(178, 336)`）**确实点到了**：页面当即变成
+  *"Verifying you are human. This may take a few seconds."* + 转圈，`cf_clearance`
+  随后出现。⚠️ 最终没放行是我**故意**把指纹做烂的结果 —— 这条验的是"点没点到"，
+  不是"过没过"
+- 📌 `Page.bringToFront` **不需要**：带与不带的对照里点击都送达了（body 260→281 同样
+  发生）。没有证据就不加
+
+### ❌ 另一个病根：挑战页里也有 DOI，于是预载第一轮就宣布"挑战通过"
+
+预载的最高优先级判据是「DOI 出现在捕获的响应里」。**而 Cloudflare 的挡板页会把
+你请求的那个 URL 原样印在页面上** —— 实测那份 6,209 字节的挡板
+（`_cf_chl_opt`×7、`Just a moment`×1）里 DOI 出现 **3 次**。
+
+- ❌ 后果不是"点歪了"，是**整段点击代码一次都没跑**：第 1 轮就
+  `✅ DOI […] 见于捕获的响应，挑战通过（页面 260 字）`，循环退出，handler 随后对着
+  挡板页提取
+- 📌 判据改成「DOI 在**不是挑战页**的响应里」。标记判定搬进
+  `core/utilities.html_looks_like_bot_challenge()`（`chrome_session` 要用，而它不能
+  import 主文件 —— 与 URL 那半同样的理由），主文件的 `is_bot_challenge_page` 改为委托，
+  **两处不再各留一份会漂的清单**
+- ⚠️ 另加一道保险：同一轮里 `is_challenge` 为真时**不认** DOI 判定 ——
+  服务器发的那份看着没问题、但标签页还停在挡板上，那就继续干活
+- ✅ 同一条 DOI、同样的烂指纹，改后日志变成：
+  `🤖 检测到 Turnstile iframe (300x65) 点击 @ (178, 336) [challenges.cloudflare.com/…]`
+  —— 从"点 `.main-content` 的空白"变成"点真的框"
+- 📌 **Playwright 那一侧本来就是对的**（`auto_solve_bot_challenge` 用 Playwright 的
+  frame 列表，跨域 frame 它看得见），实测同一次运行里它照常
+  `✓ Cloudflare Turnstile 已通过`。坏的只有纯 CDP 预载这条路
+
 ## 目录名怎么清洗（`_clean_title_for_directory`）
 
 `{year}--{title}`，标题取 `metadata['_dir_title'] or metadata['title'] or crossref title`。

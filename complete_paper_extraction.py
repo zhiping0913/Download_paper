@@ -79,6 +79,7 @@ from core.utilities import (
     pick_raw_article_html,
     content_with_timeout,
     url_looks_like_bot_challenge,
+    html_looks_like_bot_challenge,
     url_wants_api_harvest,
     complete_downloads_in,
     DP_HTTP_TOTAL_TIMEOUT,
@@ -883,56 +884,9 @@ def is_bot_challenge_page(url: str, html: str = None) -> bool:
     if url_looks_like_bot_challenge(url):
         return True
 
-    if html:
-        html_lower = html.lower()
-        # High-confidence markers — these only appear on actual challenge pages.
-        # NB: bare 'cloudflare' and 'cdn-cgi/challenge-platform' substrings also
-        # appear in Cloudflare's harmless JSD tracking script (cdn-cgi/challenge-platform/scripts/jsd/main.js)
-        # which is injected on REAL article pages too. Use stricter markers
-        # to avoid false positives on Cloudflare-protected sites like
-        # cambridge.org and journals.aps.org.
-        challenge_markers = [
-            'bot manager',
-            'request unsuccessful',
-            'are you a bot',
-            'verify you are human',
-            'please verify',
-            'security check',
-            'ddos protection',
-            'incident id',
-            'radware',
-            'perfdrive',
-            # Cloudflare-challenge-specific markers (NOT the generic JSD tracker)
-            'cf-browser-verification',
-            'cf-chl-bypass',
-            'cf-error-details',
-            '_cf_chl_opt',
-            'just a moment...',
-            'checking your browser before',
-            'cdn-cgi/challenge-platform/h/',  # the challenge HTML path, not /scripts/jsd/
-            'turnstile',
-            '正在进行安全验证',
-            'security verification',
-            'enable javascript and cookies to continue',
-        ]
-        marker_count = sum(1 for m in challenge_markers if m in html_lower)
-        # Large pages with full article content shouldn't be challenge pages
-        # regardless of incidental keyword matches in scripts/analytics.
-        html_size = len(html)
-        if html_size > 100_000:
-            # A real article page is typically 100KB+; only treat as challenge
-            # if multiple high-confidence markers and the page looks short on content.
-            if marker_count >= 3:
-                return True
-        else:
-            if marker_count >= 2:
-                return True
-        if html_size < 5000 and any(
-            m in html_lower for m in ['verify', 'challenge', 'captcha', 'robot', 'bot']
-        ):
-            return True
-
-    return False
+    # The HTML half lives in core.utilities for the same reason as the URL
+    # half above: chrome_session needs it and cannot import this module.
+    return html_looks_like_bot_challenge(html)
 
 
 # ------------------------------------------------------------------------
