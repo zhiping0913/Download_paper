@@ -473,6 +473,46 @@ DP_HTTP_FIRST = os.environ.get('DP_HTTP_FIRST', '1').strip().lower() not in (
     '0', 'false', 'no', 'off')
 
 
+
+#: Markers that only appear on an interstitial, never in an article.
+#:
+#: NB: a bare ``cloudflare`` or ``cdn-cgi/challenge-platform/scripts/jsd/``
+#: substring is **not** one of them -- Cloudflare injects that tracker into
+#: real article pages too (measured on journals.aps.org and cambridge.org).
+_CHALLENGE_HTML_MARKERS = (
+    'bot manager', 'request unsuccessful', 'are you a bot',
+    'verify you are human', 'please verify', 'security check',
+    'ddos protection', 'incident id', 'radware', 'perfdrive',
+    'cf-browser-verification', 'cf-chl-bypass', 'cf-error-details',
+    '_cf_chl_opt', 'just a moment...', 'checking your browser before',
+    'cdn-cgi/challenge-platform/h/',   # the challenge HTML path, not /scripts/jsd/
+    'turnstile', '正在进行安全验证', 'security verification',
+    'enable javascript and cookies to continue',
+)
+
+
+def html_looks_like_bot_challenge(html: str) -> bool:
+    """True when this HTML is an interstitial rather than an article.
+
+    Lives here, beside the URL half, because ``chrome_session`` needs the same
+    test and cannot import the main module (cycle) -- and two copies of a list
+    like this drift the moment one publisher's interstitial is added to one of
+    them.
+    """
+    if not html:
+        return False
+    low = html.lower()
+    hits = sum(1 for m in _CHALLENGE_HTML_MARKERS if m in low)
+    if len(html) > 100_000:
+        # A real article page is 100KB+; only call it a challenge when several
+        # high-confidence markers agree.
+        return hits >= 3
+    if hits >= 2:
+        return True
+    return len(html) < 5000 and any(
+        m in low for m in ('verify', 'challenge', 'captcha', 'robot', 'bot'))
+
+
 def sniffed_mime(data: bytes) -> str:
     """The media type of *data* according to its own bytes, or ''.
 

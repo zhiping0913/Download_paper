@@ -146,6 +146,14 @@ export OUTPUT_DIR_DEFAULT=/home/coze/Download_paper/captured_data  # 完整输�
 仍是 150）。所以在 Windows 上把 `OUTPUT_DIR_DEFAULT` 指向较短的路径（如 `D:\papers`），
 能换来更完整的目录名；根目录深到连下限都放不下时，程序会明确告警而不是静默截断。
 
+**Cloudflare 的验证框在 closed shadow root 里**：页面脚本（`querySelectorAll` /
+`.shadowRoot`）**看不到**它，实测 APS 挑战页 `iframes=0`、`[id^="cf-chl"]` 是 0×0 的隐藏
+input，而截图里复选框就在 (146,304)。所以查找走 CDP 的 `DOM.getDocument(pierce=true)`
++ `DOM.getBoxModel`（`_find_challenge_iframe_pierced`），它不是页面脚本、看得见 closed
+root。原来兜底去点 `.main-content`，只会打印一句"点击挑战区域"而什么都没点，那一级已删除。
+另：挑战页会印出你请求的 URL，**DOI 也在里面**，所以「DOI 见于捕获的响应」必须排除挑战页，
+否则预载第一轮就误判"挑战通过"、点击代码一次都不跑。
+
 **目录名的字符清洗**（`_clean_title_for_directory`）：先把 HTML/MathML 标签换成空格，
 再按 **Windows 的规则**清字符（哪怕跑在 Linux 上 —— Linux 只禁 `/` 和 NUL）：
 `/\:*?"<>|`、ASCII 控制字符 0x00–0x1F 与 DEL、以及**结尾的 `.` 和空格**（结尾那两种

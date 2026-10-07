@@ -94,6 +94,7 @@ from core.utilities import (
     safe_download_name,
     pick_raw_article_html,
     url_looks_like_bot_challenge,
+    html_looks_like_bot_challenge,
 )
 
 try:
@@ -911,7 +912,8 @@ _CHALLENGE_DOM_JS = r"""(function () {
 #   3. anything shaped like a Turnstile widget (~300x65) -- geometry, so it
 #      does not depend on the page's language or on class names surviving the
 #      next redesign
-#   4. the interstitial's own .main-content wrapper, which this page does have
+#   (A 4th step used to click the interstitial's own .main-content wrapper.
+#    It is gone: see the note at the end of this script.)
 #
 # The click point is (left + 32, vertical centre): the checkbox sits there in
 # every widget size Cloudflare currently ships.
@@ -952,8 +954,13 @@ _CHALLENGE_CLICK_TARGET_JS = r"""(function () {
             if (hit3) return hit3;
         }
     }
-    return box(document.querySelector('.main-content, .main-wrapper'), 'main-content')
-           || {found: false};
+    // ❌ No last-resort .main-content click any more. The interstitial's own
+    // wrapper is page furniture: measured on APS it produced
+    //   🖱️  点击挑战区域 (32, 646) [main-content]
+    // on every challenged run -- a log line claiming a click while the real
+    // widget sat at (146,304) untouched. A report that we found nothing is
+    // worth more than a click that cannot work.
+    return {found: false};
 })()"""
 
 
@@ -1236,6 +1243,94 @@ async def _report_iframe_sources(ws) -> None:
         print(f"     ⚠️  iframe 列举失败: {type(exc).__name__}")
 
 
+#: Substrings that identify the challenge widget's iframe.
+_CHALLENGE_IFRAME_SRC_HINTS = (
+    'challenges.cloudflare.com',
+    'cdn-cgi/challenge-platform',
+    '_incapsula_resource',
+    'hcaptcha.com',
+    'recaptcha',
+)
+
+
+def _walk_dom_for_iframes(node: dict, out: list) -> None:
+    """Collect every IFRAME node in a pierced DOM tree, shadow roots included."""
+    if node.get('nodeName') == 'IFRAME':
+        attrs = node.get('attributes') or []
+        out.append((node.get('nodeId'), dict(zip(attrs[::2], attrs[1::2]))))
+    for key in ('children', 'shadowRoots', 'pseudoElements'):
+        for child in node.get(key) or []:
+            _walk_dom_for_iframes(child, out)
+    content_doc = node.get('contentDocument')
+    if isinstance(content_doc, dict):
+        _walk_dom_for_iframes(content_doc, out)
+
+
+async def _find_challenge_iframe_pierced(ws) -> dict:
+    """Find the challenge widget through CDP's DOM tree instead of page JS.
+
+    ⚠️ This is the only way to see Cloudflare's current widget. Measured on
+    the APS interstitial (link.aps.org, Ray a4704dab3eaee047) while the
+    checkbox was plainly on screen in a screenshot:
+
+        document.querySelectorAll('iframe').length   0
+        [id^="cf-chl"]                               0x0 (the hidden
+                                                     ..._response input)
+        anything shaped like a widget                none
+
+    The iframe lives in a **closed** shadow root, which no script in the page
+    can reach -- ``querySelectorAll`` does not pierce it and ``.shadowRoot`` is
+    null for a closed one. So every DOM-based search returned nothing and the
+    click fell through to the last-resort target, which is why the log said it
+    clicked while nothing was ever clicked.
+
+    ``DOM.getDocument(pierce=True)`` is not page script and does see closed
+    roots: it reported the iframe (title "Widget containing a Cloudflare
+    security challenge") with a box model of 300x65 at (146,304) -- the exact
+    rectangle in the screenshot. Clicking that point put the page into
+    "Verifying you are human..." , so the coordinates are real.
+    """
+    try:
+        await _send(ws, "DOM.enable")
+        doc = await _send(ws, "DOM.getDocument", {"depth": -1, "pierce": True})
+    except Exception as e:
+        return {"found": False, "error": str(e)}
+
+    frames: list = []
+    _walk_dom_for_iframes(doc.get("root") or {}, frames)
+
+    for node_id, attrs in frames:
+        src = (attrs.get('src') or '').lower()
+        title = (attrs.get('title') or '').lower()
+        if not (any(h in src for h in _CHALLENGE_IFRAME_SRC_HINTS)
+                or 'challenge' in title or 'captcha' in title):
+            continue
+        try:
+            box = await _send(ws, "DOM.getBoxModel", {"nodeId": node_id})
+        except Exception:
+            continue
+        model = box.get("model") or {}
+        quad = model.get("content") or []
+        width = model.get("width") or 0
+        height = model.get("height") or 0
+        # Same size floor as the page-side finder: a 0x0 node is the hidden
+        # response input, not the widget.
+        if len(quad) < 8 or width < 20 or height < 10:
+            continue
+        left, top, bottom = quad[0], quad[1], quad[5]
+        narrow = width < 120
+        return {
+            "found": True, "selector": "pierced iframe", "index": -1,
+            "rect": {"x": left, "y": top, "width": width, "height": height,
+                     "left": left, "top": top,
+                     "right": left + width, "bottom": top + height},
+            "cx": left + width / 2 if narrow else left + 32,
+            "cy": (top + bottom) / 2,
+            "src": attrs.get('src') or '',
+        }
+    return {"found": False}
+
+
 async def _find_turnstile_iframe_cdp(ws) -> dict:
     """用 CDP 在页面中查找 Turnstile challenge iframe。
     返回 {found, selector, index, rect, src}
@@ -1333,7 +1428,13 @@ async def _find_turnstile_iframe_cdp(ws) -> dict:
     result = await _send(ws, "Runtime.evaluate", {
         "expression": js, "returnByValue": True,
     })
-    return result.get("result", {}).get("value", {"found": False})
+    info = result.get("result", {}).get("value") or {"found": False}
+    if info.get("found"):
+        return info
+    # Page script cannot see a widget in a closed shadow root -- and that is
+    # where Cloudflare puts it today, so this path is the normal one on APS,
+    # not an exotic fallback. See _find_challenge_iframe_pierced.
+    return await _find_challenge_iframe_pierced(ws)
 
 
 async def _click_at_cdp(ws, x: float, y: float, delay_ms: int = 60):
@@ -2140,10 +2241,25 @@ async def bypass_cloudflare_cdp(
                             await _harvest_document_bodies(ws, result["responses"])
                             for _entry in (result.get("responses") or {}).values():
                                 _b = _entry.get("body")
-                                if isinstance(_b, str) and doi_lower in _b.lower():
-                                    doi_passed = True
-                                    doi_where = '捕获的响应'
-                                    break
+                                if not isinstance(_b, str):
+                                    continue
+                                if doi_lower not in _b.lower():
+                                    continue
+                                # ⚠️ The interstitial quotes the URL we asked
+                                # for, so it contains the DOI too. Measured on
+                                # APS: the captured document was 6,209 bytes of
+                                # Cloudflare challenge (_cf_chl_opt x7, "Just a
+                                # moment" x1) carrying the DOI 3 times -- and
+                                # this test declared the challenge passed in
+                                # round 1, so the widget was never clicked at
+                                # all. "The DOI is in this response" only means
+                                # we are through if the response is not itself
+                                # the challenge.
+                                if html_looks_like_bot_challenge(_b):
+                                    continue
+                                doi_passed = True
+                                doi_where = '捕获的响应'
+                                break
                         except Exception:
                             doi_passed = False
 
@@ -2165,6 +2281,11 @@ async def bypass_cloudflare_cdp(
                                     doi_where = '页面正文'
                             except Exception:
                                 doi_passed = False
+
+                    if doi_passed and is_challenge:
+                        # The served document looked fine but the tab is still
+                        # showing the interstitial: keep working the widget.
+                        doi_passed = False
 
                     if doi_passed:
                         # Say which copy answered. "已出现在页面" over a body
