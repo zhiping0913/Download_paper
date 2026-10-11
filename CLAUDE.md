@@ -106,6 +106,54 @@ python complete_paper_extraction.py --file dois.txt         # 批量（主程序
   frame 列表，跨域 frame 它看得见），实测同一次运行里它照常
   `✓ Cloudflare Turnstile 已通过`。坏的只有纯 CDP 预载这条路
 
+### ScienceDirect 的框也在 closed shadow root 里（Playwright 那一侧同样瞎）
+
+❌ **用户报告：SD 的框不会点，CDP 打开的和 Playwright 打开的都不点。** 已复现。
+
+- 📌 **复现条件是「全新空 profile」，不是伪造指纹**。⚠️ 伪造自动化指纹
+  （`--enable-automation` + HeadlessChrome UA）时 SD **直接给硬封页**
+  （"There was a problem providing the content you requested"，连框都不出）——
+  那条路什么都测不到。`FRESH_PROFILE=1` 的干净 Chrome 才会拿到 Turnstile
+- 📌 实测（Ray `a4903937089ce581`）：复选框在 **(295.6, 216) 300×65**，而
+  `document.querySelectorAll('iframe')` 是 **`[]`** —— 和 APS 一样是 closed shadow root
+- ❌ **`page.frames` 那条兜底也救不了**：`frame.frame_element()` 要通过 DOM 找到宿主
+  元素，closed root 同样挡住它。实测 `page.frames` 有 2 个 frame，而
+  `_find_turnstile_iframe()` 返回 **None** —— 整个 Playwright 路径没有可点的东西
+- ✅ 两侧现在共用 `chrome_session.find_challenge_widget_box(send)`：`send` 在预载那侧
+  是裸 websocket、在 Playwright 那侧是 `page.context.new_cdp_session(page).send`
+- ✅ 实测 Playwright 侧：`旧路（DOM/frame_element）: None` →
+  `新路: 300×65 @ (270.2, 216)` → `page.mouse.click` → **+2s 文章就出来了**
+
+### 点框不能只点一次（Cloudflare 会再发一个框）
+
+❌ **用户报告：APS 上点了第一次，Cloudflare 随后又要求点框，而程序不点了。**
+预载那侧有个一次性闸门 `turnstile_tried`，Playwright 那侧有 `click_attempts >= 3`
+上限 —— 两个都会在"还有框等着点"的时候停手。
+
+- 📌 现在两侧都**只由挑战预算收口**：框还在就继续点。预载那侧点完**重新上膛**
+  （`widget_rounds` 归零，于是下一次点击天然隔一轮，不会变成猛敲）；Playwright
+  那侧删掉 3 次上限，由 `deadline` 兜底
+- ✅ 实测 APS（`--enable-automation` + `FRESH_PROFILE=1`，故意拿不到放行）：
+  预载连点 **6** 次、Fallback 预载连点 **5** 次、Playwright 侧 **2** 次 ——
+  改之前这三处各只点 1 次
+- ⚠️ **顺带修掉我自己引入的一个假"通过"**：Playwright 侧判据是「之前见过 widget、
+  现在没了 → 通过」，而新加的「首次见到先等一轮」会在**一次都没点**的情况下把
+  `saw_widget` 置真，于是 CF 一重绘框就打印 `✓ 已通过`并把挡板页交给调用方
+  （实测出现过一次）。判据改成**点过至少一次**才算通过
+- 📌 生产里通常只要点一次；这条针对的是"对方不认账、反复发框"的情形 ——
+  多点几次的代价是几个鼠标事件，少点一次的代价是整篇文章
+
+### ⚠️ 未解决：框打勾了、clearance 到手了，页面有时就是不往下走
+
+- 📌 实测产线（`FRESH_PROFILE=1`）：点击 → `✓ Turnstile 验证已通过（iframe 消失）`
+  → `cf=✓`（clearance 已写入）→ **title 一直是 'Just a moment...'**，直到预算耗尽
+- 📌 同一个站、同一套坐标逻辑，**独立探针 3s 后点击 2s 内就进文章**。逐项试过都**不是**
+  原因：产线式轮询、`Page.navigate`（而非命令行启动导航）、点击后每秒重新 pierce
+- ❌ **我一度下结论说是 `doi.org` 重定向链的锅，那是 n=1 的错误结论** ——
+  同一条探针随后两次都通过（❌✅✅）。记在这里是为了别人不要再从这个方向出发
+- 📌 **卡住时产出不受影响**：捕获照常落盘，Fallback 之后照常提取；普通 profile 跑
+  同一篇是预载一次通过、md 600 行、10 图
+
 ## 目录名怎么清洗（`_clean_title_for_directory`）
 
 `{year}--{title}`，标题取 `metadata['_dir_title'] or metadata['title'] or crossref title`。
