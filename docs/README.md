@@ -146,6 +146,15 @@ export OUTPUT_DIR_DEFAULT=/home/coze/Download_paper/captured_data  # 完整输�
 仍是 150）。所以在 Windows 上把 `OUTPUT_DIR_DEFAULT` 指向较短的路径（如 `D:\papers`），
 能换来更完整的目录名；根目录深到连下限都放不下时，程序会明确告警而不是静默截断。
 
+**ScienceDirect 同理，而且 Playwright 那一侧也瞎**：`query_selector` 够不到 closed
+shadow root，`frame.frame_element()` 要走 DOM 找宿主元素所以一起失败（实测
+`page.frames` 有 2 个 frame，而查找器返回 None）。两侧现在共用
+`chrome_session.find_challenge_widget_box(send)` —— 预载那侧传裸 websocket，
+Playwright 那侧传 `page.context.new_cdp_session(page).send`。⚠️ 另有一个**未解决**的
+现象：框打勾、`cf_clearance` 到手之后，页面有时仍停在挑战页直到预算耗尽（随后走
+Fallback，产出不受影响）；轮询方式、`Page.navigate`、点击后重新 pierce、doi.org
+重定向链都逐项排除过，原因未明。
+
 **Cloudflare 的验证框在 closed shadow root 里**：页面脚本（`querySelectorAll` /
 `.shadowRoot`）**看不到**它，实测 APS 挑战页 `iframes=0`、`[id^="cf-chl"]` 是 0×0 的隐藏
 input，而截图里复选框就在 (146,304)。所以查找走 CDP 的 `DOM.getDocument(pierce=true)`
