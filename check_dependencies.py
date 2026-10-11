@@ -88,15 +88,19 @@ def check_system_tools(c: Checker):
     else:
         c.log_fail("pandoc — not found in PATH (install: sudo apt install pandoc)")
 
-    # libmagic
+    # MIME sniffing backends. The project prefers python-magic and can fall
+    # back to the system `file` executable when libmagic is not loadable.
     try:
         import ctypes.util
         libmagic = ctypes.util.find_library("magic")
         if libmagic:
             c.log_ok(f"libmagic — {libmagic}")
         else:
-            # python-magic may bundle its own; verify via import test below
-            c.log_ok("libmagic — (checked via python-magic)")
+            file_path = shutil.which("file")
+            if file_path:
+                c.log_ok(f"MIME fallback — file ({file_path})")
+            else:
+                c.log_warn("libmagic/file — neither detected; compatibility check below will decide")
     except Exception:
         c.log_warn("libmagic — could not probe; python-magic import will decide")
 
@@ -108,7 +112,7 @@ def check_python_packages(c: Checker):
         "playwright": "playwright",
         "bs4": "beautifulsoup4",
         "pypandoc": "pypandoc",
-        "magic": "python-magic",
+        "magic_compat": "MIME detector",
         "requests": "requests",
     }
 
@@ -116,7 +120,13 @@ def check_python_packages(c: Checker):
         try:
             mod = __import__(import_name)
             ver = getattr(mod, "__version__", "?")
-            c.log_ok(f"{pkg_name} — {ver}")
+            if import_name == "magic_compat":
+                if mod.BACKEND_NAME == "unavailable":
+                    c.log_fail(f"{pkg_name} — no usable python-magic or file backend")
+                else:
+                    c.log_ok(f"{pkg_name} — backend={mod.BACKEND_NAME}")
+            else:
+                c.log_ok(f"{pkg_name} — {ver}")
         except ImportError:
             c.log_fail(f"{pkg_name} — not installed (pip install {pkg_name})")
 
@@ -140,6 +150,8 @@ def check_browsers(c: Checker):
 
     # Headed Chrome (for --force-headed path, optional)
     chrome_candidates = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        str(Path.home() / "Applications" / "Google Chrome.app" / "Contents" / "MacOS" / "Google Chrome"),
         "/opt/google/chrome/chrome",
         "/usr/bin/google-chrome",
         "/usr/bin/chromium-browser",
@@ -151,10 +163,8 @@ def check_browsers(c: Checker):
             chrome_path = path
             break
 
-    if chrome_path and chrome_path == "/opt/google/chrome/chrome":
+    if chrome_path:
         c.log_ok(f"chrome — {chrome_path}")
-    elif chrome_path:
-        c.log_warn(f"chrome — found at {chrome_path} (expected /opt/google/chrome/chrome)")
     else:
         c.log_warn("chrome — not found (headed mode will not work; headless-only)")
 
