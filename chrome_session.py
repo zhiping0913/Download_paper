@@ -1923,7 +1923,7 @@ async def bypass_cloudflare_cdp(
             extended = False
             challenge_detected = False
             challenge_rounds = 0  # 挑战页已经过了多少轮（用于判断 iframe 是否延迟加载）
-            turnstile_tried = False
+            turnstile_clicks = 0
             widget_rounds = 0
             blank_iframe_rounds = 0
             blank_iframe_reported = False
@@ -2165,7 +2165,7 @@ async def bypass_cloudflare_cdp(
                     # 检测到挑战页就尝试找 Turnstile iframe 并点击
                     if is_challenge:
                         turnstile_info = await _find_turnstile_iframe_cdp(ws)
-                        if turnstile_info.get("found") and not turnstile_tried:
+                        if turnstile_info.get("found"):
                             # ⚠️ Not on the first sighting. A widget that has
                             # only just been inserted is not ready: measured on
                             # ScienceDirect with a clean profile, clicking ~0.5s
@@ -2178,9 +2178,21 @@ async def bypass_cloudflare_cdp(
                             if widget_rounds < 2:
                                 print("  ⏳  Turnstile widget 刚出现，等一轮再点")
                             else:
-                                print(f"  🎯  发现 Turnstile widget，尝试自动点击...")
-                                turnstile_tried = True
+                                turnstile_clicks += 1
+                                print(f"  🎯  发现 Turnstile widget，尝试自动点击"
+                                      f"（第 {turnstile_clicks} 轮）...")
                                 await _auto_click_turnstile_cdp(ws, timeout_s=90.0)
+                                # ⚠️ Re-arm instead of latching. Cloudflare can
+                                # tick the box, take the token and then render a
+                                # fresh widget -- measured on APS, where the
+                                # second box went unclicked for the rest of the
+                                # budget because a one-shot flag said we had
+                                # already tried. Production usually needs one
+                                # click; the cost of being wrong about that is
+                                # the whole challenge. Zeroing the counter also
+                                # means the next click waits a round, so this
+                                # cannot turn into hammering.
+                                widget_rounds = 0
                         elif not turnstile_info.get("found"):
                             # No Turnstile iframe we recognise. That is not the
                             # same as "no widget": measured on Wiley's
