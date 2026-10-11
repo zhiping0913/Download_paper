@@ -525,7 +525,7 @@ def sniffed_mime(data: bytes) -> str:
     if not data:
         return ''
     try:
-        import magic
+        from magic_compat import magic
         return magic.from_buffer(data[:4096], mime=True) or ''
     except Exception:
         return ''

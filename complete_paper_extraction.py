@@ -14,7 +14,7 @@
 import argparse
 import json
 import asyncio
-import magic
+from magic_compat import magic
 import os
 import random
 import re
