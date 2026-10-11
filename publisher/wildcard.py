@@ -6,6 +6,8 @@ Nature, IOP, Springer, Elsevier, and other publishers can compose
 into their own handlers.
 """
 
+from __future__ import annotations
+
 import functools
 import re
 from html import unescape

@@ -7,6 +7,9 @@ playwright>=1.40.0
 websockets>=15.0,<16
 beautifulsoup4>=4.12.0
 requests>=2.31.0
+# Apple's system Python 3.9 is linked to LibreSSL; urllib3 2.x intentionally
+# rejects that TLS stack. This marker does not constrain Linux or Windows.
+urllib3<2; platform_system == "Darwin" and python_version < "3.10"
 pypandoc>=1.12
 python-magic-bin>=0.4.14; platform_system == "Windows"
 python-magic>=0.4.27; platform_system != "Windows"
