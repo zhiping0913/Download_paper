@@ -45,6 +45,7 @@ from chrome_session import (
     launch_chrome,
     seed_profile,
     sweep_stale_profiles,
+    find_challenge_widget_box,
 )
 try:
     from chrome_session import bypass_cloudflare_cdp, has_cf_clearance_cdp
@@ -975,6 +976,53 @@ async def _find_turnstile_iframe(page):
     return None, None
 
 
+async def _challenge_widget_box(page, cdp=None) -> Optional[dict]:
+    """Where the challenge checkbox is, as {x, y, width, height, cx, cy, src}.
+
+    ⚠️ The DOM routes below answer ``None`` on Cloudflare's current widget and
+    that is not an edge case -- it is what ScienceDirect and APS ship today.
+    Measured on ScienceDirect (fresh profile, no spoofing, Ray
+    a4903937089ce581): the interstitial said "Are you a robot?" with the
+    checkbox plainly on screen at (295.6, 216) 300x65, while
+
+        document.querySelectorAll('iframe')      -> []   (zero)
+
+    because the widget sits in a **closed** shadow root. ``query_selector``
+    cannot pierce it, and ``frame.frame_element()`` has to reach the owner
+    element through the DOM, so the frame-tree fallback fails on the same
+    wall. The whole Playwright path therefore found nothing to click.
+
+    CDP is not page script and does see closed roots, so that is the last
+    route here -- the same one the pure-CDP preload uses, via the same
+    function, so the two paths cannot drift apart.
+    """
+    element, _frame = await _find_turnstile_iframe(page)
+    if element is not None:
+        try:
+            box = await element.bounding_box()
+        except Exception:
+            box = None
+        if box and box.get('width', 0) >= 1 and box.get('height', 0) >= 1:
+            return {**box,
+                    'cx': box['x'] + 30,
+                    'cy': box['y'] + box['height'] / 2,
+                    'src': '(element)'}
+
+    if cdp is None:
+        return None
+    try:
+        info = await find_challenge_widget_box(
+            lambda method, params=None: cdp.send(method, params or {}))
+    except Exception:
+        return None
+    if not info.get('found'):
+        return None
+    rect = info['rect']
+    return {'x': rect['x'], 'y': rect['y'],
+            'width': rect['width'], 'height': rect['height'],
+            'cx': info['cx'], 'cy': info['cy'], 'src': info.get('src') or ''}
+
+
 async def auto_solve_bot_challenge(
     page,
     timeout_s: float = 30.0,
@@ -1013,9 +1061,15 @@ async def auto_solve_bot_challenge(
     # Give the page a moment to render any deferred Cloudflare widget.
     await asyncio.sleep(1)
 
+    cdp = None
+    try:
+        cdp = await page.context.new_cdp_session(page)
+    except Exception:
+        cdp = None   # non-Chromium or a closed page: DOM routes only
+
     while loop.time() < deadline:
-        iframe, frame = await _find_turnstile_iframe(page)
-        if iframe is None:
+        box = await _challenge_widget_box(page, cdp)
+        if box is None:
             if saw_widget:
                 # Widget was there earlier and is now gone → success.
                 print("  ✓ Cloudflare Turnstile 已通过")
@@ -1031,23 +1085,23 @@ async def auto_solve_bot_challenge(
             await asyncio.sleep(1)
             continue
 
-        saw_widget = True
-        try:
-            box = await iframe.bounding_box()
-        except Exception:
-            box = None
-
-        if not box or box['width'] < 1 or box['height'] < 1:
-            await asyncio.sleep(1)
+        if not saw_widget:
+            # First sighting: let the widget finish initialising. Measured on
+            # ScienceDirect (clean profile): a click ~0.5s after the widget
+            # appeared left the checkbox unticked and the page stuck on "Are
+            # you a robot?", while the same click 8s in cleared the challenge
+            # and the article rendered in 2s (2/2 runs).
+            saw_widget = True
+            await asyncio.sleep(2)
             continue
 
-        # Click position — the checkbox sits on the left side of the widget
-        # at x≈30 in every Turnstile size (compact/normal/managed). Y is
-        # simply the vertical centre of the iframe.
-        x = box['x'] + 30
-        y = box['y'] + box['height'] / 2
+        # The finder supplies the point: left+30 is the checkbox in every
+        # Turnstile size Cloudflare ships, and the pierced route hands back
+        # the same convention.
+        x = box['cx']
+        y = box['cy']
         click_attempts += 1
-        frame_url = (frame.url if frame else '(inline)')[:80]
+        frame_url = (box.get('src') or '(inline)')[:80]
         print(f"  🤖 检测到 Cloudflare 挑战 iframe ({box['width']:.0f}x{box['height']:.0f}) "
               f"[{frame_url}]，点击 @ ({x:.0f}, {y:.0f})  [第 {click_attempts} 次]")
         try:
@@ -1062,7 +1116,7 @@ async def auto_solve_bot_challenge(
         # page navigating away (e.g. to the real article).
         for _ in range(6):
             await asyncio.sleep(1)
-            gone, _ = await _find_turnstile_iframe(page)
+            gone = await _challenge_widget_box(page, cdp)
             if gone is None:
                 print("  ✓ Cloudflare Turnstile 已通过")
                 # Give the real article page a moment to settle so the

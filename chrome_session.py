@@ -1266,6 +1266,55 @@ def _walk_dom_for_iframes(node: dict, out: list) -> None:
         _walk_dom_for_iframes(content_doc, out)
 
 
+async def find_challenge_widget_box(send) -> dict:
+    """Locate the challenge widget through CDP, closed shadow roots included.
+
+    *send* is any awaitable ``send(method, params)``: the raw websocket on the
+    pure-CDP preload path, ``page.context.new_cdp_session(page).send`` on the
+    Playwright path. Both sides need the identical answer, and a second copy
+    of this walk would drift the first time a vendor changes its markup.
+    """
+    try:
+        await send("DOM.enable", {})
+        doc = await send("DOM.getDocument", {"depth": -1, "pierce": True})
+    except Exception as e:
+        return {"found": False, "error": str(e)}
+
+    frames: list = []
+    _walk_dom_for_iframes(doc.get("root") or {}, frames)
+
+    for node_id, attrs in frames:
+        src = (attrs.get('src') or '').lower()
+        title = (attrs.get('title') or '').lower()
+        if not (any(h in src for h in _CHALLENGE_IFRAME_SRC_HINTS)
+                or 'challenge' in title or 'captcha' in title):
+            continue
+        try:
+            box = await send("DOM.getBoxModel", {"nodeId": node_id})
+        except Exception:
+            continue
+        model = box.get("model") or {}
+        quad = model.get("content") or []
+        width = model.get("width") or 0
+        height = model.get("height") or 0
+        # Same size floor as the page-side finder: a 0x0 node is the hidden
+        # response input, not the widget.
+        if len(quad) < 8 or width < 20 or height < 10:
+            continue
+        left, top, bottom = quad[0], quad[1], quad[5]
+        narrow = width < 120
+        return {
+            "found": True, "selector": "pierced iframe", "index": -1,
+            "rect": {"x": left, "y": top, "width": width, "height": height,
+                     "left": left, "top": top,
+                     "right": left + width, "bottom": top + height},
+            "cx": left + width / 2 if narrow else left + 32,
+            "cy": (top + bottom) / 2,
+            "src": attrs.get('src') or '',
+        }
+    return {"found": False}
+
+
 async def _find_challenge_iframe_pierced(ws) -> dict:
     """Find the challenge widget through CDP's DOM tree instead of page JS.
 
@@ -1290,45 +1339,8 @@ async def _find_challenge_iframe_pierced(ws) -> dict:
     rectangle in the screenshot. Clicking that point put the page into
     "Verifying you are human..." , so the coordinates are real.
     """
-    try:
-        await _send(ws, "DOM.enable")
-        doc = await _send(ws, "DOM.getDocument", {"depth": -1, "pierce": True})
-    except Exception as e:
-        return {"found": False, "error": str(e)}
-
-    frames: list = []
-    _walk_dom_for_iframes(doc.get("root") or {}, frames)
-
-    for node_id, attrs in frames:
-        src = (attrs.get('src') or '').lower()
-        title = (attrs.get('title') or '').lower()
-        if not (any(h in src for h in _CHALLENGE_IFRAME_SRC_HINTS)
-                or 'challenge' in title or 'captcha' in title):
-            continue
-        try:
-            box = await _send(ws, "DOM.getBoxModel", {"nodeId": node_id})
-        except Exception:
-            continue
-        model = box.get("model") or {}
-        quad = model.get("content") or []
-        width = model.get("width") or 0
-        height = model.get("height") or 0
-        # Same size floor as the page-side finder: a 0x0 node is the hidden
-        # response input, not the widget.
-        if len(quad) < 8 or width < 20 or height < 10:
-            continue
-        left, top, bottom = quad[0], quad[1], quad[5]
-        narrow = width < 120
-        return {
-            "found": True, "selector": "pierced iframe", "index": -1,
-            "rect": {"x": left, "y": top, "width": width, "height": height,
-                     "left": left, "top": top,
-                     "right": left + width, "bottom": top + height},
-            "cx": left + width / 2 if narrow else left + 32,
-            "cy": (top + bottom) / 2,
-            "src": attrs.get('src') or '',
-        }
-    return {"found": False}
+    return await find_challenge_widget_box(
+        lambda method, params=None: _send(ws, method, params))
 
 
 async def _find_turnstile_iframe_cdp(ws) -> dict:
@@ -1912,6 +1924,7 @@ async def bypass_cloudflare_cdp(
             challenge_detected = False
             challenge_rounds = 0  # 挑战页已经过了多少轮（用于判断 iframe 是否延迟加载）
             turnstile_tried = False
+            widget_rounds = 0
             blank_iframe_rounds = 0
             blank_iframe_reported = False
             last_status = ""
@@ -2153,9 +2166,21 @@ async def bypass_cloudflare_cdp(
                     if is_challenge:
                         turnstile_info = await _find_turnstile_iframe_cdp(ws)
                         if turnstile_info.get("found") and not turnstile_tried:
-                            print(f"  🎯  发现 Turnstile widget，尝试自动点击...")
-                            turnstile_tried = True
-                            await _auto_click_turnstile_cdp(ws, timeout_s=90.0)
+                            # ⚠️ Not on the first sighting. A widget that has
+                            # only just been inserted is not ready: measured on
+                            # ScienceDirect with a clean profile, clicking ~0.5s
+                            # after it appeared left the checkbox unticked and
+                            # the page on "Are you a robot?" for the rest of the
+                            # budget, while the identical click 8s in cleared it
+                            # and the article rendered within 2s (2/2 runs).
+                            # One extra poll round (~2s) is the whole fix.
+                            widget_rounds += 1
+                            if widget_rounds < 2:
+                                print("  ⏳  Turnstile widget 刚出现，等一轮再点")
+                            else:
+                                print(f"  🎯  发现 Turnstile widget，尝试自动点击...")
+                                turnstile_tried = True
+                                await _auto_click_turnstile_cdp(ws, timeout_s=90.0)
                         elif not turnstile_info.get("found"):
                             # No Turnstile iframe we recognise. That is not the
                             # same as "no widget": measured on Wiley's
