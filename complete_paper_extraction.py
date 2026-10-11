@@ -1070,10 +1070,19 @@ async def auto_solve_bot_challenge(
     while loop.time() < deadline:
         box = await _challenge_widget_box(page, cdp)
         if box is None:
-            if saw_widget:
-                # Widget was there earlier and is now gone → success.
+            # ⚠️ "Gone" only means passed if we actually clicked it. Having
+            # merely *seen* a widget that then disappeared proves nothing --
+            # Cloudflare re-renders the box between attempts, and reporting
+            # success there would hand the caller an interstitial while
+            # claiming the challenge was solved.
+            if click_attempts:
                 print("  ✓ Cloudflare Turnstile 已通过")
                 return True
+            if saw_widget:
+                # Seen but never clicked (it vanished during the settle wait):
+                # keep looking rather than calling it a win.
+                await asyncio.sleep(1)
+                continue
             # No widget yet. Give up quickly if we've been in the initial
             # window for long enough with no widget — most pages have no
             # challenge and we don't want to hang each PDF/figure download
@@ -1127,10 +1136,11 @@ async def auto_solve_bot_challenge(
                     pass
                 return True
 
-        # Cap total attempts so we don't burn the whole timeout in a loop
-        # on a stuck widget.
-        if click_attempts >= 3:
-            break
+        # ⚠️ No attempt cap. Cloudflare can accept one click and then put up
+        # a fresh widget; stopping at three left the later ones unclicked
+        # while the budget ran out anyway. ``deadline`` is what bounds this,
+        # and each round re-finds the widget, so a box that stays gone ends
+        # the loop through the "widget disappeared" branch above.
 
     if saw_widget:
         print(f"  ⚠️  Cloudflare 挑战未在 {timeout_s:.0f}s 内自动通过 — "
