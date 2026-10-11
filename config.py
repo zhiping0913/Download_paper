@@ -2,7 +2,7 @@
 Download_paper 项目配置文件
 
 存储默认配置，所有脚本都使用这个文件中的配置。
-支持跨平台 (Linux / Windows) 自动检测 Chrome 路径。
+支持跨平台 (Linux / macOS / Windows) 自动检测 Chrome 路径。
 """
 
 import os
@@ -15,11 +15,13 @@ from pathlib import Path
 # 平台检测
 # ============================================================================
 
-IS_WINDOWS = platform.system() == 'Windows'
+SYSTEM = platform.system()
+IS_WINDOWS = SYSTEM == 'Windows'
+IS_MACOS = SYSTEM == 'Darwin'
 
 
 def _detect_chrome_path() -> str:
-    """Auto-detect Chrome executable path across Windows and Linux."""
+    """Auto-detect Chrome executable path across Windows, macOS and Linux."""
     env_path = os.environ.get('CHROME_PATH', '').strip()
     if env_path:
         env_path = os.path.expanduser(os.path.expandvars(env_path))
@@ -39,6 +41,11 @@ def _detect_chrome_path() -> str:
                 continue
             candidates.append(os.path.join(base, 'Google', 'Chrome', 'Application', 'chrome.exe'))
         candidates.append('C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe')
+    elif IS_MACOS:
+        candidates = [
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            str(Path.home() / 'Applications' / 'Google Chrome.app' / 'Contents' / 'MacOS' / 'Google Chrome'),
+        ]
     else:
         candidates = [
             '/opt/google/chrome/chrome',
@@ -53,7 +60,7 @@ def _detect_chrome_path() -> str:
             return path
 
     # Fallback
-    return 'google-chrome' if not IS_WINDOWS else 'chrome.exe'
+    return 'chrome.exe' if IS_WINDOWS else 'google-chrome'
 
 
 def _detect_chrome_user_data_dir() -> str:
@@ -68,8 +75,9 @@ def _detect_chrome_user_data_dir() -> str:
         if local_appdata:
             return os.path.join(local_appdata, 'Google', 'Chrome', 'User Data')
         return str(Path.home() / 'AppData' / 'Local' / 'Google' / 'Chrome' / 'User Data')
-    else:
-        return str(Path.home() / '.config' / 'google-chrome')
+    if IS_MACOS:
+        return str(Path.home() / 'Library' / 'Application Support' / 'Google' / 'Chrome')
+    return str(Path.home() / '.config' / 'google-chrome')
 
 
 # ============================================================================
@@ -110,7 +118,7 @@ def _default_chrome_source_dir() -> str:
         if local_appdata:
             return os.path.join(local_appdata, 'Google', 'Chrome', 'User Data')
         return str(Path.home() / 'AppData' / 'Local' / 'Google' / 'Chrome' / 'User Data')
-    if sys.platform == 'darwin':
+    if IS_MACOS:
         return str(Path.home() / 'Library' / 'Application Support' / 'Google' / 'Chrome')
     return str(Path.home() / '.config' / 'google-chrome')
 
@@ -187,4 +195,4 @@ BATCH_SLEEP_MAX = int(os.environ.get("BATCH_SLEEP_MAX", 60))
 print("✓ 配置已加载")
 print(f"  - Chrome: {CHROME_PATH}")
 print(f"  - Chrome 真实 profile: {CHROME_USER_DATA_DIR}")
-print(f"  - 平台: {'Windows' if IS_WINDOWS else 'Linux'}")
+print(f"  - 平台: {SYSTEM}")
