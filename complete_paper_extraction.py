@@ -1064,8 +1064,12 @@ async def auto_solve_bot_challenge(
     cdp = None
     try:
         cdp = await page.context.new_cdp_session(page)
-    except Exception:
-        cdp = None   # non-Chromium or a closed page: DOM routes only
+    except Exception as e:
+        # Say it. Without a CDP session every lookup is DOM-only, which on
+        # Cloudflare's current widget means permanently blind -- and the loop
+        # would then report "no widget here" rather than "I cannot see".
+        cdp = None
+        print(f"  ⚠️  无法为该页建立 CDP 会话，验证框查找将退化为 DOM 可见部分: {e}")
 
     while loop.time() < deadline:
         box = await _challenge_widget_box(page, cdp)
@@ -1187,6 +1191,27 @@ async def auto_solve_bot_challenge(
         print(f"  ⏱️   轮询间隔: {check_interval:.1f}s")
         while loop.time() < cf_deadline:
             await asyncio.sleep(check_interval)
+
+            # ⚠️ Keep looking for a widget here too. Reaching this branch only
+            # means none had appeared within ``initial_poll_s`` (4s) -- not
+            # that this challenge has no checkbox. Measured on Science: the
+            # supplemental download hit a "just a moment" page, the widget was
+            # not up yet when the initial window closed, and the run then sat
+            # in this loop for the whole 60s without ever looking again.
+            late_box = await _challenge_widget_box(page, cdp)
+            if late_box is not None:
+                click_attempts += 1
+                print(f"  🤖 JS 挑战页上出现了验证框 "
+                      f"({late_box['width']:.0f}x{late_box['height']:.0f})，"
+                      f"点击 @ ({late_box['cx']:.0f}, {late_box['cy']:.0f})"
+                      f"  [第 {click_attempts} 次]")
+                try:
+                    await page.mouse.move(late_box['cx'], late_box['cy'])
+                    await asyncio.sleep(0.1)
+                    await page.mouse.click(late_box['cx'], late_box['cy'], delay=60)
+                except Exception as e:
+                    print(f"  ⚠️  点击失败: {e}")
+
             # Most reliable signal: page title is no longer a challenge title.
             # URL-based checks fail for sites like AIP that serve the challenge
             # directly on the article URL (same URL, 403 + challenge body).
