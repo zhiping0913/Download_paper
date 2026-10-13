@@ -2307,6 +2307,18 @@ async def download_pdf(
         # click from -- so it stays inert when no referer is known.
         ladder = _fetch_ladder('pdf', default=('tab', 'fresh', 'referer'))
 
+        # ❌ 没有浏览器时 `tab` 那一层不是「排第一」而是**根本不存在**，而它排在
+        # 第一位就把 `fresh` / `referer` 一起堵死了：旧代码走到「无可用浏览器
+        # 上下文」那句直接 return None —— 于是 **有头的 pdf_link 直连模式一次
+        # 下载都发不出去**（整条路径刻意不建 Playwright 浏览器，只打算起一次性
+        # Chrome，函数自己的注释也这么写着）。实测 Sci-Hub + APS：
+        # `⚠️ 无可用浏览器上下文，无法回退导航下载` 连报 5 次、每次隔 90 秒，
+        # 而 `fresh` 那层从没被调用过。把这一层**摘掉**而不是拿它否掉整条阶梯。
+        if page is None and context is None and 'tab' in ladder:
+            ladder = tuple(t for t in ladder if t != 'tab')
+            print("    ↪ 没有浏览器上下文，跳过 tab 层 → "
+                  f"{'/'.join(ladder) or '（阶梯为空）'}")
+
         try:
             pdf_referer = page.url if page is not None else None
         except Exception:
@@ -3581,6 +3593,7 @@ async def complete_extraction_workflow(
     pdf_only: bool = False,
     pdf_link: str = None,
     referer: str = None,
+    use_scihub: bool = False,
 ):
     """完整提取工作流 - Phase 4/5 重构版本
 
@@ -3604,6 +3617,10 @@ async def complete_extraction_workflow(
               跳过 Phase 0 预检和 doi.org 跳转，元数据（含目录名要的标题/年份）
               全部取自 Step 0 那一次 Crossref 响应，只为取文件起一次浏览器。
               隐含 pdf_only=True。
+        use_scihub: 从 Sci-Hub 取 PDF。先问镜像要出这篇的 PDF 地址，然后走的就是
+              pdf_link 那条路 —— 所以同样**隐含 pdf_only=True**：Sci-Hub 上没有
+              可提取的论文页面，元数据全部来自 Crossref（标题缺失时才用 Sci-Hub
+              自己印的引用串补一下）。显式给了 pdf_link 时它让位。
 
     New architecture:
     1. Phase 0 (可选): 使用无头浏览器快速预检 (除非force_headed=True)
@@ -4136,6 +4153,29 @@ async def complete_extraction_workflow(
     else:
         print("  ⚠️  Crossref未返回数据")
     print()
+
+    # ========== Sci-Hub：问镜像要 PDF 地址，然后就是 pdf_link 那条路 ==========
+    # ⚠️ 显式给的 pdf_link 优先 —— 那是调用方已经知道的答案，没有理由再去问镜像。
+    if use_scihub and not pdf_link:
+        from scihub import resolve_scihub_pdf_url, complete_scihub_title
+        # 镜像都在 Cloudflare 后面，所以默认有头（DP_SCIHUB_HEADLESS=1 可改）；
+        # 这一层走取数阶梯的一次性 Chrome，与别处访问出版商页面是同一套。
+        _sh_headless = (os.environ.get('DP_SCIHUB_HEADLESS', '0').strip().lower()
+                        in ('1', 'true', 'yes', 'on')) and not force_headed
+        pdf_link, scihub_page, scihub_citation = await resolve_scihub_pdf_url(
+            doi, headless=_sh_headless)
+        if not pdf_link:
+            print("  ⛔ Sci-Hub 没有这篇的 PDF —— 不回落到出版商页面")
+            print("     （--scihub 是一条明确的指令，静默改道会让产出说不清来源）")
+            return None
+        # 标题是目录名的原料，缺了就退化成 0000--paper。Crossref 没给才用引用串补。
+        _filled = complete_scihub_title(crossref_data, scihub_citation)
+        if _filled:
+            crossref_data['title'] = _filled
+            print(f"  ✓ 标题由 Sci-Hub 引用串补全: {_filled[:70]}")
+        # PDF 和查看页不在同一台主机上，把查看页当来路给下去（阶梯最后一层会用）
+        if not referer:
+            referer = scihub_page
 
     # ========== pdf_link 直连：跳过预检与 doi.org，只取 PDF ==========
     # JSON 里已经给了 PDF 地址，就没有任何理由再去访问出版商的论文页面。
@@ -5055,7 +5095,7 @@ JSON 格式:
             type=str,
             metavar='FILE',
             help='含 article 列表的 JSON 文件 (每篇必须有 "doi"，可选 "link"、'
-                 '"pdf_link"、"referer" 和 "header" 字典)。给了 "pdf_link" 就跳过'
+                 '"pdf_link"、"referer"、"scihub" 和 "header" 字典)。给了 "pdf_link" 就跳过'
                  '预检和 doi.org 直接下载该 PDF；"referer" 供取数阶梯最后一层'
                  '点击跳转使用（缺省读 header.referer）。'
                  '见 examples/examples.json 的格式。'
@@ -5081,6 +5121,16 @@ JSON 格式:
             default=False,
             help='只要 PDF：照常访问论文页面取 PDF 链接并下载，但跳过图片/补充材料'
                  '下载和 Markdown 生成 (metadata.json / crossref.json 照常写)'
+        )
+
+        parser.add_argument(
+            '--scihub',
+            action='store_true',
+            default=False,
+            help='从 Sci-Hub 取 PDF（隐含 --pdf-only：Sci-Hub 上没有可提取的论文'
+                 '页面）。元数据全部来自 Crossref，标题缺失时用 Sci-Hub 自己印的'
+                 '引用串补全。镜像列表用 DP_SCIHUB_MIRRORS 覆盖（逗号分隔）；'
+                 '也可在 --json 里逐篇写 "scihub": true'
         )
 
         parser.add_argument(
@@ -5114,6 +5164,12 @@ JSON 格式:
         # whatever DP_SUPPLEMENTAL said at import time. Rebinding the module
         # global is what the call site reads -- it imported the value, not
         # the module.
+        # Sci-Hub 只给一个 PDF，没有论文页面可提取 —— 所以它隐含 pdf-only，
+        # 并且明确打印出来：一个悄悄改变模式的开关比没有更糟。
+        if args.scihub and not args.pdf_only:
+            args.pdf_only = True
+            print("🔓 --scihub 隐含 --pdf-only（Sci-Hub 上没有可提取的论文页面）\n")
+
         if args.pdf is not None:
             globals()['DP_PDF'] = args.pdf
             os.environ['DP_PDF'] = '1' if args.pdf else '0'
@@ -5223,6 +5279,8 @@ JSON 格式:
                     if article.get('pdf_link'):
                         print(f"  ↪ 使用 pdf_link（跳过预检与 doi.org）: "
                               f"{article['pdf_link']}")
+                    if article.get('scihub') or args.scihub:
+                        print("  ↪ 从 Sci-Hub 取 PDF（元数据来自 Crossref）")
                     if article.get('header'):
                         print(f"  ↪ 附加 header keys: {list(article['header'].keys())}")
                     print(f"{'='*80}\n")
@@ -5236,9 +5294,12 @@ JSON 格式:
                             link=article.get('link'),
                             extra_headers=article.get('header'),
                             # 给了 pdf_link 就没有 markdown 可生成，隐含 pdf-only
-                            pdf_only=args.pdf_only or bool(article.get('pdf_link')),
+                            pdf_only=(args.pdf_only
+                                      or bool(article.get('pdf_link'))
+                                      or bool(article.get('scihub'))),
                             pdf_link=article.get('pdf_link'),
                             referer=article.get('referer'),
+                            use_scihub=args.scihub or bool(article.get('scihub')),
                         )
                         if md_path:
                             success_count += 1

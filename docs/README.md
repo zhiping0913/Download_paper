@@ -939,3 +939,36 @@ meta 里放裸 DOI），用 `wildcard.generate_reference_text_from_crossref()` �
 9. 保持 `extract_all()` 返回统一结构，避免修改主流程。
 
 核心原则：`complete_paper_extraction.py` 保持 publisher 不敏感；具体网页结构、API 响应、HTML 转 Markdown 的逻辑都放在各自的 `PublisherHandler` 中。
+
+## Sci-Hub 取 PDF（`--scihub`）
+
+`--scihub` 让脚本从 Sci-Hub 镜像取 PDF，**隐含 `--pdf-only`**（镜像上只有一个装着
+别人 PDF 的查看器，没有可提取的论文页面）。两步：
+
+1. `scihub.resolve_scihub_pdf_url(doi)` 依次问镜像 `{mirror}/{doi}`，从答复里读出
+   PDF 地址（优先「保存」按钮那个带 `?download=true` 的，其次查看器的
+   `<embed id="pdf">`）。镜像页**通过浏览器访问**（取数阶梯的一次性 Chrome），
+   因为镜像在 DDoS-Guard / Cloudflare 后面
+2. 地址交给 `_pdf_link_direct_download()` —— 和 `--json` 里给 `pdf_link` 完全同一条
+   路：元数据全部来自 Step 0 那一次 Crossref 响应，只为取文件起一次浏览器
+
+- 元数据以 **Crossref 为记录**；标题缺失时才用 Sci-Hub 页面上印的引用串补全
+  （`complete_scihub_title`）—— 目录名的原料是标题，缺了会退化成 `0000--paper`
+- 镜像列表：`DP_SCIHUB_MIRRORS`（逗号分隔，默认 sci-hub.se / .st / .ru）；
+  `DP_SCIHUB_HEADLESS=1` 改为无头取镜像页（默认有头）
+- 也可在 `--json` 里逐篇写 `"scihub": true`
+- 拿不到 PDF 地址就**返回 None，不回落到出版商页面**
+
+```bash
+python complete_paper_extraction.py --doi "10.1103/PhysRev.47.777" --scihub
+DP_SCIHUB_MIRRORS=https://sci-hub.st python complete_paper_extraction.py --file dois.txt --scihub
+```
+
+### 镜像的「Are you a robot?」页
+
+DDoS-Guard 后面的镜像会先给一页问句（`<title>Sci-Hub: are you are robot?</title>`），
+页面上只有一个 `<div class="answer" onclick="check()">No</div>`。点它会启动 Altcha
+的工作量证明（页面内算 SHA-256，POST 到 `/captcha/solution/<id>`，成功后自动重载）
+—— 不需要人解题，只需要那一下点击。所以镜像页**不走 `fetch_html_via_ladder`**，
+而是直接驱动一次性 Chrome（`scihub._fetch_scihub_html` / `_answer_robot_question`），
+用 CDP 点 `No` 再等页面重载。这页上没有 Turnstile 框，本仓的挑战点击逻辑对它无效。
