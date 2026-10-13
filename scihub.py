@@ -36,9 +36,12 @@ from core.utilities import html_looks_like_bot_challenge
 
 # Mirrors come and go; this is a starting order, not a promise. Override the
 # whole list with DP_SCIHUB_MIRRORS (comma separated, scheme optional).
+# .st goes first because .se is unreachable from here (user report, measured):
+# an unreachable mirror still costs a Chrome launch plus the challenge budget
+# before it can report nothing.
 DEFAULT_SCIHUB_MIRRORS = (
-    'https://sci-hub.se',
     'https://sci-hub.st',
+    'https://sci-hub.se',
     'https://sci-hub.ru',
 )
 

@@ -954,7 +954,9 @@ meta 里放裸 DOI），用 `wildcard.generate_reference_text_from_crossref()` �
 
 - 元数据以 **Crossref 为记录**；标题缺失时才用 Sci-Hub 页面上印的引用串补全
   （`complete_scihub_title`）—— 目录名的原料是标题，缺了会退化成 `0000--paper`
-- 镜像列表：`DP_SCIHUB_MIRRORS`（逗号分隔，默认 sci-hub.se / .st / .ru）；
+- 镜像列表：`DP_SCIHUB_MIRRORS`（逗号分隔，默认 sci-hub.**st** / .se / .ru ——
+  `.st` 排第一是用户实测结果：这里访问不到 `.se`，而一个连不上的镜像照样要付
+  一次 Chrome 启动 + 整个挑战预算才能报出「什么都没有」）；
   `DP_SCIHUB_HEADLESS=1` 改为无头取镜像页（默认有头）
 - 也可在 `--json` 里逐篇写 `"scihub": true`
 - 拿不到 PDF 地址就**返回 None，不回落到出版商页面**
