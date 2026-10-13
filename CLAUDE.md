@@ -1857,6 +1857,25 @@ Navigator.prototype 上: function get webdriver() { [native code] }
 - ⚠️ APS 的 `fulltext_data` 是 dict 不是 str，所以主流程**不写 `page.html`**，
   目录里只有 `page_raw.html`
 
+#### ❌ 勘误类短文（没有摘要）会让整篇崩掉：`len(None)`
+
+用户实测 `10.1103/physrevstab.3.029901`（Erratum）：
+`TypeError: object of type 'NoneType' has no len()`，`extract_all` 整个失败、
+**一篇本来拿得到的文章记成「未产出 Markdown」**。
+
+- 📌 病根是 **`metadata.get('abstract', '')` 的默认值只在「键不存在」时生效**，
+  而 `extract_metadata` 自己就把 `'abstract': None` 显式种进了那个 dict。
+  勘误、评论这类短文页面上没有 `citation_abstract`、也没有 description，
+  于是那个 None 一路留到 `len(old_abstract)`
+- ⚠️ 崩的地方**和缺的东西不是一回事**：摘要页其实给出了 58 字符的摘要
+  （`html_abstract` 为真才进这个分支），炸掉的只是**和旧值比长度**那一句 ——
+  也就是说一个纯日志用途的比较，毁掉了整篇提取
+- 📌 修法是本仓既有的写法 `metadata.get('abstract') or ''`。清点过同类：
+  `'abstract'` 是**唯一**一个「显式种成 None、随后又被 `len()`」的键
+  （`authors` / `references` / `figure_urls` 等全是种成 `[]`，或已经写了 `or []`）
+- ✅ 实测同一个 DOI：`✓ 从abstract页面提取更完整的摘要: 58 字符 (原meta: 0 字符)`
+  → `paper.md` 39 行。该篇没有 fulltext 视图（APS 只给 PDF），正文来自摘要页
+
 ### Cambridge 把表格渲染成图片（`div.table-wrap-ada`）
 
 ❌ **实测（用户报告，`10.1017/hpl.2022.24`）**：md 里**没有任何表格**，表格图也没下 ——

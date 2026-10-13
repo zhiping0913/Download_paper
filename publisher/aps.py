@@ -904,7 +904,12 @@ class APSHandler(PublisherHandler):
             html_abstract = _extract_abstract_from_abstract_html(captured['abstract_html'])
             if html_abstract:
                 # 如果成功从HTML提取到abstract，用它替换meta tag的abstract
-                old_abstract = metadata.get('abstract', '')
+                # ⚠️ ``.get(k, '')`` is not enough: extract_metadata seeds
+                # ``'abstract': None`` explicitly, and errata (short notices
+                # with no abstract at all) keep that None -- the default only
+                # fires when the key is MISSING. len(None) crashed the whole
+                # article. See the same pattern elsewhere in the repo.
+                old_abstract = metadata.get('abstract') or ''
                 metadata['abstract'] = html_abstract
                 if len(old_abstract) < len(html_abstract):
                     print(f"  ✓ 从abstract页面提取更完整的摘要: {len(html_abstract)} 字符 (原meta: {len(old_abstract)} 字符)")
