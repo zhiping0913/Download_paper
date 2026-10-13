@@ -187,9 +187,11 @@ export CHROME_PROFILE_ROOT="${CHROME_PROFILE_ROOT:-/tmp/dp_profiles}"
 #    上的 citation_title 补全（目录名缺标题会退化成 0000--paper）。
 #    拿不到地址就报失败，【不回落到出版商页面】—— 这是一条明确的指令。
 
-# 镜像列表（逗号分隔，scheme 可省）。不设 → sci-hub.se, sci-hub.st, sci-hub.ru
+# 镜像列表（逗号分隔，scheme 可省）。不设 → sci-hub.st, sci-hub.se, sci-hub.ru
 # 按顺序问，前一个答不出来才问下一个；镜像之间不共享同一份库，所以
 # 「这个镜像上没有这篇」也要接着问下一个。
+# ⚠️ .st 排第一：用户实测这里访问不到 .se —— 一个连不上的镜像照样要付
+#    一次 Chrome 启动 + 整个挑战预算，才能报出「什么都没有」。
 # export DP_SCIHUB_MIRRORS=https://sci-hub.st,https://sci-hub.se
 
 # 取镜像页用无头（默认有头）。⚠️ 默认有头是有理由的：镜像前面是 DDoS-Guard，
