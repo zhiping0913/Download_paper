@@ -250,6 +250,79 @@ python complete_paper_extraction.py --file dois.txt         # 批量（主程序
 - `--force-headed`、`FRESH_PROFILE`、`BATCH_SLEEP`、各种 `DP_*` 超时全部照旧 ——
   两层都走同一个批次循环，没有另一套旋钮
 
+### Sci-Hub 作为第三条取 PDF 的路（`--scihub`）
+
+`--scihub` 先问镜像 `{mirror}/{doi}` 要出 PDF 地址，然后走的**就是上面第二层**
+（`_pdf_link_direct_download`）—— 所以它天然继承那条路的一切：元数据全部来自
+Step 0 那一次 Crossref 响应、只为取文件起一次浏览器、以 PDF 为准。
+
+- 📌 **它隐含 `--pdf-only`，而且要明说**。Sci-Hub 上没有可提取的论文页面，
+  只有一个装着别人 PDF 的查看器 —— 一个悄悄改变模式的开关比没有更糟
+- 📌 **镜像页也走浏览器**（取数阶梯的一次性 Chrome，`page=None` 时只剩 `fresh` 这一层），
+  和别处访问出版商页面同一套：镜像在 DDoS-Guard / Cloudflare 后面，裸请求多半只换回
+  一张挡板页。默认**有头**（`DP_SCIHUB_HEADLESS=1` 可改），`DP_SCIHUB_MIRRORS`
+  覆盖镜像列表
+- ⚠️ **「镜像答复了」和「镜像有这篇」是两个答案**，日志分别打印：前者是「换下一个镜像」，
+  后者是「这篇不在 Sci-Hub 上，再试也没用」。镜像之间不共享同一份库，所以后者也照常
+  试下一个
+- ⚠️ **PDF 地址取「保存按钮」优先于查看器**：按钮的 `location.href` 带
+  `?download=true`，服务器据此回 `Content-Disposition: attachment` —— 浏览器才会
+  **下载**而不是用内置阅读器**渲染**（本仓那条「浏览器会显示的文件不触发 download 事件」
+  同一个坑）。查看器的 `<embed id="pdf">` 作次选，锚点再次之
+- ⚠️ 地址有**三种写法**要归一：协议相对（`//zero.sci-hub.st/…`）、站内相对、
+  以及带 PDF.js 视图参数的 `#navpanes=0&view=FitH` 片段（片段要剥掉）
+- 📌 **标题只在 Crossref 没给时才用 Sci-Hub 补**（`complete_scihub_title`）：
+  目录名的原料是标题，缺了就退化成 `0000--paper`，而镜像页上印着出版商自己的引用串
+  （`作者 (年). 标题. 刊名…`）。Crossref 是记录，这只是补空
+- ⚠️ **拿不到就返回 None，绝不回落到出版商页面**：`--scihub` 是一条明确的指令，
+  静默改道会让产出说不清自己是从哪来的
+
+#### 「Are you a robot?」那一页：要点那个 `No`（用户报告）
+
+镜像前面是 **DDoS-Guard**，连着问几次之后它不给文章页，而是给自己的问句页
+（`<title>Sci-Hub: are you are robot?</title>`，body 只有 19 个字）。
+
+- 📌 **页面上只有一个圆圈 `<div class="answer" onclick="check()">No</div>`**。
+  点下去启动的是 **Altcha**（`/captcha/challenge/<id>`）—— 一道**在页面里算
+  SHA-256 的工作量证明**，算完 POST 到 `/captcha/solution/<id>`，成功就
+  `location.reload()`。**工作量证明不需要人，只有那一下点击需要** ——
+  而点击是能写的（`el.click()` 就触发 `onclick`，不必是受信任点击）
+- ⚠️ **本仓的挑战点击机器对它完全无效**：这页上**没有 Turnstile 框**，
+  `_CHALLENGE_DOM_JS` 找不到任何东西可点，于是预载把整个预算等满、
+  报一句「挑战未通过」—— 而真相是「有一个 `No` 等着点」。所以这一页由
+  `scihub.looks_like_robot_question()` 单独认、`_answer_robot_question()` 单独点
+- 📌 **因此镜像页不走 `fetch_html_via_ladder`**（本仓取页面的常规路）：阶梯只交回
+  markup，而这里**必须留着那个 tab 去点一下**。所以直接驱动阶梯最底层那个一次性
+  Chrome（`open_url_in_fresh_chrome(want_html=True)`），用它 `result['ws_url']`
+  发两条 CDP：点 `No`，然后每 2 秒读一次 `outerHTML` 等重载
+- 📌 **镜像页的超时刻意给得短（25s）**：一次性 Chrome 自己的通过判据是
+  「DOI 出现在响应里」或「body > 5000 字」，而 Sci-Hub 的页面**两条都不满足**
+  （body 117 字），所以默认预算只是在推迟读那份早就到手的 HTML
+- ✅ 实测 `10.1103/PhysRev.47.777`（镜像正在发问句页）：
+  `🤖 镜像先问「Are you a robot?」` → `🖱️ 点了 'No'` →
+  `✓ 已通过机器人问句（31,267 字符）` → `✓ PDF: …/einstein1935.pdf` →
+  `paper.pdf` 264,355 字节（APS 1935 年那篇，pdfinfo 的 Title/Author 对得上）
+
+#### ❌ 顺带修掉：没有浏览器时 `tab` 层会把整条阶梯堵死
+
+`--scihub` 第一次跑就卡在这里：`⚠️ 无可用浏览器上下文，无法回退导航下载`
+**连报 5 次、每次隔 90 秒**，而 `fresh` 那层一次都没被调用。
+
+- 📌 成因：`download_pdf` 只在 `ladder[0] == 'fresh'` 时才走一次性 Chrome，而默认
+  阶梯是 `('tab','fresh','referer')`；`page` 和 `context` 都是 None 时它走到那句
+  「没有浏览器上下文」就 `return None` —— **于是有头的 `pdf_link` 直连模式一次
+  下载都发不出去**，哪怕那条路径的注释写着它本来就打算只起一次性 Chrome
+- 📌 **没有浏览器时 `tab` 不是「排第一」而是「根本不存在」**：现在把这一层
+  **摘掉**（`ladder = tuple(t for t in ladder if t != 'tab')` 并打印新顺序），
+  而不是拿它否掉后面两层。✅ 实测改后 `↪ 没有浏览器上下文，跳过 tab 层 →
+  fresh/referer` → 一次性 Chrome 首轮就触发下载
+- ⚠️ 这个毛病**不是 Sci-Hub 带来的**，`--json` 给 `pdf_link` 且出版商不在无头名单里
+  （APS、SPIE、IOP、ScienceDirect…）时一直是这样
+- ⚠️ 另一处同样怪它：**PDF 地址的相对路径要用 `urljoin`，不要自己拼**。第一版
+  把 `/storage/…/einstein1935.pdf` 的开头斜杠剥掉再接在页面路径后面，得到
+  `sci-hub.st/10.1103/PhysRev.47.777/storage/…` —— 一个哪里都不存在的 URL，
+  而下载层只会报「没拿到文件」。根相对和路径相对是两件事，`urljoin` 本来就分得清
+
 ## 常见提取陷阱
 
 编写或修改 publisher handler 时注意：
