@@ -179,6 +179,28 @@ export CHROME_PROFILE_ROOT="${CHROME_PROFILE_ROOT:-/tmp/dp_profiles}"
 #   DP_HTTP_FIRST=0        = 摘掉 request 层 —— 见第 3 节
 
 # ---------------------------------------------------------------------------
+# 2c. Sci-Hub（--scihub）—— 第三条取 PDF 的路
+# ---------------------------------------------------------------------------
+# 先问镜像 {mirror}/{doi} 要出 PDF 地址，再交给 pdf_link 那条已有的直连路。
+# ⚠️ --scihub 隐含 --pdf-only（启动时会打印出来）：镜像上只有一个装着别人 PDF 的
+#    查看器，没有可提取的论文页面。元数据全部来自 Crossref，标题缺失时才用镜像页
+#    上的 citation_title 补全（目录名缺标题会退化成 0000--paper）。
+#    拿不到地址就报失败，【不回落到出版商页面】—— 这是一条明确的指令。
+
+# 镜像列表（逗号分隔，scheme 可省）。不设 → sci-hub.se, sci-hub.st, sci-hub.ru
+# 按顺序问，前一个答不出来才问下一个；镜像之间不共享同一份库，所以
+# 「这个镜像上没有这篇」也要接着问下一个。
+# export DP_SCIHUB_MIRRORS=https://sci-hub.st,https://sci-hub.se
+
+# 取镜像页用无头（默认有头）。⚠️ 默认有头是有理由的：镜像前面是 DDoS-Guard，
+# 而且连着问几次之后它会先给一页「Are you a robot?」—— 那页上只有一个
+# <div class="answer" onclick="check()">No</div>，点下去启动 Altcha 的工作量
+# 证明（页面内算 SHA-256，成功后自动重载）。程序自己会点那个 No，不需要人解题；
+# 但这页上【没有 Turnstile 框】，本仓的挑战点击逻辑对它无效，所以它由
+# scihub.py 单独认、单独点。
+# export DP_SCIHUB_HEADLESS=1
+
+# ---------------------------------------------------------------------------
 # 3. 等待时间（秒）—— 由 _env_seconds() 读取
 #    空串 / 非数字 / 负数 / 0 都回退默认值
 # ---------------------------------------------------------------------------
@@ -280,6 +302,7 @@ for v in CHROME_PATH CHROME_DEBUG_PORT CHROME_AUX_DEBUG_PORT \
          DP_FIGURE_TIMEOUT \
          DP_MAX_RETRIES DP_IMG_MAX_RETRIES DP_SUPP_MAX_RETRIES DP_RETRY_DELAY \
          BATCH_SLEEP_MIN BATCH_SLEEP_MAX \
+         DP_SCIHUB_MIRRORS DP_SCIHUB_HEADLESS \
          CAPTURED_DATA_DIR OUTPUT_DIR_DEFAULT; do
     printf "  %-42s = %s\n" "$v" "${!v:-<default>}"
 done
@@ -301,6 +324,9 @@ echo "────────────────────────�
 #   --pdf-only                只下 PDF：跳过图片/补充材料下载和 Markdown 生成，
 #                             metadata.json / crossref.json 照常写
 #   --supplemental=False      跳过补充材料下载（书籍尤其有用）
+#   --pdf=False               不下 PDF（链接仍写进 metadata.json）
+#   --scihub                  从 Sci-Hub 取 PDF（隐含 --pdf-only，元数据走
+#                             Crossref）；也可在 --json 里逐篇写 "scihub": true
 #
 # 无头 / 有头是自动判断的：Phase 0 先用无头访问，出版商在
 # HEADLESS_ACCESSIBLE_PUBLISHERS 里就全程无头（ACS、Nature、AIP、Cambridge、
@@ -323,3 +349,9 @@ fi
 # python complete_paper_extraction.py --json pdf_links.json                 # 给了 pdf_link
 #   → pdf_links.json: {"article":[{"doi":"10.1364/...","pdf_link":"https://.../x.pdf"}]}
 #     给了 pdf_link 就自动进入 pdf-only，跳过预检和 doi.org，元数据走 Crossref
+# python complete_paper_extraction.py --doi 10.1103/PhysRev.47.777 --scihub   # Sci-Hub
+# DP_SCIHUB_MIRRORS=https://sci-hub.st \
+#   python complete_paper_extraction.py --file doi_list.txt --scihub          # 指定镜像
+# python complete_paper_extraction.py --json scihub.json
+#   → scihub.json: {"article":[{"doi":"10.1016/...","scihub":true}]}
+#     逐篇指定；与命令行 --scihub 等效，两者取其一即可
