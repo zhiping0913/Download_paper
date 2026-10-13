@@ -236,9 +236,9 @@ DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT = _env_seconds('DP_SUPPLEMENTAL_DOWNLO
 # breakers that bound a transfer which will never end are separate and
 # unchanged (DP_HTTP_TOTAL_TIMEOUT, the trickle watchdog).
 #
-# Accepts "200M" / "2G"; 0 disables the cap.
+# Accepts "500M" / "2G"; 0 disables the cap.
 DP_SUPPLEMENTAL_MAX_BYTES = env_bytes('DP_SUPPLEMENTAL_MAX_BYTES',
-                                      200 * 1024 * 1024)
+                                      500 * 1024 * 1024)
 
 # Figure download family — the CDN goto for each figure image (and the
 # fallback img_src re-fetch if the first response wasn't image/*).
