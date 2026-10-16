@@ -999,6 +999,35 @@ AIP `10.1063/5.0321661` 六个 7–10 MB 的视频，本仓还见过 200+ MB 的
 - ⚠️ AIP 的 `convert_to_markdown` 原本**没有补充材料段**（同 SPIE 旧病）：
   文件下到磁盘、md 里只字不提。已补，且只在真有内容时才输出标题
 
+### ❌ AIP 的图注是 `<figcaption>`，不是 `<div class="caption">`
+
+用户报告「现在 AIPHandler 没法获取图片的图注了」。已复现：md 里每张图只剩一行
+`**FIG. 1.**`，**后面什么都没有**，而图片照常下载、行数照常 367 ——
+产出看着完整，图注全丢。
+
+- 📌 病根是一个**标签名**：正文遍历问的是
+  `child.find('div', class_='caption')`，而 AIP（Silverchair）发的是
+  `<figcaption class="caption fig-caption">`。bs4 的 `find(tag, class_=…)`
+  要求标签也对得上，于是**每一张图都返回 None**，只剩 `fig-label` 那个真 `<div>`
+  打印出来 —— 一个「成功了一半」的分支，不报错、不打印任何异常
+- ⚠️ **这是 AIP 一家的事，别顺手改别家**。同样写法还在 ACS / OUP / Cambridge 里，
+  但实测 ACS 存档的 13 个 `caption` 元素**全是 `<div>`** —— 那几处现在是对的，
+  按「看着像同一个坑」去改等于在没有证据的地方动手
+- ❌ **顺带暴露出同一件事有两份实现，而坏的那份是活的**：`_convert_aip_figure()`
+  用的是**标签无关**的 `select_one('.caption')`（正确），可它**一个调用者都没有**
+  —— 修它什么都不会发生。正文遍历里自己抄了一份，抄的那份才在跑。
+  现在遍历改为调用它，重复的那段删掉：**「AIP 的图怎么渲染」只有一个定义**
+  （与 IOP `metadata['_tables']` 那条同一个教训 —— 死代码会让人把修复加在
+  错误的路径上还以为修好了）
+- 📌 `extract_figures_from_html()` 里那个 `caption` 字段原来只装 label
+  （`"FIG. 1."`）。**目前没有任何代码读它**（md 的图注来自正文遍历），但一个
+  与自己名字矛盾的字段是给下一个人挖的坑，已改成 label + 图注全文
+- ⚠️ 图注里有公式（本篇 FIG. 3 是 `$H_{y}$`），所以它必须走
+  `_convert_aip_html_fragment_to_markdown`，不能 `get_text()` —— 这正是核心原则
+  里「所有元素使用同一套公式转换管道」那一条
+- ✅ 实测 `10.1063/5.0326077`：12 张图的图注全部回来，`**FIG. 1.** Two-dimensional
+  schematic of a surface plasmon-based ICR-DLA…`，FIG. 3 的 `$H_{y}$` 正常
+
 ### 取数阶梯（所有资源共用一套回退顺序）
 
 PDF、图片、补充材料、API/页面（如 IOP 的 `/data`）走的是**同一条三层阶梯**：
