@@ -203,7 +203,20 @@ class AIPHandler(PublisherHandler):
 
     @classmethod
     def _convert_aip_figure(cls, wrapper) -> str:
-        fig = wrapper.select_one('div.fig-section')
+        """Render one AIP figure (label + caption) to markdown.
+
+        ``wrapper`` may be the ``div.fig-section`` itself or an element that
+        contains one.
+
+        ⚠️ Every lookup here is **tag-agnostic on purpose**. AIP's caption is a
+        ``<figcaption class="caption fig-caption">``, not a ``<div>`` -- the
+        walker used to ask for ``find('div', class_='caption')`` and got None
+        for every figure in the paper, so the Markdown carried a bare
+        ``**FIG. 1.**`` with the caption text silently dropped. Match on the
+        class, let the tag be whatever Silverchair ships.
+        """
+        fig = (wrapper if 'fig-section' in (wrapper.get('class') or [])
+               else wrapper.select_one('div.fig-section'))
         if not fig:
             return ''
 
@@ -231,7 +244,9 @@ class AIPHandler(PublisherHandler):
         label_span = table_wrap.find('span', class_='label')
         label = label_span.get_text(' ', strip=True) if label_span else ''
 
-        caption_div = table_wrap.find('div', class_='caption')
+        # Tag-agnostic, same reason as the figure caption above: the
+        # class is the contract, the tag is Silverchair's choice.
+        caption_div = table_wrap.select_one('.caption')
         caption = caption_div.get_text(' ', strip=True) if caption_div else ''
 
         table_overflow = table_wrap.find('div', class_='table-overflow')
@@ -418,19 +433,14 @@ class AIPHandler(PublisherHandler):
 
                 if 'fig-section' in classes:
                     flush_inline()
-                    fig_label = child.find('div', class_='fig-label')
-                    fig_caption = child.find('div', class_='caption')
-                    parts = []
-                    if fig_label:
-                        lt = fig_label.get_text(' ', strip=True)
-                        if lt:
-                            parts.append(f"**{lt}**")
-                    if fig_caption:
-                        cap_md = cls._convert_aip_html_fragment_to_markdown(str(fig_caption))
-                        if cap_md:
-                            parts.append(cap_md)
-                    if parts:
-                        body_parts.extend([" ".join(parts), ""])
+                    # 📌 One definition of "how an AIP figure renders".
+                    # This branch used to carry its own copy, and that copy
+                    # was the one that rotted (it asked for a <div> caption);
+                    # _convert_aip_figure had the right lookups and no caller
+                    # at all, so fixing it would have changed nothing.
+                    md = cls._convert_aip_figure(child)
+                    if md:
+                        body_parts.extend([md, ""])
                     continue
 
                 if 'fig-modal' in classes or 'reveal-modal' in classes:
@@ -747,8 +757,19 @@ class AIPHandler(PublisherHandler):
                 if m:
                     hi_res_url = m.group(1).strip()
 
-            label = fig_div.find('div', class_='fig-label')
-            caption = label.get_text(' ', strip=True) if label else ''
+            # The dict key is called 'caption', so put the caption in it --
+            # this used to hold only the label ("FIG. 1."). Nothing in the
+            # workflow reads this field today (the Markdown gets its captions
+            # from the body walker), but a field that contradicts its own name
+            # is a trap for whoever reads it next.
+            label = fig_div.find(class_='fig-label')
+            caption_el = fig_div.select_one('.caption')
+            caption = ' '.join(
+                t for t in (
+                    label.get_text(' ', strip=True) if label else '',
+                    caption_el.get_text(' ', strip=True) if caption_el else '',
+                ) if t
+            )
 
             entry = {
                 'url': hi_res_url or thumb_url,
