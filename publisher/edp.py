@@ -54,7 +54,11 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup, NavigableString
 
-from html_to_md_converter import cleanup_markdown, convert_html_to_markdown
+from html_to_md_converter import (
+    cleanup_markdown,
+    convert_html_to_markdown,
+    mathml_to_latex_pandoc,
+)
 from publisher.base import PublisherHandler
 from publisher.wildcard import (
     generate_reference_text_from_crossref,
@@ -379,7 +383,7 @@ class EDPHandler(PublisherHandler):
         formulas: List[str] = []
 
         for span in fragment.select('span.ressouce-equation-inline'):
-            latex = cls._latex_from_attr(span)
+            latex = cls._latex_from_span(span)
             if not latex:
                 span.decompose()
                 continue
@@ -468,16 +472,30 @@ class EDPHandler(PublisherHandler):
     # Formulas
     # ==================================================================
 
-    @staticmethod
-    def _latex_from_attr(span) -> str:
-        """The author's LaTeX out of ``data-latex``, minus its delimiters.
+    @classmethod
+    def _latex_from_span(cls, span) -> str:
+        """One formula's LaTeX, minus its delimiters: attribute, else MathML.
 
-        📌 EDP ships three renderings of every formula -- this attribute, a
-        MathML tree, and a GIF -- and the attribute is the only one that is
-        the author's own source. The delimiters come off because the caller
-        decides whether this is inline or display.
+        📌 EDP ships up to three renderings of a formula -- a ``data-latex``
+        attribute, a MathML tree, and a GIF/PNG -- and the attribute is the
+        only one that is the **author's own source**, so it comes first.
+
+        ❌ **But it is not always there.** 10.1051/epjap/2023220290 carries
+        **zero** ``data-latex`` attributes: all 30 of its formulas (5 display,
+        25 inline) are MathML only. Reported by the user as "没有 display
+        formula" -- and that is exactly what happened, the renderer returned
+        '' for every one of them and the body simply had no equations, with
+        nothing in the log. Those get converted through the repo's shared
+        ``mathml_to_latex_pandoc``, the same route PNAS and Optica take.
+
+        Both sources come back **with** delimiters, which are stripped here
+        because the caller decides whether this is inline or display.
         """
         latex = (span.get('data-latex') or '').strip()
+        if not latex:
+            math_el = span.find('math')
+            if math_el is not None:
+                latex = (mathml_to_latex_pandoc(str(math_el)) or '').strip()
         if not latex:
             return ''
         for opener, closer in (('$$', '$$'), ('\\[', '\\]'), ('$', '$')):
@@ -487,11 +505,21 @@ class EDPHandler(PublisherHandler):
                 break
         return latex.strip()
 
-    @classmethod
-    def _render_display_formula(cls, span) -> str:
-        """``$$ … \\tag{N} $$`` for one ``span.ressouce-equation-block``."""
-        latex = cls._latex_from_attr(span)
+    def _render_display_formula(self, span) -> str:
+        """``$$ … \\tag{N} $$`` for one ``span.ressouce-equation-block``.
+
+        An instance method, not a classmethod: the image last resort below
+        has to resolve a relative src against *this* article's directory.
+        """
+        latex = self._latex_from_span(span)
         if not latex:
+            # Last resort: EDP's own picture of the formula, referenced where
+            # it lives. A visible equation image beats a silently missing
+            # equation, and the symbol-sized images are not worth downloading
+            # (the same call SPIE and PNAS make).
+            img = span.select_one('span.img img[src], img[src]')
+            if img is not None:
+                return f"![]({self._absolute(img['src'])})"
             return ''
         label = ''
         holder = span.find('span', class_='label-eq')
@@ -500,7 +528,7 @@ class EDPHandler(PublisherHandler):
         if holder is not None:
             label = holder.get_text(strip=True).strip('()').strip()
         if label:
-            latex = cls._with_tag(latex, label)
+            latex = self._with_tag(latex, label)
         return f"$$\n{latex}\n$$"
 
     #: Sub-environments that do **not** number their own rows. ``\tag`` has
