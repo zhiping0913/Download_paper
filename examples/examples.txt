@@ -154,4 +154,6 @@
 10.1051/epjconf/202634803001   #epj-conferences.org/
 10.1051/epjam/2023004   #edp-open.org/
 10.1051/e3sconf/201912803002   #e3s-conferences.org/
-
+10.1051/proc/201653014   #esaim-proc.org/
+10.1051/swsc/2013027   #swsc-journal.org/
+10.1051/jp4:2006133056   #journaldephysique.org/
