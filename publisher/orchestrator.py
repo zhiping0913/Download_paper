@@ -28,6 +28,7 @@ from publisher.wiley import WileyHandler
 from publisher.spie import SPIEHandler
 from publisher.opticsjournal import OpticsJournalHandler
 from publisher.researching import ResearchingHandler
+from publisher.uchicago import UChicagoHandler
 
 
 def detect_publisher_from_url(url: str) -> str:
@@ -186,6 +187,13 @@ def detect_publisher_from_url(url: str) -> str:
     elif '10.3788' in url_lower:
         return 'researching'
 
+    # University of Chicago Press. Atypon, same markup family as ACM/PNAS --
+    # see publisher/uchicago.py. ⚠️ Headed only (Cloudflare).
+    elif 'journals.uchicago.edu' in url_lower:
+        return 'uchicago'
+    elif '10.1086' in url_lower:
+        return 'uchicago'
+
     # Wiley Online Library
     elif 'onlinelibrary.wiley.com' in url_lower:
         return 'wiley'
@@ -298,6 +306,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return OpticsJournalHandler(**kwargs)
     elif publisher == 'researching':
         return ResearchingHandler(**kwargs)
+    elif publisher == 'uchicago':
+        return UChicagoHandler(**kwargs)
     elif publisher == 'science':
         return ScienceHandler(**kwargs)
     elif publisher == 'sciencedirect':
