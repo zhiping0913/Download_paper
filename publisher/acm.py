@@ -66,6 +66,18 @@ class ACMHandler(PublisherHandler):
     #: What the publisher calls the supplemental section in its own page.
     SUPPLEMENTAL_HEADING = 'Supplemental Material'
 
+    #: Class of the div that wraps a **display** formula. ⚠️ Three places
+    #: have to agree on it -- the block walk, the inline-math stash (which
+    #: must NOT also convert a display formula, or it prints twice) and the
+    #: "is this image worth saving" test -- so it is one name, not three
+    #: literals. World Scientific calls it ``math-formula``.
+    DISPLAY_FORMULA_CLASS = 'display-formula'
+
+    #: Attribute holding the full-resolution image URL, when the ``src`` is a
+    #: smaller rendition. Atypon's newer skin uses ``data-viewer-src``, the
+    #: older one ``data-lg-src``.
+    HIRES_IMG_ATTRS = ('data-viewer-src',)
+
     def __init__(self, page=None, captured_data_dir=None, doi: str = None):
         super().__init__(page=page, captured_data_dir=captured_data_dir, doi=doi)
         self.actual_base_url = self.ACM_BASE
@@ -243,6 +255,89 @@ class ACMHandler(PublisherHandler):
             return text
         return href.replace('mailto:', '').strip()
 
+    # -- Dublin Core metadata ------------------------------------------
+    #
+    # ⚠️ Not every Atypon site fills in ``citation_*``. UChicago Press and
+    # World Scientific declare exactly one useful one
+    # (``citation_journal_title``) and put title, authors, date and DOI in
+    # ``dc.*`` instead -- a handler written against ``citation_title`` there
+    # gets an article with no title. These readers are shared by both.
+
+    @staticmethod
+    def _dc(soup: BeautifulSoup, name: str) -> List[str]:
+        """Every ``<meta name="dc.X">`` value, in document order.
+
+        Dublin Core repeats a name per value (one ``dc.Creator`` per author),
+        so the caller decides whether it wants the first or all of them.
+        """
+        out = []
+        for tag in soup.find_all('meta', attrs={'name': name}):
+            value = (tag.get('content') or '').strip()
+            if value:
+                out.append(value)
+        return out
+
+    @classmethod
+    def _dc_one(cls, soup: BeautifulSoup, name: str) -> str:
+        values = cls._dc(soup, name)
+        return values[0] if values else ''
+
+    @staticmethod
+    def _clean_author(name: str) -> str:
+        """``'Diego \xa0San\xa0Mauro'`` → ``'Diego San Mauro'``.
+
+        ⚠️ UChicago separates the parts of a name with **non-breaking
+        spaces**, sometimes doubled with a normal one. Left alone they travel
+        into ``metadata.json`` and the markdown byline, where a search for
+        "Diego San Mauro" does not match.
+        """
+        return re.sub(r'\s+', ' ', (name or '').replace('\xa0', ' ')).strip()
+
+    @classmethod
+    def _dc_doi(cls, soup: BeautifulSoup) -> str:
+        """The DOI out of ``dc.Identifier``.
+
+        ⚠️ That name is used for **five different identifiers** on one page
+        (an internal article number, the DOI, a stock number, the PMID and a
+        price line), so "the first dc.Identifier" is not the DOI. There is
+        also a ``publication_doi`` meta; this reads whichever looks like a
+        DOI.
+        """
+        for value in cls._dc(soup, 'dc.Identifier') + cls._dc(soup, 'publication_doi'):
+            if re.fullmatch(r'10\.\d{4,9}/\S+', value):
+                return value
+        return ''
+
+    @classmethod
+    def _enumeration(cls, soup: BeautifulSoup) -> tuple:
+        """``('165', '5')`` from ``div.core-enumeration``.
+
+        📌 Volume and issue are **not** in any meta tag here (``dc.Coverage``
+        is "world"), so they come off the page's own enumeration line --
+        "Volume 165 , Number 5". Without this, ``metadata.json`` would print
+        them empty for every UChicago article, since the workflow takes those
+        fields from the handler.
+        """
+        for el in soup.find_all(class_='core-enumeration'):
+            text = el.get_text(' ', strip=True)
+            match = re.search(r'Volume\s*(\S+?)\s*[,•]\s*Number\s*(\S+?)(?:\s|$|[,•])',
+                              text)
+            if match:
+                return match.group(1), match.group(2)
+        return '', ''
+
+    @staticmethod
+    def _pagination(soup: BeautifulSoup) -> str:
+        """``'590-599'`` from ``div.core-pagination`` ("Pages : 590 - 599")."""
+        el = soup.find(class_='core-pagination')
+        if el is None:
+            return ''
+        match = re.search(r'(\d+)\s*[-–]\s*(\d+)', el.get_text(' ', strip=True))
+        if match:
+            return f"{match.group(1)}-{match.group(2)}"
+        match = re.search(r'(\d+)', el.get_text(' ', strip=True))
+        return match.group(1) if match else ''
+
     @classmethod
     def _extract_abstract(cls, soup: BeautifulSoup) -> str:
         """Every abstract the page carries, as markdown, in document order.
@@ -349,13 +444,13 @@ class ACMHandler(PublisherHandler):
                 return True
         return False
 
-    @staticmethod
-    def _is_block_div(el) -> bool:
+    @classmethod
+    def _is_block_div(cls, el) -> bool:
         if getattr(el, 'name', None) != 'div':
             return False
         classes = el.get('class') or []
         role = el.get('role') or ''
-        return ('display-formula' in classes
+        return (cls.DISPLAY_FORMULA_CLASS in classes
                 or role == 'list' 
                 # ⚠️ div.figure-wrap has no role and no heading: it is a plain
                 # div holding <header> (the "Table 1:" label) + <figure>. Left
@@ -447,7 +542,8 @@ class ACMHandler(PublisherHandler):
         one twice.
         """
         for math_el in fragment.find_all('math'):
-            if math_el.find_parent('div', class_='display-formula') is not None:
+            if math_el.find_parent(
+                    'div', class_=cls.DISPLAY_FORMULA_CLASS) is not None:
                 continue
             latex = cls._latex_from_mathml(math_el)
             if not latex:
@@ -496,6 +592,13 @@ class ACMHandler(PublisherHandler):
         # ⚠️ Footnote markers come through EMPTY -- ACM fills the number in
         # with JavaScript, so the response holds <a href="#fn5"><sup></sup></a>
         # and pandoc renders a linkless "[](#fn5)". The number is in the href.
+        # ⚠️ Atypon's older skin marks a note reference with a class instead
+        # of the role: ``<a class="ref fn" href="#…FN001"><sup>a</sup></a>``.
+        # Without this it stayed a link and pandoc wrote `[^a^](#…FN001)` --
+        # which reads as a pandoc *footnote reference* in the output, pointing
+        # at a definition that does not exist.
+        for ref in fragment.select('a.fn[href*="FN"]'):
+            ref['role'] = 'doc-noteref'
         for ref in fragment.find_all('a', attrs={'role': 'doc-noteref'}):
             marker = ref.get_text(' ', strip=True)
             if marker:
@@ -539,6 +642,12 @@ class ACMHandler(PublisherHandler):
         # `[$1_{[Group_i = g]}$]{#if1}` -- 5× in 10.1086/742128. The id is an
         # anchor target for the page, not content.
         for el in fragment.select('span.core-math[id], span.core-tex[id]'):
+            del el['id']
+        # ⚠️ Same thing on a cross-reference anchor: World Scientific gives
+        # each one an id as well as an href, and pandoc printed it as
+        # `[3(a)](#…FIGF3){#…FIGF3R}`. The id is a back-link target for the
+        # page; in a standalone markdown file it is noise.
+        for el in fragment.select('a[id]'):
             del el['id']
         # Screen-reader duplicates of the caption ("A rendering of 33
         # interacting rocket thrusters."), which otherwise read as stray prose.
@@ -634,7 +743,7 @@ class ACMHandler(PublisherHandler):
                     blocks.append('#' * max(2, depth) + ' ' + text)
             elif name == 'section':
                 blocks.extend(cls._walk(child, level, figures))
-            elif 'display-formula' in classes:
+            elif cls.DISPLAY_FORMULA_CLASS in classes:
                 blocks.extend(cls._render_display_formula(child))
             elif 'figure-wrap' in classes:
                 blocks.extend(cls._render_figure_wrap(child, level, figures))
@@ -649,12 +758,29 @@ class ACMHandler(PublisherHandler):
             elif 'biblioentry' in classes:
                 blocks.extend(cls._render_biblioentry(child))
             else:
+                extra = cls._walk_extra(child, level, figures)
+                if extra is not None:
+                    blocks.extend(extra)
+                    continue
                 md = cls._convert_paragraph_to_md(str(child))
                 if md:
                     blocks.append(md)
 
         flush()
         return blocks
+
+    @classmethod
+    def _walk_extra(cls, child, level: int, figures: Dict[str, str]):
+        """Hook for shapes this skin has and the base walk does not.
+
+        Returns a list of markdown blocks, or **None** to mean "not mine"
+        -- which is not the same as "mine and empty". Atypon serves two
+        quite different skins (the ``core-container`` one that ACM, PNAS and
+        UChicago use, and World Scientific's older one), and this is where
+        the second one's elements are handled without a second copy of the
+        walk.
+        """
+        return None
 
     @staticmethod
     def _escape_block_start(md: str) -> str:
@@ -1033,8 +1159,8 @@ class ACMHandler(PublisherHandler):
                 index += 1
                 img['data-dp-asset'] = f'fig_{index}'
 
-    @staticmethod
-    def _is_downloadable_asset(img) -> bool:
+    @classmethod
+    def _is_downloadable_asset(cls, img) -> bool:
         """Whether *img* is worth saving next to the markdown.
 
         Yes for anything inside a ``<figure>`` (the floats, including a table
@@ -1060,7 +1186,7 @@ class ACMHandler(PublisherHandler):
             if figure.find('table') is not None:
                 return False
             return True
-        if img.find_parent('div', class_='display-formula') is not None:
+        if img.find_parent('div', class_=cls.DISPLAY_FORMULA_CLASS) is not None:
             return True
         # Alone in its paragraph: a displayed graphic that simply was not
         # wrapped in a <figure>. ⚠️ This is the difference between ACM's
@@ -1089,7 +1215,11 @@ class ACMHandler(PublisherHandler):
         figures: Dict[str, dict] = {}
         for img in soup.find_all('img', attrs={'data-dp-asset': True}):
             medium = (img.get('src') or '').strip()
-            large = (img.get('data-viewer-src') or '').strip()
+            large = ''
+            for attr in cls.HIRES_IMG_ATTRS:
+                large = (img.get(attr) or '').strip()
+                if large:
+                    break
             best = large or medium
             if not best:
                 continue

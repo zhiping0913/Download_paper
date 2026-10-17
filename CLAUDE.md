@@ -374,6 +374,7 @@ Step 0 那一次 Crossref 响应、只为取文件起一次浏览器、以 PDF �
 | `10.1117` / spiedigitallibrary.org | SPIEHandler | 有头 | 完整 |
 | `10.3788` / researching.cn | ResearchingHandler | 有头 | 完整 |
 | `10.1086` / journals.uchicago.edu | UChicagoHandler | **有头** | 完整（继承 ACM 的 Atypon 遍历）|
+| `10.1142` / worldscientific.com | WorldScientificHandler | **有头** | 完整（Atypon 旧皮肤，继承 ACMHandler）|
 | opticsjournal.net | OpticsJournalHandler | 有头 | 完整（无补充材料） |
 | jstage.jst.go.jp | JStageHandler | 无头 | abstract + 参考文献 + PDF |
 | journals.rcsi.science | RCSIHandler | 无头 | metadata + PDF（页面没有正文）|
@@ -2294,6 +2295,93 @@ md 里 `:::` 围栏、`{has="label"}`、`download=`、`{#if…}`、`cdn-cgi`、
 的输出**逐字节相同**（diff 0 行）；端到端 10 图、10 个独立公式、40 条参考文献、
 1 个补充材料，与记录一致。⚠️ 行数是 458 而本文档早先记的是 454 ——
 那是两次运行之间页面本身的差别，不是这次改动造成的（逐字节的 A/B 才是判据）
+
+### World Scientific（`10.1142`、worldscientific.com）
+
+**又一家 Atypon，但是另一套皮肤** —— 不是 ACM / PNAS / UChicago 那套
+`div.core-container` + `section[id^=sec-]`，而是 Literatum 的**旧皮肤**：
+
+| 形状 | 是什么 |
+|---|---|
+| `div.article__body` | 整篇；`div.hlFld-Abstract` 摘要、`div.hlFld-Fulltext` 正文 |
+| `h2/h3/h4.article-section__title` | 标题 —— 正文是**一串平铺的兄弟节点，没有 section 嵌套**，所以只能按标题走 |
+| `div.math-formula` | 独立公式；编号在**兄弟** `span.formulaLabel`（"(1)"） |
+| `span.inline-formula` | 行内 MathML（后面跟一个**空的** `formulaLabel`） |
+| `section.article-section-inline-figure` | 图 |
+| `div.article-table-content` | 表，图注在 `<caption>` 里 |
+| **`table.listgroup`** | **列表**，不是表格（见下） |
+| `span.NLM_fn` | 一条尾注，平铺在 "Notes" 那个 h2 后面 |
+| `div.article__references` | 参考文献 |
+
+📌 所以 `WorldScientificHandler` **仍然继承 `ACMHandler`**，但继承的是「与皮肤无关
+的那部分」：行内公式的 MathML→LaTeX 暂存、pandoc 需要的属性清理、Cloudflare 邮箱
+解码、Dublin Core 元数据读取、图片编号契约 —— 而这套皮肤自己的元素通过新加的
+`_walk_extra()` 钩子接进遍历。⚠️ **刻意不复制一份遍历**：另一条路是把三百行
+「如何让 LaTeX 活着穿过 pandoc」再抄一遍。
+
+acm.py 为此多了三个**扩展点**（都是常量/钩子，不是 if-else 堆）：
+`DISPLAY_FORMULA_CLASS`（独立公式容器的类名 —— 遍历、行内暂存、图片判定**三处必须
+一致**，所以是一个名字不是三个字面量）、`HIRES_IMG_ATTRS`（新皮肤 `data-viewer-src`
+／旧皮肤 `data-lg-src`）、`_walk_extra()`（返回 None 表示「不是我的」，与「是我的但
+空」不同）。另把 Dublin Core 那几个读取器从 uchicago.py 搬进 acm.py —— WS 的元数据
+**同样只有 `dc.*`**（整页唯一有用的 `citation_` 是刊名），那是 Atypon 的特征而不是
+UChicago 的。
+
+这套皮肤自己的坑，一个比一个不像 bug：
+
+- ❌ **`<p>` 在这里是块级**。ACM 那套皮肤**一个 `<p>` 都没有**（段落是
+  `div[role=paragraph]`），所以基类遍历把 `<p>` 当行内 —— 不改的话**整节的段落会被
+  连成一段**。`_BLOCK_TAGS` 在子类里加上 `p`
+- ⚠️ **独立公式在段落中间**（"…expansion of the following form : ⟨EQ⟩ where…"），
+  所以 `<p>` 要**走遍历不能拍平** —— 和 ACM 走 `div[role=paragraph]` 同一个理由
+- ❌ **`table.listgroup` 是一个穿着表格外衣的列表**（NLM→HTML 的老习惯）：一个
+  `<tr class="liN">` 一条，第一个 `<td>` 是出版商印的记号（"(1)"、"•"），第二个
+  （`td.paragraph`）才是内容。按表格渲染会得到一个两列网格、左列全是记号 ——
+  那就是「(1) Is there a rigorous proof…」看着像数据的样子。记号**有信息时保留**
+  （正文引用的就是它），纯圆点**丢掉**（否则是 `- • …`，同 PNAS 那条）；
+  `liN` 给出层级，缩进照它来
+- ⚠️ **列表项里也会有独立公式**（本篇的 hidden-region scaling 就是 (9a)/(9b) 挂在
+  一个圆点下面），所以单元格也要**走遍历**：第一版对单元格调 `_inline_md`，
+  pandoc 就在 md 里印出字面的 `::: {#…EMQ009}`
+- ❌ **`<disp-formula-group>` 是个自定义标签**，包着一组编号公式（(9a)+(9b)）。
+  未知标签走行内路径，于是 pandoc 把里面的公式 div 印成 `:::` 围栏 ——
+  本篇 **32 个独立公式里有 10 个**在这种组里
+- ❌ **`div.anchor-spacer` 每个标题前都有一个**（空的滚动锚点）。它是普通 div、
+  走行内路径，pandoc 给每一节印一条 `::: {#acS0217751X25300133SEC001}`。
+  这类页面家具现在**从树上摘掉**（在 `_body_container` 里），不是在遍历时跳过 ——
+  否则它们照样会混进 `_walk` 攒起来的行内串里
+- ⚠️ **公式编号只能在「独立公式」那一处读**：`span.formulaLabel` 这个类**每个行内
+  公式后面也有一个，而且是空的**，无条件读会给一堆公式配上空标签
+- ⚠️ **参考文献条目末尾那排 linkout 按钮不是同一种形状**：Crossref / ADS / ISI 走
+  `/servlet/linkout`，而 **Google Scholar 是直连 scholar.google.com** —— 只摘前者
+  的话，**87 条参考文献每一条**都拖着一个三百字符的搜索 URL（实测）。
+  两种都要按 host／路径摘掉，顺带把按钮留下的逗号收干净
+- ⚠️ **ORCID 那个图标和正文里真正的行内插图在标记上分不开**：logo 和本篇三张行内图
+  （`figi1-3.png`）都是 `span.NLM_inline-graphic` 包一个 **alt 和 title 都为空**的
+  `<img>`，逐个属性相同。唯一的真实差别是**位置**，所以就按位置摘（ORCID 标题到下一个
+  标题之间）。📌 这一节本身保留 —— 「Yao Ma → orcid.org/0000-…」是真的出处信息，
+  只有 logo 是装饰，留着就是 md 里一个指向出版商的 `![](…oid.png)`
+- 📌 **行内插图照旧引用出版商的 URL、不下载**（`figi1-3.png`）：符号大小的图片单独
+  存下来没有用处 —— 与 SPIE / PNAS 同一条
+- ⚠️ 交叉引用锚点**同时有 href 和 id**，pandoc 把 id 印成 `{#…FIGF3R}` 后缀；
+  尾注引用用的是 `a.ref.fn` 而**不是** `role="doc-noteref"`，不认就会被写成
+  `[^a^](#…FN001)` —— 在 md 里那是**pandoc 脚注引用**的语法，指向一个不存在的定义
+- 📌 **PDF 按你说的构造**：`/doi/pdf/{doi}?download=true`。`?download=true` 是
+  承重的（同 PNAS/UChicago）
+- 📌 **暂时没有带补充材料的样本**，所以 `extract_supplemental_from_html` 只找
+  Atypon 通用的 `/doi/suppl/` 链接形状，没有就报 0 —— 不去猜一个没见过的形状
+- ⚠️ **一个已知的旧行为，不是这次引入的**：`cleanup_markdown` 有一条全仓通用规则把
+  `[N](#…)` 收成 `[N]`（为 Nature 的 `#ref-CR5` 式引文而设），于是**公式交叉引用
+  `([10])` 也丢了链接**，而 `([9a])` 这种非纯数字的保留。动它会改变每一家的产出，
+  所以只记在这里
+
+✅ 实测 `10.1142/S0217751X25300133`：正文 79,154 字符、558 行、6 个一级章节 +
+10 个二级 + 4 个三级、**32 个独立公式（31 个带 `\tag`）**、17 张图、2 张表、
+7 个 listgroup 列表（含 "(1)/(2)" 编号那两条）、6 条尾注、87 条参考文献；
+md 里 `:::`、`{#…}`、`[^`、`formulaLabel`、`captionLabel`、裸 `<table>`、
+`<math>`、"Google Scholar" 残留**各 0 处**。
+
+✅ **PNAS 回归**：同一份 `page_raw.html`，加完三个扩展点前后正文**逐字节相同**。
 
 ### MDPI 的新版页面（`div.html-body` 不再存在）
 
