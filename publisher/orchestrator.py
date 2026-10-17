@@ -29,6 +29,7 @@ from publisher.spie import SPIEHandler
 from publisher.opticsjournal import OpticsJournalHandler
 from publisher.researching import ResearchingHandler
 from publisher.uchicago import UChicagoHandler
+from publisher.worldscientific import WorldScientificHandler
 
 
 def detect_publisher_from_url(url: str) -> str:
@@ -194,6 +195,14 @@ def detect_publisher_from_url(url: str) -> str:
     elif '10.1086' in url_lower:
         return 'uchicago'
 
+    # World Scientific. Atypon's *older* skin -- same platform as ACM/PNAS,
+    # different markup. See publisher/worldscientific.py. ⚠️ Headed only
+    # (Cloudflare).
+    elif 'worldscientific.com' in url_lower:
+        return 'worldscientific'
+    elif '10.1142' in url_lower:
+        return 'worldscientific'
+
     # Wiley Online Library
     elif 'onlinelibrary.wiley.com' in url_lower:
         return 'wiley'
@@ -308,6 +317,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return ResearchingHandler(**kwargs)
     elif publisher == 'uchicago':
         return UChicagoHandler(**kwargs)
+    elif publisher == 'worldscientific':
+        return WorldScientificHandler(**kwargs)
     elif publisher == 'science':
         return ScienceHandler(**kwargs)
     elif publisher == 'sciencedirect':

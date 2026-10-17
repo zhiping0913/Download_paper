@@ -94,81 +94,10 @@ class UChicagoHandler(ACMHandler):
     # ------------------------------------------------------------------
     # Metadata
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _dc(soup: BeautifulSoup, name: str) -> List[str]:
-        """Every ``<meta name="dc.X">`` value, in document order.
-
-        Dublin Core repeats a name per value (one ``dc.Creator`` per author),
-        so the caller decides whether it wants the first or all of them.
-        """
-        out = []
-        for tag in soup.find_all('meta', attrs={'name': name}):
-            value = (tag.get('content') or '').strip()
-            if value:
-                out.append(value)
-        return out
-
-    @classmethod
-    def _dc_one(cls, soup: BeautifulSoup, name: str) -> str:
-        values = cls._dc(soup, name)
-        return values[0] if values else ''
-
-    @staticmethod
-    def _clean_author(name: str) -> str:
-        """``'Diego \xa0San\xa0Mauro'`` → ``'Diego San Mauro'``.
-
-        ⚠️ UChicago separates the parts of a name with **non-breaking
-        spaces**, sometimes doubled with a normal one. Left alone they travel
-        into ``metadata.json`` and the markdown byline, where a search for
-        "Diego San Mauro" does not match.
-        """
-        return re.sub(r'\s+', ' ', (name or '').replace('\xa0', ' ')).strip()
-
-    @classmethod
-    def _dc_doi(cls, soup: BeautifulSoup) -> str:
-        """The DOI out of ``dc.Identifier``.
-
-        ⚠️ That name is used for **five different identifiers** on one page
-        (an internal article number, the DOI, a stock number, the PMID and a
-        price line), so "the first dc.Identifier" is not the DOI. There is
-        also a ``publication_doi`` meta; this reads whichever looks like a
-        DOI.
-        """
-        for value in cls._dc(soup, 'dc.Identifier') + cls._dc(soup, 'publication_doi'):
-            if re.fullmatch(r'10\.\d{4,9}/\S+', value):
-                return value
-        return ''
-
-    @classmethod
-    def _enumeration(cls, soup: BeautifulSoup) -> tuple:
-        """``('165', '5')`` from ``div.core-enumeration``.
-
-        📌 Volume and issue are **not** in any meta tag here (``dc.Coverage``
-        is "world"), so they come off the page's own enumeration line --
-        "Volume 165 , Number 5". Without this, ``metadata.json`` would print
-        them empty for every UChicago article, since the workflow takes those
-        fields from the handler.
-        """
-        for el in soup.find_all(class_='core-enumeration'):
-            text = el.get_text(' ', strip=True)
-            match = re.search(r'Volume\s*(\S+?)\s*[,•]\s*Number\s*(\S+?)(?:\s|$|[,•])',
-                              text)
-            if match:
-                return match.group(1), match.group(2)
-        return '', ''
-
-    @staticmethod
-    def _pagination(soup: BeautifulSoup) -> str:
-        """``'590-599'`` from ``div.core-pagination`` ("Pages : 590 - 599")."""
-        el = soup.find(class_='core-pagination')
-        if el is None:
-            return ''
-        match = re.search(r'(\d+)\s*[-–]\s*(\d+)', el.get_text(' ', strip=True))
-        if match:
-            return f"{match.group(1)}-{match.group(2)}"
-        match = re.search(r'(\d+)', el.get_text(' ', strip=True))
-        return match.group(1) if match else ''
+    #
+    # 📌 The Dublin Core readers live in acm.py: World Scientific ships the
+    # same meta tags (and no usable citation_*), so they are an Atypon trait,
+    # not a UChicago one.
 
     async def extract_metadata(self, page) -> dict:
         """Bibliographic metadata, out of the Dublin Core meta tags."""
