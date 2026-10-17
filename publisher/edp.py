@@ -50,10 +50,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup, NavigableString
 
+from core.utilities import html_looks_like_bot_challenge
 from html_to_md_converter import (
     cleanup_markdown,
     convert_html_to_markdown,
@@ -154,6 +155,24 @@ class EDPHandler(PublisherHandler):
         just its URL), so this is the contract's answer and nothing more.
         """
         return self._olm_url(await self.get_page_html()) or None
+
+    def _warn_if_challenged(self, html: str) -> None:
+        """Say which domain needs a visit, when DataDome answered instead.
+
+        ⚠️ **EDP's DataDome cookie is per domain, and EDP is one journal per
+        domain.** Seeding the real Chrome profile with a visit to
+        epj-conferences.org does **not** get e3s-conferences.org in -- user
+        measured. The seeded cookie is the whole mechanism here (nothing in
+        this repo can solve the interstitial: it has no clickable widget), so
+        when it is missing the only useful output is *which* host to open
+        once by hand. Otherwise the run looks like an extraction bug.
+        """
+        if not html or not html_looks_like_bot_challenge(html):
+            return
+        host = urlsplit(self.actual_base_url or self.FALLBACK_BASE).netloc
+        print(f"  ⚠️  这一页是 DataDome 的拦截页，不是文章。"
+              f"EDP 的 cookie **按域名隔离**，为别的 EDP 刊播种不算 —— "
+              f"请在真实 Chrome 里打开一次 https://{host}/ 再重跑")
 
     # ------------------------------------------------------------------
     # The abstract page → the full-text page
@@ -1101,6 +1120,7 @@ class EDPHandler(PublisherHandler):
 
         try:
             html = await self.get_page_html(page)
+            self._warn_if_challenged(html)
             self._fulltext_url = self._fulltext_url_from_html(html) or self.actual_base_url
             # ⚠️ Before anything reads the markup: doi.org lands on the
             # abstract page for some journals, and every selector below

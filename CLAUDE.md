@@ -2532,13 +2532,44 @@ md **420 行**、6 张图（**这篇的 `F<N>.html` 上没有 `a.btn2.original`�
 （没有 full html）md **28 行**：标题/作者/卷期页/摘要 983 字符 + PDF 1.3 MB +
 49 条 Crossref 参考文献，并明说没有 full html 版本。
 
-⚠️ **必须有头，而且真实 Chrome profile 得访问过这个站一次。** EDP 前面是
+#### 📌 不维护域名清单：按 DOI 前缀 + 页面自己声明的出版商识别
+
+EDP **一个刊一个域名，而且有几十个** —— aanda.org、epjap.org、
+epj-conferences.org、**edp-open.org**（`10.1051/epjam/2023004`）、
+**e3s-conferences.org**（`10.1051/e3sconf/201912803002`）… 先加进来的那两个
+（epjap / epjconf）就不覆盖后面这两个。任何清单到下一个刊上线那天就是错的。
+
+- 📌 **导航前**：`10.1051` 前缀就是真正的标识（Crossref 把这个前缀发给 EDP
+  Sciences），足够决定 handler 和有头/无头
+- ❌ **导航后只有落地 URL，而 EDP 的文章 URL 里没有 DOI**
+  （`/articles/epjam/2023/01/ea220038/ea220038.html`）—— 于是
+  `detect_publisher_from_url` 答 `unknown`，主流程会把这篇**改派给兜底
+  handler**。这正是当初那张域名清单的由来
+- 📌 **正解是问页面自己**：新增 `orchestrator.detect_publisher_from_html()`，
+  读 `<meta name="citation_publisher">`（或 `dc.publisher`），按**出版商名字**
+  查一张小表（`PUBLISHER_NAME_TOKENS`，目前只有 `edp sciences` 一条）。
+  ⚠️ **只在 URL 答不出来时才问**，所以现有任何一家的路由都不可能被它改掉；
+  有头、无头两条分支都加了同一道回落，并且日志会说清是哪条判据生效
+- ✅ 实测：四份 EDP 存档（aanda / epjap 摘要页 / epjap 正文页 / epjconf）
+  html 判定全部为 `edp`，PNAS 存档为 `''`（不误判）
+
+⚠️ **必须有头，而且真实 Chrome profile 得访问过这个站一次 —— 每个域名各一次。** EDP 前面是
 **DataDome** 而不是 Cloudflare：空 profile 收到的是 403 加一张
 `geo.captcha-delivery.com` 的 interstitial，而本仓的 Turnstile 点击机器在那上面
 **没有任何可点的东西**（实测：全新空 profile 的 Chrome 在 5 个不同 URL 上都停在
 `body=0`、60 秒不动）。用户在自己的 Chrome 里打开过一次之后，播种过来的
 `datadome` cookie 让**同一份代码 2 秒就拿到文章**。所以**那个 cookie 就是全部机制**
 —— 这也是这里不去尝试解 interstitial 的原因。
+
+- ⚠️ **cookie 按域名隔离，而 EDP 一个刊一个域名**：用户实测，在真实浏览器里
+  播种了 `epj-conferences.org` **并不能**让脚本访问 `e3s-conferences.org`。
+  所以每个新域名都要人手开一次
+- 📌 因此拿到拦截页时**要明说是哪个域名要开**（`_warn_if_challenged`）：
+  这里唯一有用的输出就是那句话，否则整次运行看着像提取代码坏了。
+  顺带把 `captcha-delivery.com` 加进 `core.utilities` 的挑战标记表 ——
+  DataDome 的那张 772 字节的页以前只靠「短页面 + 含 'captcha'」那条弱分支命中。
+  ✅ 实测 97 份存档 HTML：新增这个标记后被判为拦截页的仍然只有 1 份，
+  而那一份**改之前就已经**命中 3 个 Cloudflare 标记（它真的是挑战页）
 
 ✅ 端到端实测：
 

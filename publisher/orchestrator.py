@@ -267,15 +267,14 @@ def detect_publisher_from_url(url: str) -> str:
     # figures and no PDF: NatureHandler's selectors match nothing here, and
     # nothing in the log says so.
     #
-    # ⚠️ **One domain per journal, and there are dozens** (aanda.org,
-    # epjap.org, epjn.org, epj-conferences.org, …), so the EPJ family is
-    # matched by shape rather than by a list that would be out of date by
-    # the next journal launch. The prefix below is what routes before
-    # navigation anyway; this branch only has to recognise where we landed.
-    elif ('aanda.org' in url_lower
-          or 'edpsciences.org' in url_lower
-          or re.search(r'//(?:www\.)?epj[a-z0-9-]*\.org\b', url_lower)):
-        return 'edp'
+    # ⚠️ **No domain list for EDP.** It runs one journal per domain and there
+    # are dozens of them -- aanda.org, epjap.org, epj-conferences.org,
+    # edp-open.org, e3s-conferences.org … -- so any list is wrong by the next
+    # journal launch, and the two that got added first (epjap/epjconf) did
+    # not cover edp-open.org or e3s-conferences.org at all. The prefix is the
+    # real identifier (Crossref assigned 10.1051 to EDP Sciences), and when
+    # only a landed URL is in hand -- which carries no DOI on this platform
+    # -- the page says who published it: see detect_publisher_from_html.
     elif '10.1051' in url_lower:
         return 'edp'
 
@@ -288,6 +287,57 @@ def detect_publisher_from_url(url: str) -> str:
         return 'arxiv'
 
     return 'unknown'
+
+
+#: Publisher names, as the page itself declares them, that identify a
+#: handler. ⚠️ Matched on the **publisher's own meta tag**, not on a host, so
+#: it keeps working when a platform launches another journal domain.
+#: Compared case-insensitively against the whole value.
+PUBLISHER_NAME_TOKENS = {
+    'edp sciences': 'edp',
+}
+
+_PUBLISHER_META_RE = re.compile(
+    r'<meta\b[^>]*\bname\s*=\s*["\']?(?:citation_publisher|dc\.publisher)["\']?'
+    r'[^>]*>', re.I)
+_META_CONTENT_RE = re.compile(r'\bcontent\s*=\s*"([^"]*)"|\bcontent\s*=\s*\'([^\']*)\'',
+                              re.I)
+
+
+def detect_publisher_from_html(html: str) -> str:
+    """Who published this page, according to the page itself.
+
+    📌 **Why this exists.** ``detect_publisher_from_url`` is all a URL can
+    give, and for some platforms a URL is not enough: EDP Sciences serves one
+    journal per domain (aanda.org, epjap.org, edp-open.org,
+    e3s-conferences.org, …) and its article URLs **do not contain the DOI**
+    (``/articles/epjam/2023/01/ea220038/ea220038.html``). Routing by DOI
+    prefix works before navigation; after it, the landed URL matched nothing
+    and the paper was handed to the fallback handler -- which is how a
+    maintained-by-hand domain list came about in the first place.
+
+    So this reads what the publisher declares about itself:
+    ``<meta name="citation_publisher">`` (or ``dc.publisher``). The mapping is
+    a *name* table, and only names that would otherwise be unrecognised need
+    to be in it -- this is a last resort, not a replacement for the URL
+    detector.
+
+    Returns '' when nothing is declared or the name is not in the table, so
+    the caller keeps whatever answer it already had.
+    """
+    if not html:
+        return ''
+    # Bounded: these tags are in <head>, and the body can be megabytes.
+    head = html[:300000]
+    for tag in _PUBLISHER_META_RE.findall(head):
+        match = _META_CONTENT_RE.search(tag)
+        if not match:
+            continue
+        value = (match.group(1) or match.group(2) or '').strip().lower()
+        token = PUBLISHER_NAME_TOKENS.get(value)
+        if token:
+            return token
+    return ''
 
 
 def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
