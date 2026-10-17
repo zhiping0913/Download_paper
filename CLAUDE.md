@@ -2431,6 +2431,13 @@ Atypon 旧皮肤）。**层级只能取自标签名**：A&A 的附录是 `h2.sec
   （EPJ Web of Conferences）只有 PDF：既没有 `citation_fulltext_html_url`，
   "Article contents"里也没有"Full HTML"条目。那时**什么都不跳**，摘要、元数据、
   PDF 照常，而 md 里**明说**"没有 full html 版本" —— 一段空白看着像提取失败
+- ❌ **顺带发现：只有摘要的那篇，参考文献一条都没进 md** —— 而日志里明写着
+  `✓ 从Crossref获取49条参考文献`。病根是**两个不同的键**：主流程把 Crossref 那份
+  放进 `metadata['_crossref_references']`（给 BibTeX 用），而 md 读的是
+  `metadata['references']`（页面上那份）。摘要页上**没有** `ol.references`
+  （EDP 把列表放在单独的 `/ref/` 页），于是 49 条参考文献就躺在 metadata 里
+  没人读。现在页面那份为空时回落到 Crossref 那份（`unstructured` 优先，
+  否则 `generate_reference_text_from_crossref`，同 OUP）
 
 #### olm 那一页有两种内容，只能看标记区分
 
@@ -2502,6 +2509,13 @@ Atypon 旧皮肤）。**层级只能取自标签名**：A&A 的附录是 `h2.sec
   网页转码版，**Original 才是作者交上来的文件**。它通常是最后一个，但判据是**名字**
   不是位置。说明取播放器**上面**那句（"Movie 1 associated with Fig. 1"）——
   只有那里写了影片编号和它属于哪张图。
+
+✅ 另两篇实测：`10.1051/epjap/2023220290`（摘要落地 → 跳 full html）
+md **420 行**、6 张图（**这篇的 `F<N>.html` 上没有 `a.btn2.original`，于是按设计
+回落到 1200px JPEG** —— 那条回落第一次被真实触发）、5 张表、补充材料
+`ap220290-1-olm.pdf` 1 个、`paper.pdf` 19 MB；`10.1051/epjconf/202634803001`
+（没有 full html）md **28 行**：标题/作者/卷期页/摘要 983 字符 + PDF 1.3 MB +
+49 条 Crossref 参考文献，并明说没有 full html 版本。
 
 ⚠️ **必须有头，而且真实 Chrome profile 得访问过这个站一次。** EDP 前面是
 **DataDome** 而不是 Cloudflare：空 profile 收到的是 403 加一张
