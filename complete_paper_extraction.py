@@ -827,6 +827,13 @@ def apply_crossref_type_override(publisher: str, crossref_data: dict) -> str:
     return publisher
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.tif', '.tiff', '.svg'}
 
+#: Formats a *figure* file legitimately comes in, beyond the images above.
+#: ⚠️ Vector ones are here so a name does not have to lie about them: EDP's
+#: "Download original image" is PostScript on older A&A papers and PDF on
+#: others. They are not in IMAGE_EXTENSIONS because nothing renders them
+#: inline.
+FIGURE_FILE_EXTENSIONS = IMAGE_EXTENSIONS | {'.pdf', '.ps', '.eps', '.svgz'}
+
 MIME_TO_EXT = {
     'application/pdf': '.pdf',
     'application/zip': '.zip',
@@ -861,6 +868,12 @@ MIME_TO_EXT = {
     'image/bmp': '.bmp',
     'image/webp': '.webp',
     'image/svg+xml': '.svg',
+    # ⚠️ EDP's "Download original image" is PostScript on older A&A papers
+    # (10.1051/0004-6361/201424528), so without these the sniffer recognises
+    # nothing and the file keeps whatever name was guessed for it.
+    'application/postscript': '.ps',
+    'application/eps': '.eps',
+    'image/x-eps': '.eps',
 }
 
 
@@ -1691,11 +1704,22 @@ def original_image_filename(image_url: str, fig_num: int, default_ext: str = '.p
         # deepest child, so cap at 80 here to stay inside it. Real publisher
         # names are ~19 chars (ppcfadd59df1_hr.jpg), so this never bites.
         name_cap = 80 if IS_WINDOWS else 180
-        if basename and Path(basename).suffix.lower() in IMAGE_EXTENSIONS:
+        url_suffix = Path(basename).suffix.lower() if basename else ''
+        if basename and url_suffix in IMAGE_EXTENSIONS:
             if len(basename) > name_cap:
                 suffix = Path(basename).suffix
                 basename = f"{Path(basename).stem[:name_cap - len(suffix)]}{suffix}"
             return basename
+        # ❌ Not an image extension -- and the old code then **invented**
+        # ".png". Measured on EDP 10.1051/0004-6361/201424528, whose figure
+        # originals are PostScript: 12 files named figure_N.png that were all
+        # `application/postscript`. A name that lies about its format is the
+        # same class of defect as a .jpg that is really a web page.
+        # ⚠️ Carried over only when it names a format figures actually come
+        # in -- a URL ending in ".cgi" or ".aspx" is an endpoint, not a file
+        # type, and one with no filename at all still gets the default.
+        if url_suffix in FIGURE_FILE_EXTENSIONS:
+            return f"figure_{fig_num}{url_suffix}"
 
     return f"figure_{fig_num}{default_ext}"
 

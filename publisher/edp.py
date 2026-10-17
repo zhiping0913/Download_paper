@@ -643,15 +643,31 @@ class EDPHandler(PublisherHandler):
     # Figures
     # ==================================================================
 
+    #: Extensions that are actually an image a reader can open. ⚠️ Used to
+    #: rank a figure's renditions, **not** to reject anything.
+    RASTER_EXTS = ('.tif', '.tiff', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp')
+
     def extract_figures_from_html(self, html: str) -> Dict[str, dict]:
-        """``{'fig_N': {'url': original, 'original_url': thumbnail}}``.
+        """``{'fig_N': {'url': best, 'original_url': the next best}}``.
 
         ⚠️ **The article page only has thumbnails** (``…-fig1_small.jpg``).
-        The full-size rendering is advertised on the figure's own page as
-        ``a.btn2.original`` (a ``.tif``), with ``div.img_annex img`` -- the
-        1200px JPEG -- next to it. Preference order is original → annex JPEG →
-        thumbnail, so a figure page that failed to load costs resolution and
-        not the image.
+        The full-size renditions are on the figure's own page: the "Download
+        original image" button (``a.btn2.original``) and the ~1200px picture
+        the page displays (``div.img_annex img``) -- **two different files**.
+
+        ❌ **"Original" is not always an image.** A&A takes vector figures, so
+        the original is a ``.tif`` on 10.1051/0004-6361/202346508 (2025) but
+        **PostScript** on 10.1051/0004-6361/201424528 (2015) -- and that
+        ``.ps`` went through the figure pipeline as ``figure_1.png``: a file
+        named PNG that is PostScript, the same class of defect as a ``.jpg``
+        that is really a web page. No markdown viewer can show it either.
+
+        So the ranking is **raster original → the page's own raster →
+        thumbnail → a non-raster original**: the vector file is used only when
+        there is no picture at all. Resolution still wins where both are
+        images (the ``.tif`` is still preferred over the 1200px JPEG); what
+        changed is that a file the reader cannot open is now the last resort
+        instead of the first choice.
         """
         soup = parse_article_html(html or '')
         figures: Dict[str, dict] = {}
@@ -662,28 +678,42 @@ class EDPHandler(PublisherHandler):
             img = inset.find('img')
             if img is not None:
                 thumb = (img.get('src') or '').strip()
-            best = self._original_image_url(name) or thumb
-            if not best:
+            original, raster = self._figure_page_images(name)
+            ranked = ([original] if self._is_raster(original) else []) \
+                + [raster, thumb] \
+                + ([original] if original and not self._is_raster(original) else [])
+            candidates = [c for c in ranked if c]
+            if not candidates:
                 continue
+            best = candidates[0]
+            backup = next((c for c in candidates[1:] if c != best), '')
             figures[f'fig_{number}'] = {
                 'url': self._absolute(best),
-                'original_url': (self._absolute(thumb)
-                                 if thumb and thumb != best else None),
+                'original_url': self._absolute(backup) if backup else None,
             }
         return figures
 
-    def _original_image_url(self, name: str) -> str:
-        """The best image URL the figure's own page offers, or ''."""
+    @classmethod
+    def _is_raster(cls, url: str) -> bool:
+        path = (url or '').split('?', 1)[0].split('#', 1)[0].lower()
+        return path.endswith(cls.RASTER_EXTS)
+
+    def _figure_page_images(self, name: str) -> Tuple[str, str]:
+        """``(original, raster)`` from the figure's own page; either may be ''.
+
+        The "Download original image" button and the picture the page shows
+        are two different files -- and on older articles two different
+        formats -- so both are reported and the caller ranks them.
+        """
         html = self._side_pages.get(name) or ''
         if not html:
-            return ''
-        soup = BeautifulSoup(html, 'html.parser')
+            return '', ''
+        soup = parse_article_html(html)
         annex = soup.find(id='annex') or soup
         original = annex.find('a', class_='original', href=True)
-        if original is not None:
-            return original['href'].strip()
         img = annex.select_one('div.img_annex img[src]')
-        return img['src'].strip() if img is not None else ''
+        return ((original['href'].strip() if original is not None else ''),
+                (img['src'].strip() if img is not None else ''))
 
     def _absolute(self, url: str) -> str:
         if not url:

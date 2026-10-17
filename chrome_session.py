@@ -1136,15 +1136,50 @@ async def _harvest_document_bodies(ws, sink: dict, limit: int = 48) -> int:
     return fetched
 
 
-async def _send(ws, method: str, params: dict = None) -> dict:
-    """发送 CDP 命令并等待结果。跳过事件消息（无 id）。"""
+#: Per-command ceiling for a CDP round trip. ⚠️ A **deadlock breaker, not a
+#: performance knob**: a CDP command answers in milliseconds, so this only
+#: ever fires when the renderer has stopped answering at all.
+CDP_CMD_TIMEOUT = float(os.environ.get("DP_CDP_CMD_TIMEOUT", "30") or 30)
+
+
+async def _send(ws, method: str, params: dict = None,
+                timeout: float = None) -> dict:
+    """发送 CDP 命令并等待结果。跳过事件消息（无 id）。
+
+    ⚠️ **It used to wait forever.** ``ws.recv()`` takes no timeout, so a
+    wedged renderer parked the whole run on a single ``Runtime.evaluate``.
+    Reported on 10.1051/0004-6361/201424528: the preload printed
+    "✅ 挑战通过" and then "⏳ 等待页面内容渲染完成（最多 60s）" and never
+    came back -- the 60s budget was counted in ``asyncio.sleep`` calls that
+    were never reached. Every other wait in this repo has a ceiling; this,
+    the one every single CDP call goes through, did not.
+
+    📌 Timing one command out is safe **because of the loop below**: a reply
+    whose id is not the one being awaited is discarded, so a late answer to
+    an abandoned command cannot be mistaken for the next command's result.
+    """
     msg_id = id(object()) % 1000000
     msg = {"id": msg_id, "method": method}
     if params:
         msg["params"] = params
     await ws.send(json.dumps(msg))
+    budget = CDP_CMD_TIMEOUT if timeout is None else timeout
+    deadline = time.monotonic() + budget if budget and budget > 0 else None
     while True:
-        raw = await ws.recv()
+        if deadline is None:
+            raw = await ws.recv()
+        else:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError(
+                    f"CDP {method} 在 {budget:.0f}s 内没有响应")
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+            except asyncio.TimeoutError:
+                # Re-raised with the method name: "TimeoutError" on its own
+                # says nothing about which call stopped answering.
+                raise asyncio.TimeoutError(
+                    f"CDP {method} 在 {budget:.0f}s 内没有响应") from None
         try:
             resp = json.loads(raw)
         except json.JSONDecodeError:
@@ -1164,6 +1199,61 @@ async def _send(ws, method: str, params: dict = None) -> dict:
             if "error" in resp:
                 raise RuntimeError(f"CDP error: {resp['error']}")
             return resp.get("result", {})
+
+
+async def _wait_for_stable_body(ws, initial_len: int, *,
+                                budget_s: float = 60.0,
+                                interval_s: float = 2.0,
+                                label: str = "内容渲染") -> int:
+    """Wait until ``document.body.innerText`` stops growing. Returns its length.
+
+    📌 **One definition of "the page has finished rendering"** -- this was
+    four near-identical copies in ``bypass_cloudflare_cdp`` (three 60s ones
+    and a 10s one), which is how the missing timeout below came to exist in
+    all of them at once.
+
+    ⚠️ **The budget is wall clock, not a count of sleeps.** The old loops did
+    ``waited += 2`` per iteration, so "最多 60s" only held while every
+    ``Runtime.evaluate`` answered; when the renderer stopped answering, the
+    one call that had no ceiling held the run forever (see ``_send``).
+
+    ⚠️ **A renderer that stops answering ends the wait, it does not fail the
+    run**: by the time this is called the served document is already captured
+    and on disk, so the honest move is to say so and carry on with what the
+    page last reported.
+    """
+    deadline = time.monotonic() + budget_s
+    last_len = initial_len
+    stable = 0
+    while stable < 3:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(interval_s, remaining))
+        try:
+            probe = await _send(ws, "Runtime.evaluate", {
+                "expression": "(document.body?.innerText || '').length"
+            }, timeout=min(10.0, max(1.0, deadline - time.monotonic())))
+        except asyncio.TimeoutError:
+            print(f"  ⚠️  渲染进程不再响应 Runtime.evaluate —— "
+                  f"不再等了，用已经捕获到的 {last_len} 字继续")
+            break
+        except Exception:
+            # Still loading: an evaluate against a document being replaced
+            # raises. Not evidence about stability either way.
+            stable = 0
+            continue
+        cur_len = probe.get("result", {}).get("value", 0) or 0
+        # Stable = unchanged twice in a row and not an almost-empty page.
+        # ⚠️ No 5000-character floor: a short paper would never settle.
+        if cur_len == last_len and cur_len > 200:
+            stable += 1
+        else:
+            stable = 0
+            last_len = cur_len
+    waited = max(0.0, budget_s - max(0.0, deadline - time.monotonic()))
+    print(f"  ✓ {label}完成（{last_len} 字，等待 {waited:.0f}s）")
+    return last_len
 
 
 async def _get_page_ws_url(debug_port: int = 9222) -> Optional[str]:
@@ -2333,26 +2423,7 @@ async def bypass_cloudflare_cdp(
                         # DOI 出现说明正文已加载，等内容稳定
                         if wait_for_content:
                             print(f"  ⏳ 等待页面内容渲染完成（body 稳定检测，最多 60s）...")
-                            stable_count = 0
-                            last_body_len = len(body_text)
-                            max_wait = 60
-                            waited = 0
-                            while waited < max_wait and stable_count < 3:
-                                await asyncio.sleep(2)
-                                waited += 2
-                                try:
-                                    b_r2 = await _send(ws, "Runtime.evaluate", {
-                                        "expression": "(document.body?.innerText || '').length"
-                                    })
-                                    cur_len = b_r2.get("result", {}).get("value", 0)
-                                    if cur_len == last_body_len and cur_len > 200:
-                                        stable_count += 1
-                                    else:
-                                        stable_count = 0
-                                        last_body_len = cur_len
-                                except Exception:
-                                    stable_count = 0
-                            print(f"  ✓ 内容渲染完成（{last_body_len} 字，等待 {waited}s）")
+                            await _wait_for_stable_body(ws, len(body_text))
                         target_id = _current_ws_url.rstrip("/").split("/")[-1]
                         result["success"] = True
                         result["target_id"] = target_id
@@ -2428,51 +2499,14 @@ async def bypass_cloudflare_cdp(
                         # AIP 等期刊是 JS 渲染的，标题先出来，正文和图片后加载
                         if wait_for_content:
                             print(f"  ⏳ 等待页面内容渲染完成（body 稳定检测，最多 60s）...")
-                            stable_count = 0
-                            last_body_len = len(body_text)
-                            max_wait = 60
-                            waited = 0
-                            while waited < max_wait and stable_count < 3:
-                                await asyncio.sleep(2)
-                                waited += 2
-                                try:
-                                    b_r2 = await _send(ws, "Runtime.evaluate", {
-                                        "expression": "(document.body?.innerText || '').length"
-                                    })
-                                    cur_len = b_r2.get("result", {}).get("value", 0)
-                                    # 稳定判定：连续不变 + body>200（过滤几乎空页）
-                                    # 不再用 5000 字硬门槛，避免短论文永远不稳定
-                                    if cur_len == last_body_len and cur_len > 200:
-                                        stable_count += 1
-                                    else:
-                                        stable_count = 0
-                                        last_body_len = cur_len
-                                except Exception:
-                                    stable_count = 0
-                            print(f"  ✓ 内容渲染完成（{last_body_len} 字，等待 {waited}s）")
+                            await _wait_for_stable_body(ws, len(body_text))
                         else:
                             # 不需要 wait_for_content 时，也等一次 body 稳定（简单版）
                             # 避免页面还在加载就返回
                             print(f"  ⏳ 等待页面初始稳定（最多 10s）...")
-                            stable_count = 0
-                            last_body_len = len(body_text)
-                            waited = 0
-                            while waited < 10 and stable_count < 3:
-                                await asyncio.sleep(1)
-                                waited += 1
-                                try:
-                                    b_r2 = await _send(ws, "Runtime.evaluate", {
-                                        "expression": "(document.body?.innerText || '').length"
-                                    })
-                                    cur_len = b_r2.get("result", {}).get("value", 0)
-                                    if cur_len == last_body_len and cur_len > 200:
-                                        stable_count += 1
-                                    else:
-                                        stable_count = 0
-                                        last_body_len = cur_len
-                                except Exception:
-                                    stable_count = 0
-                            print(f"  ✓ 页面初始稳定（{last_body_len} 字，等待 {waited}s）")
+                            await _wait_for_stable_body(
+                                ws, len(body_text), budget_s=10,
+                                interval_s=1, label="页面初始稳定")
                         target_id = _current_ws_url.rstrip("/").split("/")[-1]
                         result["success"] = True
                         result["target_id"] = target_id
@@ -2523,33 +2557,14 @@ async def bypass_cloudflare_cdp(
                                 pass  # 加载中可能报错
                         if wait_for_content:
                             print(f"  ⏳ 等待页面内容渲染完成（body 稳定检测，最多 60s）...")
-                            stable_count = 0
                             try:
                                 ib = await _send(ws, "Runtime.evaluate", {
                                     "expression": "(document.body?.innerText || '').length"
                                 })
-                                last_body_len = ib.get("result", {}).get("value", 0)
+                                _initial_len = ib.get("result", {}).get("value", 0) or 0
                             except Exception:
-                                last_body_len = 0
-                            max_wait = 60
-                            waited = 0
-                            while waited < max_wait and stable_count < 3:
-                                await asyncio.sleep(2)
-                                waited += 2
-                                try:
-                                    b_r2 = await _send(ws, "Runtime.evaluate", {
-                                        "expression": "(document.body?.innerText || '').length"
-                                    })
-                                    cur_len = b_r2.get("result", {}).get("value", 0)
-                                    # 稳定判定：连续不变 + body>200（过滤几乎空页）
-                                    if cur_len == last_body_len and cur_len > 200:
-                                        stable_count += 1
-                                    else:
-                                        stable_count = 0
-                                        last_body_len = cur_len
-                                except Exception:
-                                    stable_count = 0
-                            print(f"  ✓ 内容渲染完成（{last_body_len} 字，等待 {waited}s）")
+                                _initial_len = 0
+                            await _wait_for_stable_body(ws, _initial_len)
                         target_id = _current_ws_url.rstrip("/").split("/")[-1]
                         result["success"] = True
                         result["target_id"] = target_id
