@@ -1,9 +1,10 @@
 ## aps
-10.1103/PhysRevLett.124.185004   #PhysRevLett, supplemental
+10.1103/PhysRevLett.124.185004   #supplemental
 10.1103/RevModPhys.79.1267
-10.1103/PhysRevX.7.041003   #Physical Review X, table, Popular Summary with key image, figure, formula, supplemental (mp4, description)
-10.1103/PhysRevAccelBeams.20.043401   #Physical Review Accelerators and Beams, figure, formula, supplemental (wmv, description)
-10.1103/PhysRevA.98.043407   #Physical Review A, table, figure, formula (lagre number), nested list, supplemental (mp4, description)
+10.1103/PhysRevX.7.041003   #table, Popular Summary with key image, figure, formula, supplemental (mp4, description)
+10.1103/PhysRevAccelBeams.20.043401   figure, formula, supplemental (wmv, description)
+10.1103/PhysRevA.98.043407   #table, figure, formula (lagre number), nested list, supplemental (mp4, description)
+10.1103/physrevfluids.5.123402   #supplemental (multi mov)
 
 ## nature, springer
 10.1038/s41566-023-01311-z   #nature photonics, article-equation, Supplementary information
@@ -129,4 +130,28 @@
 ## IPHY
 10.7498/aps.75.20260331   #figure, formula, table with formula and note, supplemental
 10.1088/0256-307X/41/11/111201    #figure, formula, table with formula, nested list, supplemental   https://cpl.iphy.ac.cn/en/article/id/6df20af1-55e1-4b52-84d7-3dda924e6b7e
+
+## ufn
+10.3367/ufnr.0182.201210d.1033
+
+## jstage
+10.2184/lsj.51.5_337
+
+## Taylor & Francis
+
+
+## uchicago
+10.1086/429523   #figure, table with note, footnote, supplemental
+10.1086/742128   #figure, table with note, formula, footnote, supplemental
+
+## worldscientific
+10.1142/S0217751X25300133   #figure, table, footnote, formula, nested lists
+
+##EDP Sciences
+10.1051/0004-6361/202243956   #aanda.org/ formula, figure, nested lists, table
+10.1051/0004-6361/202346508   #aanda.org/ formula, figure, table, footnote, movies
+10.1051/epjap/2023220290   #epjap.org/ formula, figure, table, supplemental
+10.1051/epjconf/202634803001   #epj-conferences.org/
+10.1051/epjam/2023004   #edp-open.org/
+10.1051/e3sconf/201912803002   #e3s-conferences.org/
 
