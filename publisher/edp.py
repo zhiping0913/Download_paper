@@ -1013,6 +1013,50 @@ class EDPHandler(PublisherHandler):
                 references.append(text)
         return references
 
+    @staticmethod
+    def reference_page_url(html: str) -> str:
+        """The "References" entry of the "Article contents" block, or ''.
+
+        EDP keeps the reference list on its own page
+        (``…/ref/2026/04/…/….html``) and links it from the same block that
+        offers the PDF and the supplementary material.
+        """
+        soup = parse_article_html(html or '')
+        for anchor_el in soup.select('ul.article_doc a[href], div.article_doc a[href]'):
+            if '/ref/' in anchor_el['href']:
+                return anchor_el['href'].strip()
+        return ''
+
+    async def _references(self, page, html: str) -> List[str]:
+        """The reference list, from the publisher's own References page.
+
+        📌 **Why not just the article page**: an abstract-only article has no
+        ``ol.references`` at all -- measured on
+        10.1051/epjconf/202634803001, whose 49 references exist *only* on the
+        ``/ref/`` page. And the two are the same markup, so one extractor
+        serves both.
+
+        The page is landed as ``ref.html`` like every other page this run
+        opens. The article's own list stays the fallback: if the fetch comes
+        back empty (or there is no link), nothing is lost on a full-text
+        article, which carries the list inline.
+        """
+        inline = self.extract_references_from_html(html)
+        target = self.reference_page_url(html)
+        if not target:
+            return inline
+        target = urljoin(self._fulltext_url or self.actual_base_url, target)
+        ref_html = await self._load_side_page(page, 'ref', target)
+        from_page = self.extract_references_from_html(ref_html)
+        if from_page:
+            if len(from_page) != len(inline):
+                print(f"  ↪ 参考文献取自 References 页: {len(from_page)} 条"
+                      f"（正文页上是 {len(inline)} 条）")
+            return from_page
+        if ref_html:
+            print("  ⚠️  References 页上没有解析出条目，用正文页那份")
+        return inline
+
     async def extract_references(self, html: str = '') -> List[str]:
         return self.extract_references_from_html(html or await self.get_page_html())
 
@@ -1038,7 +1082,6 @@ class EDPHandler(PublisherHandler):
 
             metadata = self.extract_metadata_from_html(html)
             metadata['doi'] = doi or metadata.get('doi', '')
-            metadata['references'] = self.extract_references_from_html(html)
 
             pdf_url = await self.get_pdf_url(doi)
 
@@ -1063,6 +1106,8 @@ class EDPHandler(PublisherHandler):
                     self.extract_olm_items(olm_html))
                 if supplemental_urls:
                     metadata['_olm_heading'] = self.olm_heading(olm_html)
+
+            metadata['references'] = await self._references(page, html)
 
             figure_urls = self.extract_figures_from_html(html)
             body_md = self.extract_article_text_from_html(html)

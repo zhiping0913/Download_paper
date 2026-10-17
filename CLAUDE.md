@@ -2431,6 +2431,12 @@ Atypon 旧皮肤）。**层级只能取自标签名**：A&A 的附录是 `h2.sec
   （EPJ Web of Conferences）只有 PDF：既没有 `citation_fulltext_html_url`，
   "Article contents"里也没有"Full HTML"条目。那时**什么都不跳**，摘要、元数据、
   PDF 照常，而 md 里**明说**"没有 full html 版本" —— 一段空白看着像提取失败
+- 📌 **参考文献读出版商自己的 References 页**（"Article contents"里的
+  `/ref/…` 链接），同样落盘成 `ref.html`。它和正文页里那份是**同一套
+  `ol.references` 标记**，所以一个提取器两处通用；而摘要页**根本没有**那个列表 ——
+  `10.1051/epjconf/202634803001` 的 **49 条参考文献只存在于 `/ref/` 页上**。
+  正文页那份留作回落：取回为空（或没有这个链接）时，有正文的文章不会因此少东西。
+  实测：`/ref/` 页上 epjconf 49 条、A&A `202346508` 39 条（与正文页内那份同数）
 - ❌ **顺带发现：只有摘要的那篇，参考文献一条都没进 md** —— 而日志里明写着
   `✓ 从Crossref获取49条参考文献`。病根是**两个不同的键**：主流程把 Crossref 那份
   放进 `metadata['_crossref_references']`（给 BibTeX 用），而 md 读的是
