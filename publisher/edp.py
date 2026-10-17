@@ -57,6 +57,7 @@ from bs4 import BeautifulSoup, NavigableString
 from html_to_md_converter import cleanup_markdown, convert_html_to_markdown
 from publisher.base import PublisherHandler
 from publisher.wildcard import (
+    generate_reference_text_from_crossref,
     goto_and_capture_document,
     parse_article_html,
     html_table_to_markdown,
@@ -1166,6 +1167,18 @@ class EDPHandler(PublisherHandler):
             md.extend(['---', '', '## References', ''])
             for index, ref in enumerate(references, 1):
                 md.extend([f"[{index}] {ref}", ''])
+        elif metadata.get('_crossref_references'):
+            # ⚠️ An abstract-only article has no ``ol.references`` on the page
+            # (EDP keeps the list on a separate ``/ref/`` page), and the main
+            # flow's Crossref copy lands under ``_crossref_references`` --
+            # a different key, kept for BibTeX. Without this branch
+            # 10.1051/epjconf/202634803001 published **no references at all**
+            # while 49 of them were sitting in metadata.
+            md.extend(['---', '', '## References', ''])
+            for index, ref in enumerate(metadata['_crossref_references'], 1):
+                text = (ref.get('unstructured') or '').strip()
+                md.extend([f"[{index}] {text}" if text
+                           else generate_reference_text_from_crossref(ref, index=index), ''])
 
         return '\n'.join(md).rstrip() + '\n'
 
