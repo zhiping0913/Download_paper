@@ -30,6 +30,7 @@ from publisher.opticsjournal import OpticsJournalHandler
 from publisher.researching import ResearchingHandler
 from publisher.uchicago import UChicagoHandler
 from publisher.worldscientific import WorldScientificHandler
+from publisher.edp import EDPHandler
 
 
 def detect_publisher_from_url(url: str) -> str:
@@ -255,11 +256,25 @@ def detect_publisher_from_url(url: str) -> str:
         # Only check well-defined APS journal abbreviations
         return 'aps'
 
-    # EDP Sciences (routes through NatureHandler fallbacks)
-    elif 'epj-conferences.org' in url_lower:
-        return 'nature'
+    # EDP Sciences. ⚠️ **One platform, many journal domains** (A&A on
+    # aanda.org, the EPJ family on epj*.org, …), so both the prefix and the
+    # domains route here -- and the handler builds every URL it needs from
+    # the page's own citation_fulltext_html_url rather than from a host.
+    # ❌ Until now 10.1051 was mapped to 'nature', which is how
+    # 10.1051/0004-6361/202346508 came out as a title-less article with 0
+    # figures and no PDF: NatureHandler's selectors match nothing here, and
+    # nothing in the log says so.
+    elif ('aanda.org' in url_lower
+          or 'epj-conferences.org' in url_lower
+          or 'epjap.org' in url_lower
+          or 'epjc-conferences.org' in url_lower
+          or 'epjn.org' in url_lower
+          or 'epjnbp.org' in url_lower
+          or 'epjap.edpsciences.org' in url_lower
+          or 'edpsciences.org' in url_lower):
+        return 'edp'
     elif '10.1051' in url_lower:
-        return 'nature'
+        return 'edp'
 
     # Pleiades Publishing — delivered via link.springer.com, handled by NatureHandler
     elif '10.1134' in url_lower:
@@ -317,6 +332,8 @@ def get_publisher_handler(publisher: str, **kwargs) -> PublisherHandler:
         return ResearchingHandler(**kwargs)
     elif publisher == 'uchicago':
         return UChicagoHandler(**kwargs)
+    elif publisher == 'edp':
+        return EDPHandler(**kwargs)
     elif publisher == 'worldscientific':
         return WorldScientificHandler(**kwargs)
     elif publisher == 'science':
