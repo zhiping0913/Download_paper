@@ -357,6 +357,7 @@ Cloudflare 也不算数 —— clearance cookie 绑定在签发它的主机上�
 - `10.1109`、`ieeexplore.ieee.org` -> `ieee` **(REST 接口取正文/引用/补充材料/脚注，公式为 LaTeX 原文；PDF 走通用取数阶梯，`get_pdf_url()` 返回 `/stampPDF/getPDF.jsp`，直接回字节)**
 - `10.1145`、`dl.acm.org` -> `acm` **(开放获取的文章抓全文：正文/公式/算法图/补充材料/参考文献；仍被登录墙挡住的只有摘要。必须有头访问)**
 - `10.1073`、`pnas.org` -> `pnas` **(Atypon，与 ACM 同一套页面骨架，PNASHandler 继承 ACMHandler；必须有头访问)**
+- `10.1086`、`journals.uchicago.edu` -> `uchicago` **(Atypon，UChicagoHandler 继承 ACMHandler；元数据是 Dublin Core 不是 citation_*，卷/期/页取自页面的 core-enumeration / core-pagination；PDF 用页面的 a#downloadPdfUrl（`/doi/pdf/{doi}?download=true`，另有 pdfplus 版未采用）；必须有头访问)**
 - `10.7498`、`*.iphy.ac.cn` -> `iphy` **(物理学报等中科院物理所刊；正文来自页面自己 POST 的 articleFulltextData XHR，可无头)**
 - `10.1080`、`tandfonline.com` -> `tandf` **(abstract-only：网页公式多为图片，只抓摘要 + PDF + 补充材料；必须有头访问)**
 - `10.3367`、`ufn.ru` -> `ufn` **(abstract-only：俄英双版各有 DOI，俄文版为记录，英文版写进 additional_*；PDF 取俄文页；可无头)**
@@ -373,6 +374,7 @@ handler 创建由 `get_publisher_handler()` 负责：
 - `wiley` -> `WileyHandler`
 - `spie` -> `SPIEHandler`
 - `researching` -> `ResearchingHandler`
+- `uchicago` -> `UChicagoHandler`
 - `aps` -> `APSHandler`
 - `aip` -> `AIPHandler`
 - `iop` -> `IOPHandler`

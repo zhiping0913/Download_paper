@@ -373,6 +373,7 @@ Step 0 那一次 Crossref 响应、只为取文件起一次浏览器、以 PDF �
 | `10.1002` | WileyHandler | 有头 | 完整 |
 | `10.1117` / spiedigitallibrary.org | SPIEHandler | 有头 | 完整 |
 | `10.3788` / researching.cn | ResearchingHandler | 有头 | 完整 |
+| `10.1086` / journals.uchicago.edu | UChicagoHandler | **有头** | 完整（继承 ACM 的 Atypon 遍历）|
 | opticsjournal.net | OpticsJournalHandler | 有头 | 完整（无补充材料） |
 | jstage.jst.go.jp | JStageHandler | 无头 | abstract + 参考文献 + PDF |
 | journals.rcsi.science | RCSIHandler | 无头 | metadata + PDF（页面没有正文）|
@@ -2194,6 +2195,105 @@ PNAS 自己的部分只剩四件：
 40 条参考文献、1 个补充材料、4 张表（Table 1 是图 + note，S1 的单元格里有公式）。
 ACM 回归：`3728480` 正文逐行相同（摘要多出真实的 Highlights 段），
 `3712285.3771783` 只剩两处改进。
+
+### University of Chicago Press（`10.1086`、journals.uchicago.edu）
+
+**又一家 Atypon**，和 ACM / PNAS 同一套页面骨架（`div.core-container` +
+`section[id^=sec-]` + `div[role=paragraph]` + `div.figure-wrap` +
+`div[role=doc-footnote]` + `div.biblioentry`），所以 `UChicagoHandler`
+**继承 `ACMHandler`**，和 PNAS 一样只覆写差异。**必须有头**（Cloudflare）。
+
+📌 **正文、表格、表注、图、独立公式、篇末注、补充材料清单全在原始响应里** ——
+两篇样本都不需要渲染后 DOM。
+
+📌 **凡不是 UChicago 专有的，一律做在 `publisher/acm.py`**（同 PNAS 那条规矩）。
+这次搬过去的五件，ACM 和 PNAS 一并受益：
+
+- **编号的后置段 id**：`BACK_MATTER_IDS` 原来按 `id` 精确匹配，而 Atypon 一旦
+  有多个就加序号 —— `10.1086/429523` 是 `appendix-1`…`appendix-4`，精确匹配
+  **一个都没命中**：四个附录（其中一个还带自己的参考文献）**静默不进 md**，
+  日志里一个字都没有。现在允许 `-N` 后缀，并按**文档顺序**返回
+- ⚠️ **参考文献不能取「第一个 `bibliography*`」**：同一篇里
+  `bibliography-1` 是「Literature Cited in Appendix B」、嵌在 `section#appendix-2`
+  里，`bibliography-2` 才是正文的。取第一个会把附录的 7 条当成整篇的参考文献。
+  判据是「**不在 appendix 里**的那个 `bibliography[-N]`」（`_bibliography_section`）
+- **后置段里的图也要编号**：`_number_assets` 原来只额外收 `section#appendix`
+  （精确 id）。编号槽位是正文遍历和图片扫描之间的唯一约定，附录里的图没有槽位
+  就等于**占位符指向空气**。现在直接用 `_back_matter_nodes()`
+- ⚠️ **表格可能同时有真 `<table>` 和一张自己的 JPEG**（页面上那个「View table as
+  an image」开关）。两份都存会把一个编号槽位花在 md 永远不引用的图上 —— 正是
+  PNAS 那条「下了却从不被引用，于是图号开始跳号」。所以**figure 里有 `<table>`
+  时不收它的图**；📌 没有 `<table>` 时照收（PNAS 的 Table 1 只有 JPEG）
+- **每个 float 里的 UI 要先摘掉**（`core-figure-tools` 的「Download figure /
+  Download PowerPoint」、`label.format-toggle` 的那个开关）：它们就在
+  `<figcaption>` 里面，不摘就跟着进图注
+
+UChicago 自己的部分只有三件：
+
+- ⚠️ **元数据是 Dublin Core，不是 `citation_*`**。整页只有一个有用的
+  `citation_journal_title`，标题/作者/日期/DOI 全在 `dc.*` 里 —— 照着
+  `citation_title` 写的 handler 在这里会得到一篇**没有标题**的文章
+- ⚠️ **`dc.Identifier` 一个名字装五种标识符**（内部文章号、DOI、stock number、
+  PMID、定价串），所以「第一个 `dc.Identifier`」不是 DOI，要按 DOI 的形状挑；
+  **`dc.Contributor` 是编辑**（"Editor: Jonathan B. Losos"），不是作者，
+  不能并进作者列表；`dc.Creator` 里的姓名用**不换行空格**分隔，
+  不归一化的话 `metadata.json` 里搜「Diego San Mauro」搜不到
+- 📌 **卷/期/页不在任何 meta 里**（`dc.Coverage` 是 "world"），取自页面自己的
+  `div.core-enumeration`（"Volume 165 , Number 5"）和 `div.core-pagination`
+  （"Pages : 590 - 599"）—— `metadata.json` 这三栏取的是 handler 的值，
+  不取就每篇都空
+- **PDF 用页面上的 `a#downloadPdfUrl`**（`/doi/pdf/{doi}?download=true`），
+  取不到才按 DOI 拼。⚠️ `?download=true` 是**承重的**：没有它打开的是 Atypon
+  的在线阅读器，download 事件永不触发，整个重试预算烧在一个查看器上（同 PNAS）。
+  📌 另有 `/doi/pdfplus/{doi}` 版本（Atypon 的「增强」视图，带可点的参考文献）——
+  **默认取朴素的 `pdf`**，因为那是页面自己那个按钮给的。这是个**选定的默认值**，
+  不是「哪个文件更好」的结论
+
+还有几处是 Atypon 通病，在这两篇上第一次露出来，也修在 acm.py：
+
+- ⚠️ **表注要走遍历，不能直接丢给 pandoc**。UChicago 的表注是**结构化**的
+  （一条一个 `div[role=doc-footnote]`，各带自己的 `div.label`："Note."、
+  "Source."、"*"），整段交给 pandoc 会在 md 里印出字面的
+  `::: {has="label"} Note. ::: {#tb1fn1} …` —— `10.1086/742128` 的**每一张表**
+  都中。遍历本来就认识这个形状（`_render_footnote`），而 ACM 那种纯文本表注
+  经过它不变
+- ⚠️ **公式编号可以在 MathML 里面**。ACM/PNAS 的编号在旁边的 `div.label`，
+  而 UChicago 用 `<mlabeledtr>`，第一个 `<mtd>` 就是 `<mtext>(1)</mtext>`。
+  留着它转换器会多渲染一列矩阵，而**编号从输出里消失**，正文却还在说
+  "see Equation (2)"。`_mathml_label()` 把标签取出来、把 `mlabeledtr` 降成
+  `mtr`，再以 `\tag{}` 输出
+- ⚠️ **摘要那个小标题要剥掉标点再比**：ACM 原来按字面比
+  `('abstract', 'abstract.')`，而 UChicago 的 h2 是 "Abstract:" ——
+  于是 md 在 `## Abstract` 底下又印一句 `**Abstract:.**`
+- ⚠️ 顺带：**Cloudflare 混淆的邮箱有两种形态，两种都要解**。一种是
+  `<span class="__cf_email__" data-cfemail="…">[email protected]</span>`
+  （`742128` 的第一条注里是通讯作者邮箱），另一种是**锚文字已经是真地址、
+  只有 href 被编码**（`429523` 的注 ∥）。前者不解会留下占位符 + 那串十六进制
+  （pandoc 印成花括号后缀）+ 一条指向 cloudflare 的链接；后者会留下一个
+  看着正常、点过去是 cloudflare 的链接。解码器本来就在（给署名区用的），
+  这是同一套编码出现在正文里
+
+✅ 端到端实测（两篇都是有头，PDF/图/补充材料全程）：
+
+| | `10.1086/429523` | `10.1086/742128` |
+|---|---|---|
+| md | 366 行 | 602 行 |
+| 正文 | 43,049 字符 | 91,677 字符 |
+| 图 | 5 个（全部本地化） | 4 个（全部本地化） |
+| 表 | 2（103 行 pipe） | 5（144 行 pipe，每张都带 Note./Source.） |
+| 篇末注 | 5 条 | **25 条** |
+| 参考文献 | 47 条 | 60 条 |
+| 补充材料 | 4 个 PDF | 1 个 PDF |
+| 独立公式 | 0 | 2（都带 `\tag`） |
+| 卷/期/页 | 165 / 5 / 590-599 | 79 / 3 / 581-616 |
+
+md 里 `:::` 围栏、`{has="label"}`、`download=`、`{#if…}`、`cdn-cgi`、
+"Download figure"、"View table as an image" 残留**各 0 处**。
+
+✅ **PNAS 回归**：同一份 `page_raw.html`，改前改后 `extract_article_text_from_html`
+的输出**逐字节相同**（diff 0 行）；端到端 10 图、10 个独立公式、40 条参考文献、
+1 个补充材料，与记录一致。⚠️ 行数是 458 而本文档早先记的是 454 ——
+那是两次运行之间页面本身的差别，不是这次改动造成的（逐字节的 A/B 才是判据）
 
 ### MDPI 的新版页面（`div.html-body` 不再存在）
 

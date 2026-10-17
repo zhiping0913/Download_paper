@@ -292,7 +292,11 @@ class ACMHandler(PublisherHandler):
             text = '\n\n'.join(b for b in blocks if b).strip()
             if not text:
                 continue
-            if title and title.lower() not in ('abstract', 'abstract.'):
+            # ⚠️ Compared with the trailing punctuation stripped: UChicago's
+            # heading is "Abstract:" and the literal list let it through, so
+            # the markdown opened with a lead-in reading "**Abstract:.**"
+            # under a heading that already says "## Abstract".
+            if title and title.lower().rstrip('.:： ') != 'abstract':
                 parts.append(f"**{title}.** {text}")
             else:
                 parts.append(text)
@@ -481,6 +485,14 @@ class ACMHandler(PublisherHandler):
         # renders as a trailing {target="_blank"}.
         for anchor in fragment.find_all('a', attrs={'target': True}):
             del anchor['target']
+        # ⚠️ And for UChicago's supplement links, which carry the suggested
+        # file name: `[Appendix F](/doi/suppl/…){download="2024093appendix.pdf"}`
+        # -- measured 3× in 10.1086/742128's table notes. `data-has` is the
+        # same kind of markup trace (Atypon's "this note has a label" flag).
+        for el in fragment.find_all(attrs={'download': True}):
+            del el['download']
+        for el in fragment.find_all(attrs={'data-has': True}):
+            del el['data-has']
         # ⚠️ Footnote markers come through EMPTY -- ACM fills the number in
         # with JavaScript, so the response holds <a href="#fn5"><sup></sup></a>
         # and pandoc renders a linkless "[](#fn5)". The number is in the href.
@@ -499,8 +511,35 @@ class ACMHandler(PublisherHandler):
                 continue
             number = re.search(r'(\d+)$', ref.get('href') or '')
             ref.replace_with(f"[{number.group(1)}]" if number else '')
+        # Cloudflare-obfuscated addresses in the running text (UChicago puts
+        # the corresponding author's e-mail in the first end note). The
+        # served HTML has no address in it -- only
+        # <span class="__cf_email__" data-cfemail="…">[email protected]</span>
+        # inside an <a href="/cdn-cgi/l/email-protection#…">. Left alone the
+        # markdown got the placeholder, the hex blob as a brace suffix AND a
+        # link to Cloudflare. The decoder was already here for the byline;
+        # this is the same scheme in prose.
+        for span in fragment.select('span.__cf_email__[data-cfemail]'):
+            address = cls._decode_cf_email(span['data-cfemail'])
+            anchor = span.find_parent('a')
+            target = anchor if anchor is not None else span
+            target.replace_with(address or '')
+        # ⚠️ Same obfuscation, other half: the anchor text can already BE the
+        # address while only the href is encoded (10.1086/429523's note ∥).
+        # That one reads fine and still links to cloudflare.com, so the
+        # markdown carried `[axel.meyer@uni-konstanz.de](/cdn-cgi/l/email-…)`.
+        for anchor in fragment.select('a[href*="/cdn-cgi/l/email-protection"]'):
+            address = cls._email_from_anchor(anchor)
+            anchor.replace_with(address or anchor.get_text(' ', strip=True))
         for roled in fragment.find_all(attrs={'role': True}):
             del roled['role']
+        # ⚠️ And the id on an inline-math wrapper. UChicago gives every
+        # inline formula a ``<span class="core-math" id="if1">``, and pandoc
+        # prints the id as a bracketed suffix:
+        # `[$1_{[Group_i = g]}$]{#if1}` -- 5× in 10.1086/742128. The id is an
+        # anchor target for the page, not content.
+        for el in fragment.select('span.core-math[id], span.core-tex[id]'):
+            del el['id']
         # Screen-reader duplicates of the caption ("A rendering of 33
         # interacting rocket thrusters."), which otherwise read as stray prose.
         for hidden in fragment.select('.sr-only'):
@@ -658,12 +697,40 @@ class ACMHandler(PublisherHandler):
                 # number is only the download slot.
                 return [f"DPINLINEFIG{key.split('_')[-1]}ZZ"]
             return []
+        if not label:
+            label = cls._mathml_label(math_el)
         latex = cls._latex_from_mathml(math_el)
         if not latex:
             return []
         if label:
             latex += f"\\tag{{{cls._bare_label(label)}}}"
         return ['$$\n' + latex + '\n$$']
+
+    @staticmethod
+    def _mathml_label(math_el) -> str:
+        """The equation number when it is **inside** the MathML.
+
+        📌 Atypon puts it in a ``div.label`` beside the formula (ACM, PNAS),
+        but UChicago numbers the equation in MathML itself, with
+        ``<mlabeledtr>`` whose first ``<mtd>`` is the ``<mtext>(1)</mtext>``.
+        Left in place, the converter renders it as an extra matrix column --
+        so the number vanished from the output while the prose kept saying
+        "see Equation (2)" (measured on 10.1086/742128).
+
+        ⚠️ This MUTATES *math_el*: the label cell is removed and the
+        ``mlabeledtr`` becomes an ordinary ``mtr``, which is what collapses
+        the stray column. The caller converts afterwards.
+        """
+        labeled = math_el.find('mlabeledtr')
+        if labeled is None:
+            return ''
+        cells = labeled.find_all('mtd', recursive=False)
+        if not cells:
+            return ''
+        label = cells[0].get_text('', strip=True)
+        cells[0].extract()
+        labeled.name = 'mtr'
+        return label
 
     @classmethod
     def _render_figure_wrap(cls, wrap, level: int,
@@ -687,6 +754,20 @@ class ACMHandler(PublisherHandler):
             blocks.append(f"**{label}**")
         return blocks
 
+    #: Per-float UI that Atypon prints inside the ``<figure>``: the
+    #: "Download figure / Download PowerPoint" tool list, and UChicago's
+    #: "View table as an image" toggle (a <label> wrapping a checkbox).
+    #: ⚠️ These sit INSIDE ``<figcaption>`` or beside it, so they ride along
+    #: into the caption text unless they come out first.
+    _FIGURE_UI_SELECTORS = ('.core-figure-tools', 'label.format-toggle',
+                            '.collapsible-figure-btn__wrapper')
+
+    @classmethod
+    def _strip_figure_ui(cls, figure) -> None:
+        for selector in cls._FIGURE_UI_SELECTORS:
+            for el in figure.select(selector):
+                el.decompose()
+
     @classmethod
     def _render_table(cls, figure, label: str) -> List[str]:
         """Caption, the table itself, then its notes.
@@ -699,14 +780,23 @@ class ACMHandler(PublisherHandler):
         the table readable.
         """
         blocks: List[str] = []
+        cls._strip_figure_ui(figure)
         # ⚠️ The notes are looked for in the whole <figure>, not just inside
         # the caption: ACM nests them in <figcaption>, PNAS puts them beside
         # it. Either way they must come out BEFORE the caption is rendered,
         # or the symbol definitions end up glued to the caption sentence.
         notes_el = figure.find('div', class_='notes')
-        notes = ''
+        notes_blocks: List[str] = []
         if notes_el is not None:
-            notes = cls._inline_md(notes_el.decode_contents())
+            # ⚠️ Through the walk, NOT straight into pandoc. UChicago's notes
+            # are structured -- one div[role=doc-footnote] per note, each with
+            # its own div.label ("Note.", "Source.", "*") -- and handing that
+            # markup to pandoc as an inline run printed literal fences in the
+            # markdown: `::: {has="label"} Note. ::: {#tb1fn1} …`, measured on
+            # every table of 10.1086/742128. The walk already knows this
+            # shape (_render_footnote), and ACM's plain-text notes come out
+            # of it unchanged.
+            notes_blocks = [b for b in cls._walk(notes_el, 2, {}) if b]
             notes_el.extract()
         caption_el = figure.find('figcaption')
         caption = ''
@@ -736,8 +826,7 @@ class ACMHandler(PublisherHandler):
                     # it -- the number in the key is the download slot, not
                     # the float's printed number.
                     blocks.append(f"DPINLINEFIG{key.split('_')[-1]}ZZ")
-        if notes:
-            blocks.append(notes)
+        blocks.extend(notes_blocks)
         return blocks
 
     @classmethod
@@ -760,6 +849,7 @@ class ACMHandler(PublisherHandler):
         # The screen-reader description repeats the caption; keep one of them.
         for hidden in figure.select('.sr-only'):
             hidden.decompose()
+        cls._strip_figure_ui(figure)
 
         caption_el = figure.find('figcaption')
         caption = ''
@@ -875,13 +965,21 @@ class ACMHandler(PublisherHandler):
 
     @classmethod
     def _back_matter_nodes(cls, soup: BeautifulSoup) -> List:
-        """The back-matter sections to append after the body, in order."""
-        nodes = []
-        for section_id in cls.BACK_MATTER_IDS:
-            node = soup.find('section', id=section_id)
-            if node is not None:
-                nodes.append(node)
-        return nodes
+        """The back-matter sections to append after the body, in order.
+
+        ⚠️ The ids are matched **with an optional ``-N`` suffix**: Atypon
+        numbers them as soon as a paper has more than one. UChicago's
+        10.1086/429523 ships ``appendix-1`` … ``appendix-4`` and an exact
+        ``id='appendix'`` match found none of them -- four appendices,
+        including one with its own reference list, silently absent from the
+        markdown while the log said nothing.
+        """
+        wanted = re.compile(
+            r'^(?:%s)(?:-\d+)?$' % '|'.join(re.escape(i) for i in cls.BACK_MATTER_IDS)
+        )
+        # Document order, not BACK_MATTER_IDS order: with several numbered
+        # sections per kind the page's own sequence is the only sensible one.
+        return [node for node in soup.find_all('section', id=wanted)]
 
     @classmethod
     def _body_container(cls, soup: BeautifulSoup):
@@ -922,9 +1020,11 @@ class ACMHandler(PublisherHandler):
         """
         body = cls._body_container(soup)
         containers = [body] if body is not None else cls._body_sections(soup)
-        appendix = soup.find('section', id='appendix')
-        if appendix is not None:
-            containers.append(appendix)
+        # Every section the markdown will actually print, not just an
+        # appendix called exactly "appendix": the back matter is emitted by
+        # _back_matter_nodes, and a figure there needs its download slot or
+        # the placeholder in the text resolves to nothing.
+        containers.extend(cls._back_matter_nodes(soup))
         index = 0
         for container in containers:
             for img in container.find_all('img'):
@@ -947,7 +1047,18 @@ class ACMHandler(PublisherHandler):
         would mean OCR'ing it. Those are referenced at the publisher's URL
         instead, the same call SPIE's handler makes.
         """
-        if img.find_parent('figure') is not None:
+        figure = img.find_parent('figure')
+        if figure is not None:
+            # ⚠️ A table can arrive twice: real <table> markup *and* a JPEG of
+            # it (UChicago prints a "View table as an image" toggle over the
+            # rendition). Saving the picture would spend a numbering slot on
+            # something the markdown never references -- the PNAS lesson about
+            # figures that are downloaded and then never mentioned, which is
+            # also how figure numbers start skipping.
+            # 📌 The picture is still the answer when there is no <table>:
+            # PNAS ships Table 1 of 10.1073/pnas.1522200113 as a JPEG only.
+            if figure.find('table') is not None:
+                return False
             return True
         if img.find_parent('div', class_='display-formula') is not None:
             return True
@@ -1122,7 +1233,7 @@ class ACMHandler(PublisherHandler):
         if not html:
             return []
         soup = BeautifulSoup(html, 'html.parser')
-        section = soup.find('section', id='bibliography')
+        section = self._bibliography_section(soup)
         if section is None:
             return []
         references: List[str] = []
@@ -1130,6 +1241,29 @@ class ACMHandler(PublisherHandler):
             rendered = self._render_biblioentry(entry)
             references.extend(rendered)
         return references
+
+    @classmethod
+    def _bibliography_section(cls, soup: BeautifulSoup):
+        """The article's own reference list.
+
+        ⚠️ ``id='bibliography'`` is not enough and neither is "the first one
+        that matches": Atypon numbers the sections, and a **per-appendix**
+        reference list gets one of those numbers too. In UChicago's
+        10.1086/429523 the article's list is ``bibliography-2`` while
+        ``bibliography-1`` is "Literature Cited in Appendix B", nested inside
+        ``section#appendix-2`` -- taking the first match would publish the
+        appendix's seven citations as the paper's bibliography.
+
+        So: a numbered ``bibliography`` section that is **not** inside an
+        appendix. The nested one stays where it belongs, rendered as part of
+        the appendix prose by the back-matter walk.
+        """
+        wanted = re.compile(r'^bibliography(?:-\d+)?$')
+        for section in soup.find_all('section', id=wanted):
+            if section.find_parent('section',
+                                   id=re.compile(r'^appendix(?:-\d+)?$')) is None:
+                return section
+        return None
 
     async def get_figures(self, json_data: dict) -> dict:
         return {}
