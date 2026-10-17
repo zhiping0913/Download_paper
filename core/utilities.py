@@ -488,6 +488,12 @@ _CHALLENGE_HTML_MARKERS = (
     'cdn-cgi/challenge-platform/h/',   # the challenge HTML path, not /scripts/jsd/
     'turnstile', '正在进行安全验证', 'security verification',
     'enable javascript and cookies to continue',
+    # DataDome (EDP Sciences and others): a 772-byte page whose only content
+    # is "Please enable JS and disable any ad blocker" plus a loader for
+    # ct.captcha-delivery.com. It was already caught by the short-page branch
+    # below, but only through the weak 'captcha' substring -- as a named
+    # marker it is recognised at any size.
+    'captcha-delivery.com',
 )
 
 

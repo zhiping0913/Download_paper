@@ -96,6 +96,7 @@ _cookies_for_requests = cookies_for_requests
 _fresh_chrome_enabled = fresh_chrome_enabled
 _http_asset_headers = http_asset_headers
 from publisher.orchestrator import (
+    detect_publisher_from_html,
     detect_publisher_from_url,
     get_publisher_handler,
     extract_metadata_multi_publisher
@@ -4304,6 +4305,14 @@ async def complete_extraction_workflow(
 
                     # 检测出版商
                     headless_publisher = detect_publisher_from_url(final_headless_url)
+                    # Same last resort as the headed branch below: the page's
+                    # own citation_publisher, when the URL said nothing.
+                    if headless_publisher in ('', 'unknown'):
+                        _from_html = detect_publisher_from_html(headless_html or '')
+                        if _from_html:
+                            print(f"  ↪ URL 认不出出版商，按页面声明判为 "
+                                  f"{_from_html.upper()}")
+                            headless_publisher = _from_html
                     # Promote OUP → OUP_BOOK when Crossref says this DOI is a
                     # book or book-chapter (then OupBookHandler walks the TOC).
                     headless_publisher = apply_crossref_type_override(headless_publisher, crossref_data)
@@ -4845,6 +4854,18 @@ async def complete_extraction_workflow(
             print(f"✓ 最终 URL: {final_url}")
 
             final_publisher = detect_publisher_from_url(final_url)
+            # ⚠️ A URL is not always enough to say who published a page.
+            # EDP Sciences runs one journal per domain and its article URLs
+            # carry no DOI, so the landed URL matches nothing and the paper
+            # would go to the fallback handler -- while the response itself
+            # declares `citation_publisher`. Only consulted when the URL
+            # answered nothing, so no existing routing can change.
+            if final_publisher in ('', 'unknown'):
+                from_html = detect_publisher_from_html(_headed_raw or '')
+                if from_html:
+                    print(f"  ↪ URL 认不出出版商，按页面自己声明的 "
+                          f"citation_publisher 判为 {from_html.upper()}")
+                    final_publisher = from_html
             final_publisher = apply_crossref_type_override(final_publisher, crossref_data)
             if final_publisher != publisher:
                 publisher = final_publisher
