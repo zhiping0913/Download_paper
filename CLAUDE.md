@@ -375,6 +375,7 @@ Step 0 那一次 Crossref 响应、只为取文件起一次浏览器、以 PDF �
 | `10.3788` / researching.cn | ResearchingHandler | 有头 | 完整 |
 | `10.1086` / journals.uchicago.edu | UChicagoHandler | **有头** | 完整（继承 ACM 的 Atypon 遍历）|
 | `10.1142` / worldscientific.com | WorldScientificHandler | **有头** | 完整（Atypon 旧皮肤，继承 ACMHandler）|
+| `10.1051` / aanda.org 等 | EDPHandler | **有头** | 完整（表格与高清图在各自的独立页面上）|
 | opticsjournal.net | OpticsJournalHandler | 有头 | 完整（无补充材料） |
 | jstage.jst.go.jp | JStageHandler | 无头 | abstract + 参考文献 + PDF |
 | journals.rcsi.science | RCSIHandler | 无头 | metadata + PDF（页面没有正文）|
@@ -2382,6 +2383,116 @@ md 里 `:::`、`{#…}`、`[^`、`formulaLabel`、`captionLabel`、裸 `<table>`
 `<math>`、"Google Scholar" 残留**各 0 处**。
 
 ✅ **PNAS 回归**：同一份 `page_raw.html`，加完三个扩展点前后正文**逐字节相同**。
+
+### EDP Sciences（`10.1051`、aanda.org / epj* / edpsciences.org）
+
+**一个平台、很多刊域名**（A&A 在 aanda.org，EPJ 系列各有自己的域名），所以前缀和
+域名都路由到 `edp`，而 handler 要用的每一个 URL 都从页面自己的
+`citation_fulltext_html_url` 推出来，不写死主机名。
+
+❌ **此前 `10.1051` 被映射到 `nature`**（注释写着"routes through NatureHandler
+fallbacks"）。实测 `10.1051/0004-6361/202346508`：产出是一篇
+**标题 N/A、作者 0 位、0 张图、没有 PDF** 的空壳，`✅ Title: N/A` 之后一句异常都没有
+—— NatureHandler 的选择器在这里一个都匹配不上。
+
+📌 **正文、公式和作者的 LaTeX 都在原始响应里**，而且是最好的那种形态：每个公式都带
+
+```html
+<span class="img-equation … ressouce-equation-block"
+      data-latex="$$ \begin{aligned} \nabla \cdot \mathbf u&= 0, \end{aligned} $$">
+```
+
+旁边还各有一份 MathML 和一张 GIF。**三份渲染里只有这个属性是作者自己的源码**，所以
+直接读属性，不去从 MathML 反推。
+
+⚠️ **正文是平铺的**：`div#contenu` 里 `h2.sec` / `h3.sec2` / `h4.sec3` 和 `<p>`、
+浮动体**全是兄弟节点，没有 section 嵌套** —— 所以按标题走（同 World Scientific 的
+Atypon 旧皮肤）。**层级只能取自标签名**：A&A 的附录是 `h2.sec`，文字写着
+"Appendix A"，而 `10.1051/0004-6361/202243956` 的**三个附录共用 `id="app"`** ——
+按 id 也不行；另有几个 `h4.sec3` 是完全没有编号的 run-in 小标题
+（"Nightside cloud coverage"），它们**仍然是标题**。
+
+#### ❌ 文章页上没有表格内容，也没有高清图
+
+这是 EDP 和本仓其它出版商最不一样的地方：
+
+| 文章页上的 | 实际是什么 |
+|---|---|
+| `div.inset#T1` | **只有表题**，加一个指向 `T1.html` 的链接 |
+| `div.inset#F1` | 一张 `*_small.jpg` **缩略图**，加一个指向 `F1.html` 的链接 |
+
+真正的表格标记在 `T<N>.html`（`div#annex` 里的 `table.fm`），原图在 `F<N>.html` 上
+声明为 `a.btn2.original`（一个 `.tif`），旁边还有 1200px 的 JPEG。"Movies"是第三类
+页面（`…/olm/…`）。**这些页面全部取回、落盘进 `html/`（`F1.html` / `T1.html` /
+`olm.html`），再对着本地文件解析** —— 只读文章页的 handler 会产出一篇
+"表格是一行空标题、插图是缩略图"的论文。
+⚠️ 取这些页面必须排在**渲染正文之前**；文章本身不受影响，`_raw_server_html`
+在任何导航之前就钉住了。
+
+⚠️ **`<p>` 没有闭合，必须用 lxml 解析**（`wildcard.parse_article_html`）。每个浮动体
+前面都有一个空 `<p>`，`html.parser` 会把 `div.inset#T1` 留在那个 `<p>` **里面**，
+于是遍历根本不把它当浮动体 —— 实测每一张表和每一张图都变成 md 里一条字面的
+`::: {#T1}` 围栏。浏览器会关掉那个 `<p>`，lxml 也会。同一个毛病还出现在 olm 页的
+影片说明上（播放器落在说明的 `<p>` 里面），所以那里两种形状都处理。
+
+#### 其余几个坑
+
+- ⚠️ **`\tag` 的位置有两条规则，用一条就会丢编号**。EDP 把每个公式包在
+  `aligned` 里（`202243956` 的 33 个独立公式**全部**如此），那是个**子环境**，
+  `\tag` 要放在它的 `\end` **之后**、`$$` 之内；而 `align`/`gather`/`multline`
+  自己给行编号，`\tag` 必须放在 `\end` **之前**（ACM 那条规则）。
+- ⚠️ **标题要交内容、不要交元素**：把整个 `<h2 class="sec" id="S1">` 丢给 pandoc，
+  它会在我们的 `##` 里再印一个自己的 —— `## ## 1. Introduction {#S1}`。
+  脚注定义 `div#FN2` 同理（`::: {#FN2}` 围栏）。
+- ⚠️ **脚注的 id 比它的编号大 1**：第 **1** 条脚注在 `div#FN2` 里，正文里的引用
+  写作 `href="…#FN2"` 而印出来的字是 "1"。按 id 编号等于把全篇脚注重编一遍，
+  所以标记取 `<sup>` 自己的字；而且**要连 `<sup>` 一起换掉**，否则 pandoc 会把结果
+  再包一层成 `^[1]^`。
+- ⚠️ **"All Tables" / "All Figures" 两节必须停住**：它们是**对已经出现过的浮动体的
+  重列**（`202243956` 是 4 张表 + 24 张图），走进去等于把每条图注印第二遍。
+  同理，扫浮动体时要求 `div.inset` **带 id** —— 那两节里的副本没有 id。
+- ⚠️ **正文里的交叉引用是整条绝对 URL 加片段**
+  （`…/aa43956-22.html#R116`），所以 `cleanup_markdown` 那条 `[N](#…)` → `[N]`
+  收不到它，不处理就是每条文内引用都拖着一个 90 字符的链接。站内链接一律**只留文字**。
+- ⚠️ **参考文献条目末尾那排按钮**（`[NASA ADS]`、`[CrossRef]`、`[Google Scholar]`
+  —— 后者是约 300 字符的搜索 URL）按**锚文字是方括号包起来的**这个形状摘掉，
+  不维护主机名列表。
+- ⚠️ **摘要读渲染出来的那一节，不读 `citation_abstract`**：meta 是**纯文本**，而
+  A&A 的摘要有结构（`<i>Methods.</i>`）也有上下标（`10<sup>6</sup>`）——
+  读 meta 会把 10⁶ 压成 106。这正是 MDPI 弄反过的那个优先级。
+- 📌 **列表保留出版商自己的记号**："(1)"、"(a)" 是 `<li>` 里的裸文本
+  （`list-style-type: none`），正文会引用它们；`ul.dash` 没有记号，给普通圆点。
+  ⚠️ **嵌套列表是 `<li>` 的子节点**，渲染本项时要先摘掉它，否则每个子项会被打印两次
+  （一次拍平进父项）。
+- 📌 **Movies 选"Original …"那一个**：每个 `div.movie` 下面的
+  "Download Video: Formats:" 一行列出 mp4 / webm / ogg / Original X，前三个是出版商的
+  网页转码版，**Original 才是作者交上来的文件**。它通常是最后一个，但判据是**名字**
+  不是位置。说明取播放器**上面**那句（"Movie 1 associated with Fig. 1"）——
+  只有那里写了影片编号和它属于哪张图。
+
+⚠️ **必须有头，而且真实 Chrome profile 得访问过这个站一次。** EDP 前面是
+**DataDome** 而不是 Cloudflare：空 profile 收到的是 403 加一张
+`geo.captcha-delivery.com` 的 interstitial，而本仓的 Turnstile 点击机器在那上面
+**没有任何可点的东西**（实测：全新空 profile 的 Chrome 在 5 个不同 URL 上都停在
+`body=0`、60 秒不动）。用户在自己的 Chrome 里打开过一次之后，播种过来的
+`datadome` cookie 让**同一份代码 2 秒就拿到文章**。所以**那个 cookie 就是全部机制**
+—— 这也是这里不去尝试解 interstitial 的原因。
+
+✅ 端到端实测：
+
+| | `10.1051/0004-6361/202346508` | `10.1051/0004-6361/202243956` |
+|---|---|---|
+| md | 248 行 | 见下 |
+| 图 | 3 张（`.tif` 原图，2.55 / 0.80 / 0.37 MB）| 24 张 |
+| 表 | 1（来自 `T1.html`）| 4 |
+| 独立公式 | 6（全部带 `\tag`）| 33 |
+| 脚注 | 3 条 | 4 条 |
+| 参考文献 | 39 条 | 149 条 |
+| Movies | 3 个 Original mp4（13.5 / 12.4 / 9.3 MB）| 无 |
+| PDF | 2.09 MB | — |
+
+md 里 `:::` 围栏、`{#…}`、`[^`、裸 `<table>`、`_small`、"Google Scholar"、
+"protected from spambots" 残留**各 0 处**。
 
 ### MDPI 的新版页面（`div.html-body` 不再存在）
 

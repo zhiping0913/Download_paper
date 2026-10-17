@@ -1460,7 +1460,7 @@ RAW_HTML_PUBLISHERS = frozenset({
     'iop', 'sciencedirect', 'aps', 'optica', 'cambridge',
     'acs', 'wiley', 'ieee', 'spie', 'aip', 'nature', 'mdpi', 'acm', 'oup', 'science', 'researching',
     'opticsjournal', 'jstage', 'rcsi', 'pnas', 'iphy', 'tandf', 'ufn',
-    'uchicago', 'worldscientific',
+    'uchicago', 'worldscientific', 'edp',
 })
 
 
