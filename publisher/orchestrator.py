@@ -4,6 +4,8 @@ Multi-Publisher Extraction Orchestrator
 Routes to appropriate publisher handler based on DOI/URL
 """
 
+import re
+
 from publisher.base import PublisherHandler
 from publisher import APSHandler, AIPHandler, CambridgeHandler
 from publisher.nature import NatureHandler
@@ -264,14 +266,15 @@ def detect_publisher_from_url(url: str) -> str:
     # 10.1051/0004-6361/202346508 came out as a title-less article with 0
     # figures and no PDF: NatureHandler's selectors match nothing here, and
     # nothing in the log says so.
+    #
+    # ⚠️ **One domain per journal, and there are dozens** (aanda.org,
+    # epjap.org, epjn.org, epj-conferences.org, …), so the EPJ family is
+    # matched by shape rather than by a list that would be out of date by
+    # the next journal launch. The prefix below is what routes before
+    # navigation anyway; this branch only has to recognise where we landed.
     elif ('aanda.org' in url_lower
-          or 'epj-conferences.org' in url_lower
-          or 'epjap.org' in url_lower
-          or 'epjc-conferences.org' in url_lower
-          or 'epjn.org' in url_lower
-          or 'epjnbp.org' in url_lower
-          or 'epjap.edpsciences.org' in url_lower
-          or 'edpsciences.org' in url_lower):
+          or 'edpsciences.org' in url_lower
+          or re.search(r'//(?:www\.)?epj[a-z0-9-]*\.org\b', url_lower)):
         return 'edp'
     elif '10.1051' in url_lower:
         return 'edp'

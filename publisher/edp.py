@@ -150,6 +150,78 @@ class EDPHandler(PublisherHandler):
         """
         return self._olm_url(await self.get_page_html()) or None
 
+    # ------------------------------------------------------------------
+    # The abstract page → the full-text page
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def looks_like_fulltext(html: str) -> bool:
+        """Is this the full-text rendition, or the abstract landing page?
+
+        ⚠️ ``doi.org/{doi}`` lands on **``/abs/``**, not on ``/full_html/``
+        (measured on 10.1051/epjap/2023220290). The two are easy to tell
+        apart: the abstract page has **no ``div#contenu``** at all -- no
+        sections, no floats, zero ``h2.sec`` -- so the predicate is the body
+        container itself rather than a URL pattern (EDP has one domain per
+        journal, and the paths differ between them).
+        """
+        return parse_article_html(html or '').find(id='contenu') is not None
+
+    @staticmethod
+    def fulltext_page_url(html: str) -> str:
+        """Where the full text is, as the abstract page itself declares it.
+
+        Two sources, both on the abstract page: ``citation_fulltext_html_url``
+        and the "Full HTML" entry of the "Article contents" block
+        (``ul.article_doc``). The meta is preferred because it is absolute.
+
+        📌 **Not every EDP article has a full-text rendition** --
+        10.1051/epjconf/202634803001 (an EPJ Web of Conferences paper) is PDF
+        only. Then there is nothing to find here, and '' means "stay on the
+        page we have": the abstract, the metadata and the PDF are still the
+        answer.
+        """
+        soup = parse_article_html(html or '')
+        meta = soup.find('meta', attrs={'name': 'citation_fulltext_html_url'})
+        declared = (meta.get('content') or '').strip() if meta else ''
+        if declared:
+            return declared
+        for anchor_el in soup.select('ul.article_doc a[href], div.article_doc a[href]'):
+            if '/full_html/' in anchor_el['href']:
+                return anchor_el['href'].strip()
+        return ''
+
+    async def _promote_to_fulltext(self, page, html: str) -> str:
+        """Follow the abstract page to the full text, or keep what we have.
+
+        The fetched document **replaces** ``_raw_server_html`` so the whole
+        contract (metadata, PDF link, figures, body) reads the same bytes --
+        the way Cambridge's re-fetch does. It is landed as
+        ``full_html.html``; the main flow's ``page_raw.html`` keeps the
+        abstract page it actually navigated to, so the directory shows both
+        hops.
+        """
+        if self.looks_like_fulltext(html):
+            return html
+        target = self.fulltext_page_url(html)
+        if not target:
+            print("  ℹ️  这篇没有 full html 版本（EDP 不是每篇都有），"
+                  "正文留空，摘要与 PDF 照常")
+            return html
+        target = urljoin(self._fulltext_url or self.actual_base_url, target)
+        print(f"  ↪ 落地页是摘要页，跳到 full html: {target}")
+        if page is None:
+            return self._read_landed('full_html') or html
+        fetched = await goto_and_capture_document(
+            page, target, label='EDP full html 页')
+        if not fetched:
+            print("  ⚠️  full html 页未捕获到原始响应 —— 用摘要页继续"
+                  "（宁可只有摘要，也不要一份公式已被替换的 DOM）")
+            return html
+        self._land_side_page('full_html', fetched)
+        self._raw_server_html = fetched
+        return fetched
+
     # ==================================================================
     # Side pages (figures, tables, movies)
     # ==================================================================
@@ -587,8 +659,15 @@ class EDPHandler(PublisherHandler):
     # Movies / supplemental material
     # ==================================================================
 
-    def extract_movies_from_olm(self, olm_html: str) -> Tuple[List[str], Dict[str, str]]:
-        """``(urls, {url: description})`` from the "Movies" page.
+    def extract_olm_items(self, olm_html: str) -> Tuple[List[str], Dict[str, str]]:
+        """``(urls, {url: description})`` from the "online material" page.
+
+        📌 **The same page serves two different things**, and only the markup
+        says which: A&A's 10.1051/0004-6361/202346508 lists *movies* in
+        ``div.movie`` players, while EPJAP's 10.1051/epjap/2023220290 lists a
+        *Supplementary Material* PDF as a bare "(Access here)" link inside a
+        ``<p>``. Both shapes are read, and the page's own ``h2.sec`` supplies
+        the markdown heading so it does not have to guess which it got.
 
         Each ``div.movie`` holds a ``<video>`` with several ``<source>``s and
         then a "Download Video: Formats: …" paragraph listing them again as
@@ -622,7 +701,56 @@ class EDPHandler(PublisherHandler):
             # markdown link's text, and a nested "[…]" closes it early.
             descriptions[url] = ((caption or f"Movie {index}")
                                  + (f" — {fmt}" if fmt else ''))
+
+        if not urls:
+            urls, descriptions = self._olm_file_links(soup)
         return urls, descriptions
+
+    def _olm_file_links(self, soup) -> Tuple[List[str], Dict[str, str]]:
+        """The no-player shape: a sentence with a link to the file.
+
+        ``<p>Supplementary Material : results obtained with the LDA
+        approximation. <a href="…-1-olm.pdf">(Access here)</a></p>``
+
+        ⚠️ The description is the paragraph **minus the anchor's own text**:
+        "(Access here)" says nothing, and the sentence beside it is the only
+        statement of what the file is. Anchors are selected by **not**
+        pointing at another HTML page -- the link text is a UI label, and the
+        extension varies with what the authors submitted.
+        """
+        container = soup.find(id='contenu-min') or soup
+        urls: List[str] = []
+        descriptions: Dict[str, str] = {}
+        for anchor in container.find_all('a', href=True):
+            href = anchor['href'].strip()
+            if not href or href.startswith('#'):
+                continue
+            path = href.split('?', 1)[0].split('#', 1)[0]
+            if '.' not in path.rsplit('/', 1)[-1]:
+                continue
+            if re.search(r'\.(html?|xhtml|php)$', path, re.I):
+                continue
+            url = self._absolute(href)
+            if url in descriptions:
+                continue
+            holder = anchor.find_parent('p')
+            caption = ''
+            if holder is not None:
+                label = anchor.get_text(' ', strip=True)
+                caption = re.sub(r'\s+', ' ',
+                                 holder.get_text(' ', strip=True)
+                                 .replace(label, ' ')).strip(' .:,;')
+            urls.append(url)
+            descriptions[url] = caption or path.rsplit('/', 1)[-1]
+        return urls, descriptions
+
+    @staticmethod
+    def olm_heading(olm_html: str, default: str = 'Supplemental Material') -> str:
+        """The page's own section title ("Movies" / "Supplementary Material")."""
+        soup = parse_article_html(olm_html or '')
+        heading = soup.select_one('#contenu-min h2.sec, #article h2.sec')
+        text = heading.get_text(' ', strip=True) if heading else ''
+        return text or default
 
     @staticmethod
     def _movie_caption(movie) -> str:
@@ -901,6 +1029,11 @@ class EDPHandler(PublisherHandler):
         try:
             html = await self.get_page_html(page)
             self._fulltext_url = self._fulltext_url_from_html(html) or self.actual_base_url
+            # ⚠️ Before anything reads the markup: doi.org lands on the
+            # abstract page for some journals, and every selector below
+            # would find nothing on it -- without a word in the log.
+            html = await self._promote_to_fulltext(page, html)
+            self._fulltext_url = self._fulltext_url_from_html(html) or self._fulltext_url
 
             metadata = self.extract_metadata_from_html(html)
             metadata['doi'] = doi or metadata.get('doi', '')
@@ -926,7 +1059,9 @@ class EDPHandler(PublisherHandler):
             if olm_url:
                 olm_html = await self._load_side_page(page, 'olm', olm_url)
                 supplemental_urls, supplemental_descriptions = (
-                    self.extract_movies_from_olm(olm_html))
+                    self.extract_olm_items(olm_html))
+                if supplemental_urls:
+                    metadata['_olm_heading'] = self.olm_heading(olm_html)
 
             figure_urls = self.extract_figures_from_html(html)
             body_md = self.extract_article_text_from_html(html)
@@ -936,7 +1071,7 @@ class EDPHandler(PublisherHandler):
             print(f"  ✓ 正文: {len(body_md):,} 字符")
             print(f"  ✓ 参考文献: {len(metadata['references'])} 条")
             print(f"  ✓ 图片: {len(figure_urls)} 个")
-            print(f"  ✓ 补充材料（Movies）: {len(supplemental_urls)} 个")
+            print(f"  ✓ 补充材料: {len(supplemental_urls)} 个")
 
             return {
                 'metadata': metadata,
@@ -1007,9 +1142,17 @@ class EDPHandler(PublisherHandler):
             md.extend(['---', '',
                        self._resolve_figures(body_md, figure_filenames, figure_urls),
                        ''])
+        else:
+            # Say it, rather than let an empty document read as a failed
+            # extraction: EDP publishes plenty of articles (EPJ Web of
+            # Conferences, for one) with no full-text rendition at all.
+            md.extend(['---', '',
+                       '*EDP 没有为这篇提供 full html 版本（只有摘要和 PDF），'
+                       '正文见 paper.pdf。*', ''])
 
         if supplemental_urls or supplemental_downloads:
-            md.extend(['---', '', '## Movies', ''])
+            heading = metadata.get('_olm_heading') or 'Supplemental Material'
+            md.extend(['---', '', f"## {heading}", ''])
             for url in supplemental_urls:
                 description = supplemental_descriptions.get(url, '')
                 name = url.rsplit('/', 1)[-1]

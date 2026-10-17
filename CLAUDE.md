@@ -2412,6 +2412,39 @@ Atypon 旧皮肤）。**层级只能取自标签名**：A&A 的附录是 `h2.sec
 按 id 也不行；另有几个 `h4.sec3` 是完全没有编号的 run-in 小标题
 （"Nightside cloud coverage"），它们**仍然是标题**。
 
+#### ❌ `doi.org/{doi}` 落在**摘要页**，不是正文页
+
+实测 `10.1051/epjap/2023220290`：落地 URL 是
+`…/epjap/abs/2023/01/ap220290/ap220290.html`，而正文在 `…/full_html/…`。
+**摘要页上本文的每一个选择器都什么也找不到**，而且不会报错。
+
+- 📌 **判据是正文容器本身，不是 URL 形状**：摘要页**根本没有 `div#contenu`**
+  （`h2.sec` 计数 0、`div.inset` 计数 0）。EDP 一个刊一个域名、路径各不相同，
+  按 URL 猜迟早错
+- 📌 **去哪儿也是页面自己说的**：摘要页上就有 `citation_fulltext_html_url`
+  （绝对地址，优先用），另有"Article contents"那块 `ul.article_doc` 里的
+  "Full HTML" 条目作备用
+- 📌 取回的那份文档**替换 `_raw_server_html`**（同 Cambridge 的重取），这样
+  元数据、PDF、图、正文读的是同一份字节；它落盘成 **`full_html.html`**，
+  而主流程的 `page_raw.html` 仍是它真正导航到的摘要页 —— 目录里两跳都在
+- ⚠️ **不是每篇 EDP 都有 full html**。`10.1051/epjconf/202634803001`
+  （EPJ Web of Conferences）只有 PDF：既没有 `citation_fulltext_html_url`，
+  "Article contents"里也没有"Full HTML"条目。那时**什么都不跳**，摘要、元数据、
+  PDF 照常，而 md 里**明说**"没有 full html 版本" —— 一段空白看着像提取失败
+
+#### olm 那一页有两种内容，只能看标记区分
+
+| 样本 | 形状 |
+|---|---|
+| `10.1051/0004-6361/202346508`（A&A）| `div.movie` 播放器 + "Download Video: Formats:" 一行 |
+| `10.1051/epjap/2023220290`（EPJAP）| 一句话加一个 `(Access here)` 链接，**没有播放器** |
+
+- 两种都读（先找 `div.movie`，没有再找 `div#contenu-min` 里**不指向另一个 HTML 页**
+  的链接），md 的小标题取**那一页自己的 `h2.sec`**（"Movies" / "Supplementary
+  Material"），不去猜拿到的是哪一种
+- ⚠️ 说明取**整段减去锚文字**："(Access here)" 本身什么都没说，旁边那句
+  "results obtained with the LDA approximation" 才是这个文件是什么的唯一说明
+
 #### ❌ 文章页上没有表格内容，也没有高清图
 
 这是 EDP 和本仓其它出版商最不一样的地方：
