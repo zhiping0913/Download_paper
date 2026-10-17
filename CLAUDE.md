@@ -2552,6 +2552,19 @@ epj-conferences.org、**edp-open.org**（`10.1051/epjam/2023004`）、
   有头、无头两条分支都加了同一道回落，并且日志会说清是哪条判据生效
 - ✅ 实测：四份 EDP 存档（aanda / epjap 摘要页 / epjap 正文页 / epjconf）
   html 判定全部为 `edp`，PNAS 存档为 `''`（不误判）
+- ✅ 端到端两个**新域名**（两个都没有写进代码）：
+
+  | | `10.1051/epjam/2023004` | `10.1051/e3sconf/201912803002` |
+  |---|---|---|
+  | 落地 | `epjam.edp-open.org/.../full_html/…`（**子域名**）| `www.e3s-conferences.org/.../abs/…` |
+  | 判据 | `↪ URL 认不出出版商，按页面自己声明的 citation_publisher 判为 EDP` | 同上 |
+  | full html | 直接落在正文页 | **没有**，明说后只产出摘要 + PDF |
+  | md | 210 行、3 图、2 个独立公式 | 64 行 |
+  | 参考文献 | 46 条（`ref.html`）| 16 条，**取自 `ref.html`**（正文页上 0 条）|
+
+- 📌 **e3s-conferences.org 这次没有被 DataDome 拦**（预载直接拿到 48,617 字符），
+  所以那句"请打开一次该域名"的提示没有出场。这不构成"cookie 不按域名隔离"的证据
+  —— 只说明这个域名当时放行了
 
 ⚠️ **必须有头，而且真实 Chrome profile 得访问过这个站一次 —— 每个域名各一次。** EDP 前面是
 **DataDome** 而不是 Cloudflare：空 profile 收到的是 403 加一张
