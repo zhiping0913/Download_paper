@@ -1193,7 +1193,8 @@ PDF、图片、补充材料、API/页面（如 IOP 的 `/data`）走的是**同�
   `1999--Dynamical Systems, Plasmas and Gravitation/metadata.json` 带 `doi`、
   `ISBN: [9783540654674, 9783540492511]`、`ISSN: [0075-8450, 1616-6361]`、
   `chapters` 40 条、`supplemental: []`、`pdf: null`（这本书确实没有整本 PDF）；
-  40 章里 **1 条是 Front Matter（无 DOI，跳过）**，其余各自产出
+  40 章里 **2 条没有自己的 DOI（Front Matter 与 Back Matter，逐条列出后跳过）**，
+  其余 **38 章**各自产出
   `1999--<章节标题>/` 下的 metadata.json + paper.pdf + paper.md
 
 ### springer_book：读捕获了，但 MathJax 拦截摘不掉
