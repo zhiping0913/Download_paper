@@ -245,7 +245,9 @@ python3 -u complete_paper_extraction.py --doi 10.1063/5.0256231
 ```python
 complete_extraction_workflow(doi, output_file=None, force_headed=False,
                              link=None, extra_headers=None,
-                             pdf_only=False, pdf_link=None)
+                             pdf_only=False, pdf_link=None,
+                             by_chapter=False, force_publisher='',
+                             metadata_overrides=None)
 ```
 
 **pdf-only 模式**（`--pdf-only`，或 `--json` 里给 `pdf_link`）：老文章和会议短文的
@@ -258,6 +260,31 @@ Crossref 响应，只为取文件起一次浏览器。两层的有头/无头都�
 无条件优先。两种情况都照常写 `metadata.json` 和
 `crossref.json`；PDF 未下成则返回 `None`（批次记为失败），但 `metadata.json` 里
 记着 `pdf_link`，可据此重试。
+
+**`--by-chapter`**（书籍分章节模式，由 `extract_book_by_chapter()` 驱动）：
+把书里的**每一章当成一个独立条目**下载 —— 各自有 `metadata.json`、`paper.pdf`、
+`paper.md`、图片，目录名同样是「年份--标题」，放在书目录之下：
+
+```
+{year}--{书名}/                     metadata.json（书的 DOI、ISBN、ISSN、章节清单）
+                                   + crossref.json + html/（+ 整本 PDF，如果有）
+{year}--{书名}/{year}--{章节标题}/   一个正常的论文条目
+```
+
+由来是**有些书根本没有整本的 PDF，只有分章节的** —— 旧行为（书一条、各章 PDF 塞进
+`supplemental/`）在那种书上会产出一个主交付物并不存在的目录。
+
+- 章节清单从**落盘的** `metadata.json` 里读回来（`chapters` 键），不走内存：书那一条
+  本来就该能离线说明自己装着什么
+- ⚠️ 每一章都走完整的常规流程，只有 handler 是指定的（`force_publisher='nature'`）：
+  章节 URL 是 `link.springer.com/chapter/…`，按常规判定会回到书 handler，而那个
+  handler 会把章节 DOI 再归一回书 DOI
+- ⚠️ **章节的 Crossref 记录常常没有年份**（实测这本书每一章的 `issued` 都是
+  `[[None]]`，而书本身写着 1999），页面上也没印。目录名要的正是年份，所以书把自己
+  知道的借给各章（`metadata_overrides`：年份、所属书名、ISBN、ISSN、`book_doi`）——
+  否则每一章都落在 `0000--…` 下面
+- ⚠️ Front Matter / Back Matter **有 PDF 但没有自己的 DOI**，没法作为独立条目跑，
+  日志里逐条列出来：否则计数会和目录对不上
 
 **`--pdf`**（默认 `True`，也可用 `DP_PDF=0`）：`False` 时跳过 PDF 下载，链接仍写进
 `metadata.json` 的 `pdf_link`；跳过时明确打印，否则「本来没有 PDF」和「叫我们别下」

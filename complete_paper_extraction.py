@@ -3619,6 +3619,9 @@ async def complete_extraction_workflow(
     pdf_link: str = None,
     referer: str = None,
     use_scihub: bool = False,
+    by_chapter: bool = False,
+    force_publisher: str = '',
+    metadata_overrides: dict = None,
 ):
     """完整提取工作流 - Phase 4/5 重构版本
 
@@ -3642,6 +3645,18 @@ async def complete_extraction_workflow(
               跳过 Phase 0 预检和 doi.org 跳转，元数据（含目录名要的标题/年份）
               全部取自 Step 0 那一次 Crossref 响应，只为取文件起一次浏览器。
               隐含 pdf_only=True。
+        by_chapter: 分章节模式。只对书籍 handler 有意义：本次运行产出的是
+              **书本身**那一条（metadata.json 带 doi / ISBN / ISSN / 章节清单），
+              不再把每一章的 PDF 塞进 supplemental，也不把各章正文拼进一份
+              大 md —— 每一章由 extract_book_by_chapter() 作为独立条目各跑一遍。
+        metadata_overrides: 调用方已经确知、而页面和 Crossref 给不出的字段，
+              在 Crossref 合并之后覆盖上去。为分章节模式而设：书籍章节的
+              Crossref 记录常常**没有年份**（`issued` 是 `[[None]]`），而
+              目录名要的正是年份 —— 书本身的记录里写着 1999。ISBN / ISSN /
+              所属书籍同理。只覆盖给出的键。
+        force_publisher: 绕过出版商判定，直接指定 handler。分章节模式下给每一章
+              用：章节页的 URL 是 link.springer.com/chapter/…，按常规判定会回到
+              SpringerBookHandler（而那一章并不是一本书）。
         use_scihub: 从 Sci-Hub 取 PDF。先问镜像要出这篇的 PDF 地址，然后走的就是
               pdf_link 那条路 —— 所以同样**隐含 pdf_only=True**：Sci-Hub 上没有
               可提取的论文页面，元数据全部来自 Crossref（标题缺失时才用 Sci-Hub
@@ -3679,6 +3694,22 @@ async def complete_extraction_workflow(
         print(f"  ↪ 使用 JSON 中提供的 link，跳过 https://doi.org/{doi} 重定向")
         print(f"    → {url}")
 
+    def _resolve_publisher(detected: str) -> str:
+        """Final say on which handler runs.
+
+        ``force_publisher`` outranks everything -- it is an explicit
+        instruction from the caller (a chapter run says "this is an article,
+        not a book"), and it is applied at every one of the four points the
+        flow settles on a publisher so the headless and headed branches
+        cannot disagree.
+        """
+        if force_publisher:
+            if (detected or '') != force_publisher:
+                print(f"  ↪ 按调用方指定使用 {force_publisher.upper()} Handler"
+                      f"（页面判定是 {(detected or 'unknown').upper()}）")
+            return force_publisher
+        return apply_crossref_type_override(detected, crossref_data)
+
     def build_headless_precheck_urls() -> list:
         """Return candidate URLs for Phase 0, avoiding a hard dependency on doi.org."""
         candidates = [url]
@@ -3709,6 +3740,11 @@ async def complete_extraction_workflow(
         # before the landing-url block below, which is skipped when there is
         # no page at all.
         handler._force_headed = bool(force_headed_downloads)
+
+        # Chapter-by-chapter mode, pinned the same way and for the same
+        # reason as _force_headed: a handler cannot see how the run was
+        # invoked. Only the book handlers read it.
+        handler._by_chapter = bool(by_chapter)
 
         # Pin the article URL BEFORE extract_all runs. Handlers navigate the
         # page during extraction — the APS one visits /supplemental/{doi} to
@@ -3813,6 +3849,19 @@ async def complete_extraction_workflow(
         # Ensure DOI is set in metadata for markdown generation
         if not metadata.get('doi') and doi:
             metadata['doi'] = doi
+
+        # Facts the caller already knows and the page/Crossref do not. A book
+        # chapter's Crossref record frequently carries no year at all, and
+        # the directory name is "{year}--{title}" -- so without this every
+        # chapter of a 1999 book lands in a directory called "0000--...".
+        if metadata_overrides:
+            applied = []
+            for key, value in metadata_overrides.items():
+                if value and metadata.get(key) != value:
+                    metadata[key] = value
+                    applied.append(key)
+            if applied:
+                print(f"  ↪ 调用方补充的字段: {', '.join(applied)}")
 
         print(f"  ✓ 标题: {metadata.get('title', 'N/A')[:60]}...")
         print(f"  ✓ 作者: {len(metadata.get('authors', []))} 位")
@@ -4339,7 +4388,7 @@ async def complete_extraction_workflow(
                             headless_publisher = _from_html
                     # Promote OUP → OUP_BOOK when Crossref says this DOI is a
                     # book or book-chapter (then OupBookHandler walks the TOC).
-                    headless_publisher = apply_crossref_type_override(headless_publisher, crossref_data)
+                    headless_publisher = _resolve_publisher(headless_publisher)
                     print(f"  ✓ 检测出版商: {headless_publisher.upper()}")
 
                     # 检测是否被反爬虫拦截
@@ -4442,7 +4491,7 @@ async def complete_extraction_workflow(
         print()
 
         fallback_publisher = headless_publisher or detect_publisher_from_url(url)
-        fallback_publisher = apply_crossref_type_override(fallback_publisher, crossref_data)
+        fallback_publisher = _resolve_publisher(fallback_publisher)
         if fallback_publisher in HEADLESS_ACCESSIBLE_PUBLISHERS and not headless_blocked:
             print("🟢 无头Handler自主管理路径：当前出版商支持无头完整提取")
             print("=" * 80)
@@ -4829,7 +4878,7 @@ async def complete_extraction_workflow(
             print("Step 1️⃣  导航到DOI并检测出版商...")
             print("=" * 80)
             publisher = detect_publisher_from_url(url)
-            publisher = apply_crossref_type_override(publisher, crossref_data)
+            publisher = _resolve_publisher(publisher)
             handler = get_publisher_handler(
                 publisher,
                 page=page,
@@ -4890,7 +4939,7 @@ async def complete_extraction_workflow(
                     print(f"  ↪ URL 认不出出版商，按页面自己声明的 "
                           f"citation_publisher 判为 {from_html.upper()}")
                     final_publisher = from_html
-            final_publisher = apply_crossref_type_override(final_publisher, crossref_data)
+            final_publisher = _resolve_publisher(final_publisher)
             if final_publisher != publisher:
                 publisher = final_publisher
                 handler = get_publisher_handler(
@@ -5041,6 +5090,167 @@ async def complete_extraction_workflow(
 # ============================================================================
 # 入口点
 # ============================================================================
+
+async def extract_book_by_chapter(
+    doi: str,
+    *,
+    output_dir: str,
+    force_headed: bool = False,
+    browser_session: 'SharedBrowserSession' = None,
+    link: str = None,
+    extra_headers: dict = None,
+    pdf_only: bool = False,
+    referer: str = None,
+) -> tuple:
+    """Download a book as one entry per chapter.
+
+    Two levels of output:
+
+      <output>/{year}--{book title}/          metadata.json (book DOI, ISBN,
+                                              ISSN, chapter list), crossref.json,
+                                              html/, and the whole-book PDF when
+                                              the publisher offers one
+      <output>/{year}--{book title}/{year}--{chapter title}/
+                                              a normal paper entry: metadata.json,
+                                              paper.pdf, paper.md, figures
+
+    📌 This exists because **not every book has a whole-book PDF** -- some
+    publish per chapter only, and the previous behaviour (one entry for the
+    book, every chapter PDF filed under supplemental/) then produced a
+    directory whose main deliverable did not exist.
+
+    ⚠️ Each chapter is a full run of the normal workflow, so it gets the same
+    publisher routing, retries and fetch ladder as any paper -- the only thing
+    forced is the handler (``force_publisher='nature'``): a chapter URL is
+    ``link.springer.com/chapter/…``, which the detector reads as the book
+    handler, and that one would renormalise the chapter DOI back to the book.
+
+    Returns:
+        (success_count, fail_count, book_dir)
+    """
+    print("\n" + "=" * 80)
+    print(f"📚 分章节模式: {doi}")
+    print("=" * 80)
+
+    book_dir = await complete_extraction_workflow(
+        doi,
+        output_file=output_dir,
+        force_headed=force_headed,
+        browser_session=browser_session,
+        link=link,
+        extra_headers=extra_headers,
+        pdf_only=pdf_only,
+        referer=referer,
+        by_chapter=True,
+    )
+    if not book_dir:
+        print(f"❌ 书籍条目未产出，无法分章节: {doi}")
+        return 0, 1, None
+
+    # ⚠️ What the workflow hands back is the paper.md path on the normal
+    # path and the directory on the pdf-only one -- so normalise instead of
+    # assuming either (assuming the directory landed the chapter list lookup
+    # on "<...>/paper.md/metadata.json").
+    book_path = Path(book_dir)
+    if book_path.is_file():
+        book_path = book_path.parent
+    print(f"\n📘 书籍目录: {book_path}")
+
+    # The chapter list comes off the landed metadata.json, not out of a
+    # variable: the book entry is already an offline-complete description of
+    # itself, and reading it back is what makes a re-run of just the chapters
+    # possible.
+    chapters = []
+    book_meta = {}
+    try:
+        with open(book_path / 'metadata.json', 'r', encoding='utf-8') as f:
+            book_meta = json.load(f)
+        chapters = book_meta.get('chapters') or []
+    except Exception as e:
+        print(f"⚠️  读不到书籍 metadata.json 里的章节清单: {e}")
+
+    # ⚠️ A chapter's own Crossref record is often missing the year (measured
+    # on this book: `issued` is `[[None]]` for every chapter while the book
+    # says 1999), and the publisher page does not print it either. The
+    # directory name is "{year}--{title}", so the book has to lend the
+    # chapters what it knows -- otherwise every chapter lands under
+    # "0000--…". The series/book title likewise: NatureHandler fills
+    # `journal` with "Nature", which a Springer book chapter is not.
+    chapter_overrides = {
+        'year': str(book_meta.get('year') or '') or None,
+        'journal': book_meta.get('journal') or book_meta.get('title') or None,
+        'ISBN': book_meta.get('ISBN') or None,
+        'ISSN': book_meta.get('ISSN') or None,
+        'book_doi': book_meta.get('doi') or None,
+        'book_title': book_meta.get('title') or None,
+    }
+    chapter_overrides = {k: v for k, v in chapter_overrides.items()
+                         if v and v != '0000'}
+
+    with_doi = [c for c in chapters if (c.get('doi') or '').strip()]
+    without_doi = [c for c in chapters if not (c.get('doi') or '').strip()]
+    if not chapters:
+        print("⚠️  目录里没有章节 —— 这本书只产出书本身那一条")
+        return 1, 0, book_path
+    # ⚠️ Front Matter / Back Matter have a PDF but no DOI of their own, so
+    # there is nothing to run a workflow on. Say so rather than letting the
+    # count quietly disagree with the table of contents.
+    if without_doi:
+        print(f"ℹ️  {len(without_doi)} 章没有自己的 DOI（通常是 Front/Back Matter），"
+              f"不作为独立条目：")
+        for c in without_doi:
+            print(f"     - {c.get('title') or '(无标题)'}")
+
+    print(f"\n📖 共 {len(with_doi)} 章要作为独立条目下载")
+    ok = fail = 0
+    for idx, chapter in enumerate(with_doi, 1):
+        ch_doi = chapter['doi'].strip()
+        print(f"\n{'='*80}")
+        print(f"📖 章节 {idx}/{len(with_doi)}: {chapter.get('title') or ch_doi}")
+        print(f"   DOI: {ch_doi}")
+        print(f"{'='*80}\n")
+        try:
+            ch_dir = await complete_extraction_workflow(
+                ch_doi,
+                output_file=str(book_path),
+                force_headed=force_headed,
+                browser_session=browser_session,
+                pdf_only=pdf_only,
+                force_publisher='nature',
+                metadata_overrides=chapter_overrides,
+            )
+        except Exception as e:
+            print(f"❌ 章节处理失败 [{ch_doi}]: {e}")
+            import traceback
+            traceback.print_exc()
+            ch_dir = None
+        if ch_dir:
+            ok += 1
+            print(f"✅ 章节成功 [{ch_doi}]: {ch_dir}")
+        else:
+            fail += 1
+            print(f"❌ 章节失败 [{ch_doi}]: 未产出条目")
+
+        # Same reason as the batch loop: a profile driven over CDP collects
+        # automation fingerprints, so every entry starts on a rebuilt one.
+        if browser_session is not None:
+            try:
+                browser_session.retire_headed_browser()
+            except Exception as exc:
+                print(f"  ⚠️  关闭抓取浏览器失败: {exc}")
+
+    print(f"\n{'='*80}")
+    print(f"📚 分章节完成: {book_path.name}")
+    print(f"  ✓ 章节成功: {ok}/{len(with_doi)}")
+    print(f"  ✗ 章节失败: {fail}/{len(with_doi)}")
+    print(f"{'='*80}")
+    # The book entry itself counts as one success; the chapters add to it.
+    return ok + 1, fail, book_path
+
+
+class _BookDone(Exception):
+    """Internal signal: a --by-chapter book already counted its own entries."""
+
 
 def _parse_bool_flag(value: str) -> bool:
     """Accept the spellings people actually type for ``--supplemental``."""
@@ -5203,6 +5413,16 @@ JSON 格式:
                  'OUP 的书把每一章都列成补充材料 PDF，整本下下来既慢又不是要的东西'
         )
 
+        parser.add_argument(
+            '--by-chapter',
+            action='store_true',
+            default=False,
+            help='书籍分章节模式：每一章作为独立条目下载（各自有 metadata.json / '
+                 'paper.pdf / paper.md，目录名同样是「年份--标题」），整本书只留'
+                 '一个 metadata.json（DOI、ISBN、ISSN、章节清单）。'
+                 '有些书根本没有整本的 PDF，只有分章节的'
+        )
+
         args = parser.parse_args()
 
         # The flag wins over the environment variable; unset means keep
@@ -5331,6 +5551,21 @@ JSON 格式:
                     print(f"{'='*80}\n")
 
                     try:
+                        if args.by_chapter:
+                            _ok, _fail, _book = await extract_book_by_chapter(
+                                doi,
+                                output_dir=output_dir,
+                                force_headed=force_headed_mode,
+                                browser_session=browser_session,
+                                link=article.get('link'),
+                                extra_headers=article.get('header'),
+                                pdf_only=args.pdf_only,
+                                referer=article.get('referer'),
+                            )
+                            success_count += _ok
+                            fail_count += _fail
+                            raise _BookDone
+
                         md_path = await complete_extraction_workflow(
                             doi,
                             output_file=output_dir,
@@ -5357,6 +5592,12 @@ JSON 格式:
                         else:
                             fail_count += 1
                             print(f"❌ 失败 [{doi}]: 未产出 Markdown")
+                    except _BookDone:
+                        # The by-chapter run already reported and counted
+                        # every entry it produced. Fall through to the shared
+                        # footer / browser retire / batch sleep below, so a
+                        # book is paced like any other item in the batch.
+                        pass
                     except Exception as e:
                         print(f"❌ 处理失败 [{doi}]: {e}")
                         import traceback

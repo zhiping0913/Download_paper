@@ -136,12 +136,34 @@ class SpringerBookHandler(PublisherHandler):
                 print(f"  📄 Page {page_num}: {len(extra_chapters)} chapters (total: {len(chapters_info)})")
                 page_num += 1
 
+            # Chapter-by-chapter mode (--by-chapter): this run produces the
+            # *book* entry only -- its metadata.json, with the DOI, ISBN,
+            # ISSN and the chapter list -- and every chapter is then run as
+            # an entry of its own (extract_book_by_chapter in the main
+            # flow). So the two things that make the whole-book entry
+            # expensive are skipped here: the per-chapter PDFs (each chapter
+            # now has its own paper.pdf) and walking into every chapter page
+            # to splice the bodies into one giant md.
+            by_chapter = bool(getattr(self, '_by_chapter', False))
+
+            # The chapter list is the hand-off interface: it lands in
+            # metadata.json so the chapter runs can be driven from the file
+            # rather than from a value passed in memory.
+            metadata['chapters'] = [
+                {
+                    'doi': ch.get('doi', ''),
+                    'title': ch.get('title', ''),
+                    'pdf_url': ch.get('pdf_url', ''),
+                }
+                for ch in chapters_info
+            ]
+
             # Derive supplemental URLs and descriptions directly from chapters_info
             # (chapters_info has pdf_url and sequence_number from _extract_chapter_from_li)
             # Use seq-prefixed key to avoid collisions on duplicate titles (e.g. multiple "Front Matter")
             supplemental_urls = []
             supplemental_descriptions = {}
-            for ch in chapters_info:
+            for ch in (chapters_info if not by_chapter else []):
                 if ch.get('pdf_url'):
                     supplemental_urls.append(ch['pdf_url'])
                     title = ch.get('title', '')
@@ -163,7 +185,10 @@ class SpringerBookHandler(PublisherHandler):
             all_chapter_figures = {}
             global_fig_counter = 0
 
-            if chapters_info:
+            if by_chapter:
+                print(f"  📚 分章节模式：{len(chapters_info)} 章将各自作为独立条目提取，"
+                      f"本条只产出书本身的元数据")
+            elif chapters_info:
                 print(f"  📚 Found {len(chapters_info)} chapters, extracting content...")
                 for idx, chapter_info in enumerate(chapters_info, 1):
                     if chapter_info.get('doi'):
@@ -190,6 +215,7 @@ class SpringerBookHandler(PublisherHandler):
                             print(f"      ⚠️  Failed to extract content for chapter {idx}")
 
             metadata['_chapters_content'] = chapters_content
+            metadata['_by_chapter'] = by_chapter
 
             # Collect chapter DOIs from chapters_info
             if chapters_info:
@@ -738,6 +764,15 @@ class SpringerBookHandler(PublisherHandler):
                     md_content += f" (DOI: {chapter_doi})"
                 md_content += "\n"
             md_content += "\n"
+
+        # In chapter-by-chapter mode the bodies live in the chapters' own
+        # paper.md files, so say that outright instead of printing a
+        # "Chapters" heading with nothing under it -- an empty section reads
+        # like a failed extraction.
+        if metadata.get('_by_chapter'):
+            md_content += ("*本书按章节分别提取：每一章是本目录下的一个独立条目"
+                           "（各自有 metadata.json / paper.pdf / paper.md）。*\n\n")
+            return md_content
 
         # ===== Chapters =====
         # Create a mapping of chapter DOIs to their extracted content

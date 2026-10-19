@@ -1148,6 +1148,54 @@ PDF、图片、补充材料、API/页面（如 IOP 的 `/data`）走的是**同�
   而靠 UA 判断在 Chrome 的新无头模式下已失效），所以由主流程在 `extract_all`
   **之前**挂到 `handler._force_headed`（与 `_landing_url` / `_raw_server_html`
   同一套惯例），handler 统一经基类的 `is_headed_run()` 读取
+### 书籍分章节模式（`--by-chapter`）
+
+❌ **旧行为在「没有整本 PDF」的书上产出一个主交付物不存在的目录**：书是一条，
+各章 PDF 塞进 `supplemental/`。而有些书（实测 `10.1007/BFb0105906`，
+*Dynamical Systems, Plasmas and Gravitation*，LNP 1999）**根本没有整本的 PDF**，
+只有分章节的。
+
+`--by-chapter` 把**每一章当成一个独立条目**，目录名同样是「年份--标题」：
+
+```
+{year}--{书名}/                     metadata.json（书的 DOI、ISBN、ISSN、chapters[]）
+                                   + crossref.json + html/（+ 整本 PDF，如果有）
+{year}--{书名}/{year}--{章节标题}/   一个正常的论文条目（metadata.json / paper.pdf
+                                   / paper.md / 图片）
+```
+
+- 📌 **书那一条只产出书自己**：`SpringerBookHandler` 读 `handler._by_chapter`
+  （主流程钉上去的，与 `_force_headed` 同一套惯例），于是跳掉两件让整本模式变贵
+  的事 —— 把每章 PDF 当补充材料下、以及走进每个章节页把正文拼成一份大 md。
+  md 里**明说**各章是独立条目，不留一个空的 "Chapters" 标题
+- 📌 **章节清单从落盘的 `metadata.json` 读回来**（`chapters` 键，带 doi / title /
+  pdf_url），不走内存：书那一条本来就该能离线说明自己装着什么，而且据此可以只重跑
+  章节
+- ⚠️ **每一章走完整的常规流程，只有 handler 是指定的**（新参数
+  `force_publisher='nature'`）：章节 URL 是 `link.springer.com/chapter/…`，
+  常规判定会答 `springer_book`，而那个 handler 会把章节 DOI **再归一回书 DOI**
+  —— 于是每一章都会去抓整本书。`force_publisher` 在**四个**判定点统一生效
+  （`_resolve_publisher()`，有头/无头两条分支都经过它），否则两条路会给出不同答案
+- ⚠️ **章节的 Crossref 记录常常没有年份**：实测这本书**每一章**的 `issued` 都是
+  `[[None]]`（书本身写着 1999），而 Springer 的章节页上也没印年份。目录名是
+  `{year}--{title}`，所以不借就是**每一章都落在 `0000--…` 下面**。新参数
+  `metadata_overrides` 让书把自己知道的借给各章（年份、所属书名、ISBN、ISSN、
+  `book_doi`），在 Crossref 合并**之后**覆盖，且只覆盖给出的键
+- ⚠️ 顺带：`journal` 也要借。NatureHandler 给章节填的是 **"Nature"** ——
+  一个 Springer 书的章节不是 Nature 的文章
+- ⚠️ **Front Matter / Back Matter 有 PDF 但没有自己的 DOI**，没法作为独立条目跑。
+  日志里逐条列出来，否则计数和目录对不上
+- ⚠️ `complete_extraction_workflow()` **返回的是 `paper.md` 的路径**（pdf-only 时
+  才是目录）。按"是目录"去拼章节清单会得到
+  `…/paper.md/metadata.json`，报一句 `[Errno 20] Not a directory` ——
+  第一版就是这么坏的，已改为归一化
+- ✅ 实测 `10.1007/BFb0105906 --by-chapter`：书那一条
+  `1999--Dynamical Systems, Plasmas and Gravitation/metadata.json` 带 `doi`、
+  `ISBN: [9783540654674, 9783540492511]`、`ISSN: [0075-8450, 1616-6361]`、
+  `chapters` 40 条、`supplemental: []`、`pdf: null`（这本书确实没有整本 PDF）；
+  40 章里 **1 条是 Front Matter（无 DOI，跳过）**，其余各自产出
+  `1999--<章节标题>/` 下的 metadata.json + paper.pdf + paper.md
+
 ### springer_book：读捕获了，但 MathJax 拦截摘不掉
 
 三处 `page.content()` 已改（落地页、`extract_metadata`、**目录分页页** —— 分页页

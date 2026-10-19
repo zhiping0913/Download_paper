@@ -1418,6 +1418,20 @@ def save_metadata_json(paper_dir: Path, metadata: dict, s2_data: dict, doi: str,
             if metadata.get(key):
                 metadata_json[key] = metadata[key]
 
+        # Which book a chapter belongs to (--by-chapter). The chapter
+        # directories sit inside the book's, but a metadata.json has to be
+        # able to say this on its own -- a corpus is read file by file.
+        for key in ('book_doi', 'book_title'):
+            if metadata.get(key):
+                metadata_json[key] = metadata[key]
+
+        # The book's chapter list (--by-chapter). Each entry carries the
+        # chapter DOI, title and PDF URL, so the per-chapter runs are driven
+        # from this landed file rather than from a value held in memory --
+        # and the book directory can say afterwards what it contains.
+        if metadata.get('chapters'):
+            metadata_json['chapters'] = metadata['chapters']
+
         # Add ISBN field if present
         if metadata.get('ISBN'):
             metadata_json['ISBN'] = metadata['ISBN']
