@@ -1195,7 +1195,11 @@ PDF、图片、补充材料、API/页面（如 IOP 的 `/data`）走的是**同�
   `chapters` 40 条、`supplemental: []`、`pdf: null`（这本书确实没有整本 PDF）；
   40 章里 **2 条没有自己的 DOI（Front Matter 与 Back Matter，逐条列出后跳过）**，
   其余 **38 章**各自产出
-  `1999--<章节标题>/` 下的 metadata.json + paper.pdf + paper.md
+  `1999--<章节标题>/` 下的 metadata.json + paper.pdf + paper.md。
+  整本跑完 **38/38 成功、0 失败**，38 个目录里三件产物一个不缺，`0000--*` 零个，
+  每章的 `year` 都是 `1999`、`journal` 都是书名（不是 "Nature"），
+  `book_doi`/`ISBN`/`ISSN` 都借到了。⚠️ 代价是**约 2 分钟一章**（整本约 75 分钟）：
+  每章都走完整的常规流程
 
 ### springer_book：读捕获了，但 MathJax 拦截摘不掉
 
