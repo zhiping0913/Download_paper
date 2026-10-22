@@ -725,6 +725,69 @@ AIP 由 `publisher/aip.py` 的 `AIPHandler` 处理。
 ## References
 ```
 
+### Physics Today（`physicstoday.aip.org`）
+
+同一个出版商、另一套 CMS：Physics Today 跑在 **Brightspot** 上，不是 Silverchair，
+整页**没有一个 `citation_*` meta**，`.fig-section` / `.article-section-wrapper` 也
+都不存在 —— 改之前 `10.1063/1.1897563` 产出的是「标题 AIP Article、0 位作者、
+0 张图、没有 PDF」的空壳，而日志里一句异常都没有。
+
+路由不用改（`physicstoday.aip.org` 早就映射到 `aip`），所以这次只在 `AIPHandler`
+里加了容器选择器，公式 / 表格 / 列表 / 参考文献的管道全部复用：
+
+| 东西 | 在哪 |
+|---|---|
+| 正文 | `div.RichTextArticleBody`（`PT_BODY_SELECTOR`），`<p>` / `<h2>` 平铺 |
+| 元数据 | `h1.Page-headline`、`.Page-authors .IndividualCard__name`、`[data-doi]`、`meta[article:published_time]`；摘要是副标题 `.Page-subHeadline`（Physics Today 没有摘要）|
+| PDF | **正文元素自己的属性** `div.RichTextArticleBody[data-pdf]`（brightspotcdn 的 `*.online.pdf`，无需订阅），不是 Crossref 给的 `pubs.aip.org/article-pdf` |
+| 卷/期 | 从那个 PDF 文件名读（`PTO.v58.i3.39_1` → 58 / 3），与 Crossref 三篇全对 |
+| 图 | `picture` → `_pt_images()`，按文档顺序编号 |
+| 公式 | JATS 残留：`<disp-formula><math display="block"><label>` |
+| 表格 | `div.HtmlModule` 里的 JATS `<table-wrap><label><caption><table><table-wrap-foot>` |
+| 边栏 | `div.BlockTextModule`（渲染成 blockquote）|
+| 参考文献 | `ol.BodyReference > li`，条目自带编号 |
+
+踩过的坑：
+
+- **高清图要取 CDN 上的原始文件**：页面上每个 URL 都是 dims4 派生图，但它的
+  `?url=` 参数带着 S3 原件，`/brightspot/` 之后那一段就是 CDN 的裸路径 ——
+  实测 `…/PTO.v58.i3.39_1.f3.jpg` 是 **657,109 字节 / 2096 px**，而最大的 webp
+  派生图只有 88,362 字节。顺序是 `data-original-src` → 由 `?url=` 推出的裸路径 →
+  webp srcset 的最后一项（2×、1640 px，作 `original_url` 回退）
+  ⚠️ 裸路径是 `/brightspot/` **之后的整段**，不是 basename —— 作者头像住在
+  `bc/c7/<hash>/feder.jpg`
+- ⚠️ **灯箱是图注的第二份拷贝**（`bsp-modal-window` / `.ModalWindow`，"View larger"），
+  不摘掉每条图注都会印两遍
+- ⚠️ **图可以长在 `<li>` 或 `<p>` 里**（`10.1063/1.1595054` 的图 2）。片段转换器会把
+  空白压成一行，留在原处等于把整条图注塞进句子中间 —— 所以先把 `.Enhancement`
+  移到它所属的顶层元素之后，再按块渲染
+- ⚠️ **`<math display="block">` 从 pandoc 回来已经是 `$$…$$`**（Silverchair 的没有这个
+  属性），再包一层会在公式上下各留一个空的 `$$`
+- ⚠️ **表格用 `gfm` writer**（`_convert_aip_table_to_md(writer=...)`，Silverchair 仍用
+  默认的 `md`）：pandoc 的 simple 表格按列宽对齐，而 `10.1063/1.3455243` 的单元格长到
+  会把表头和分隔线拆开、最后一行丢掉空单元格
+- ⚠️ **只有书目 `<xref ref-type="bibr">` 才变 `[N]`**：表格/插图的 xref 是句子里的一个词，
+  `(see table)` 不能变成 `(see [table])`（pandoc 还会把它转义成 `\[table\]`）
+- ⚠️ **`AckTextModule` 不一定是致谢**：`10.1063/1.3455243` 里是
+  `<ack><title>Basic research and applications</title></ack>` —— 一个塞错标签的章节标题
+
+✅ 三篇实测（全部无头直连，3/3 成功）：
+
+| | `10.1063/1.1897563` | `10.1063/1.1595054` | `10.1063/1.3455243` |
+|---|---|---|---|
+| md | 194 行 | 201 行 | 102 行 |
+| 图 | 6（原始 JPEG，1003×715–2096×1269）| 6 | 1 |
+| 公式 | 4 个独立公式（含 `((1))` 编号）| 0 | 0 |
+| 列表 | 无 | 1 个 4 项列表（图 2 从 `<li>` 里提了出来）| 无 |
+| 表格 | 无 | 无 | 1 张 pipe 表 + `^*^` 表注 |
+| 边栏 | 3 个 blockquote | 无 | 无 |
+| 参考文献 | 18 | 18 | 0（新闻稿没有）|
+| PDF | 有 | 有 | 有 |
+
+✅ 回归：pubs.aip.org 的存档（`10.1063/5.0294...` 那篇 Silverchair 文章）改前改后
+正文 diff **只有 1 行** —— 一个页内锚点 `[Appendix](#app1)` 现在只留文字（md 里那是个
+死链），图 12 个、参考文献 43 条完全一致。
+
 ## IOP 当前实现
 
 IOP 由 `publisher/iop.py` 的 `IOPHandler` 处理。

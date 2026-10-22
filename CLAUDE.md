@@ -359,7 +359,7 @@ Step 0 那一次 Crossref 响应、只为取文件起一次浏览器、以 PDF �
 |---|---|---|---|
 | `10.1038` | NatureHandler | 无头 | 完整 |
 | `10.1103` | APSHandler | 有头 | 完整 |
-| `10.1063` | AIPHandler | 无头 | 完整 |
+| `10.1063` | AIPHandler | 无头 | 完整（含 Physics Today，另一套 CMS，见下）|
 | `10.1088` | IOPHandler | 有头 | 完整 |
 | `10.1017` | CambridgeHandler | 无头 | 完整 |
 | `10.1093` | OupHandler | 无头 | 完整 |
@@ -1030,6 +1030,53 @@ AIP `10.1063/5.0321661` 六个 7–10 MB 的视频，本仓还见过 200+ MB 的
   里「所有元素使用同一套公式转换管道」那一条
 - ✅ 实测 `10.1063/5.0326077`：12 张图的图注全部回来，`**FIG. 1.** Two-dimensional
   schematic of a surface plasmon-based ICR-DLA…`，FIG. 3 的 `$H_{y}$` 正常
+
+### Physics Today 是另一套 CMS（`physicstoday.aip.org`，同在 AIPHandler 里）
+
+❌ **同一个出版商、不同的 CMS，于是产出一个空壳而且不报错**：Physics Today 跑在
+**Brightspot** 上，整页**没有一个 `citation_*` meta**，`.fig-section` /
+`.article-section-wrapper` 也都不存在 —— 实测 `10.1063/1.1897563` 改之前得到
+「标题 `AIP Article`、0 位作者、0 张图、没有 PDF」，日志里一句异常都没有。
+
+📌 **路由本来就对**（`physicstoday.aip.org` 早已映射到 `aip`），而页面里仍是
+**JATS 残留**（`<disp-formula>`、`<table-wrap>`、`<xref>`、`<label>`），所以只加了
+容器选择器，公式/表格/列表/参考文献的管道全部复用：正文 `div.RichTextArticleBody`、
+标题 `h1.Page-headline`、作者 `.Page-authors .IndividualCard__name`、
+摘要用副标题 `.Page-subHeadline`（Physics Today 没有摘要）、参考文献
+`ol.BodyReference > li`、边栏 `div.BlockTextModule`（渲染成 blockquote）。
+
+- 📌 **PDF 链接是正文元素自己的属性**：`div.RichTextArticleBody[data-pdf]` →
+  brightspotcdn 的 `PTO.v58.i3.39_1.online.pdf`，不需要订阅；Crossref 给的
+  `pubs.aip.org/physicstoday/article-pdf/…` 则要。卷/期也从这个文件名读
+  （`v58.i3` → 58/3，与 Crossref 三篇全对）；⚠️ 后面那个数字是**首页页码**
+  （39，而文章是 39-46），所以**不写进 `pages`** —— 一个和自己名字矛盾的字段
+  比空着更糟，真正的页码范围在 `crossref.json` 里
+- 📌 **高清图取 CDN 上的原件**：页面每个 URL 都是 dims4 派生图，而它的 `?url=`
+  参数里带着 S3 原件，`/brightspot/` **之后那一整段**就是 CDN 的裸路径（不是
+  basename —— 作者头像在 `bc/c7/<hash>/feder.jpg`）。实测
+  `…/PTO.v58.i3.39_1.f3.jpg` **657,109 字节 / 2096 px**，而最大的 webp 派生图只有
+  **88,362 字节**。顺序：`data-original-src` → 由 `?url=` 推出的裸路径 → webp
+  srcset 的最后一项（2×、1640 px，留作 `original_url` 回退）
+- ⚠️ **灯箱是图注的第二份拷贝**（`bsp-modal-window` / `.ModalWindow`，"View larger"）——
+  不摘掉每条图注印两遍
+- ⚠️ **图可以长在 `<li>` 或 `<p>` 里**（`10.1063/1.1595054` 的图 2）。片段转换器把空白
+  压成一行，留在原处等于把整条图注塞进句子中间 —— 所以先把 `.Enhancement` 移到它
+  所属的顶层元素之后
+- ⚠️ **`<math display="block">` 从 pandoc 回来已经是 `$$…$$`**（Silverchair 的没有这个
+  属性），再包一层会在公式上下各留一个空 `$$`
+- ⚠️ **表格用 `gfm` writer**（`_convert_aip_table_to_md(writer=…)`，Silverchair 仍走默认
+  的 `md`）：pandoc 的 simple 表格按列宽对齐，而 `10.1063/1.3455243` 的单元格长到会把
+  表头和分隔线拆开、最后一行丢掉空单元格
+- ⚠️ **只有 `<xref ref-type="bibr">` 才变 `[N]`**：表格/插图的 xref 是句子里的一个词，
+  `(see table)` 不能变成 `(see [table])`（pandoc 还会转义成 `\[table\]`）
+- ⚠️ **`AckTextModule` 不一定是致谢**：`10.1063/1.3455243` 里是
+  `<ack><title>Basic research and applications</title></ack>`，一个塞错标签的章节标题
+- ✅ 三篇实测（无头直连，3/3）：`1.1897563` md 194 行 / 6 图 / 4 个独立公式 / 3 个
+  blockquote 边栏 / 18 条参考文献；`1.1595054` 201 行 / 6 图 / 1 个 4 项列表；
+  `1.3455243` 102 行 / 1 图 / 1 张 pipe 表 + `^*^` 表注；三篇都拿到 PDF
+- ✅ 回归：pubs.aip.org 那篇 Silverchair 存档改前改后正文 diff **只有 1 行**
+  （页内锚点 `[Appendix](#app1)` 现在只留文字 —— md 里那是个死链），12 图、43 条
+  参考文献完全一致
 
 ### 取数阶梯（所有资源共用一套回退顺序）
 

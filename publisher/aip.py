@@ -7,6 +7,7 @@ pass.
 """
 
 import re
+from urllib.parse import unquote
 
 from bs4 import BeautifulSoup, NavigableString
 from playwright.async_api import async_playwright
@@ -90,6 +91,11 @@ class AIPHandler(PublisherHandler):
         html_content = await self.get_page_html(page) if page is not None else ''
 
         meta = self._extract_metadata_from_html_meta(html_content)
+        # Physics Today is the same publisher on a different CMS: no
+        # citation_* meta tags at all, so _extract_metadata_from_html_meta
+        # returns {} and every field below would fall back to its placeholder.
+        if html_content:
+            meta.update(self._pt_metadata_from_html(html_content))
 
         abstract = ''
         if html_content:
@@ -97,6 +103,9 @@ class AIPHandler(PublisherHandler):
                 abstract = self.extract_main_abstract_from_html(html_content)
             except Exception:
                 abstract = ''
+
+        if not abstract:
+            abstract = meta.get('abstract') or ''
 
         return {
             'title': meta.get('title') or 'AIP Article',
@@ -109,7 +118,7 @@ class AIPHandler(PublisherHandler):
             'doi': meta.get('doi') or self.doi,
             'volume': meta.get('volume'),
             'issue': meta.get('issue'),
-            'pages': None,
+            'pages': meta.get('pages'),
             'year': meta.get('year'),
             'references': [],
             '_pdf_url': meta.get('pdf_url'),
@@ -136,6 +145,12 @@ class AIPHandler(PublisherHandler):
             return ''
 
         if display:
+            # ⚠️ A <math display="block"> already comes back from pandoc as
+            # $$…$$ (Physics Today's JATS declares the attribute; Silverchair
+            # does not). Wrapping it again produced an empty $$ pair above and
+            # below the equation.
+            if latex.startswith('$$') and latex.endswith('$$'):
+                return latex
             latex_body = cls._strip_inline_math_delimiters(latex)
             return f"$$\n{latex_body}\n$$"
         return latex
@@ -160,6 +175,40 @@ class AIPHandler(PublisherHandler):
             if ref_text:
                 a_tag.replace_with(NavigableString(f"[{ref_text}]"))
 
+        # Physics Today (physicstoday.aip.org) ships JATS leftovers inside a
+        # Brightspot page: citation markers are <span class="References"><sup>
+        # <a href="#ref8">8</a>, or a bare <xref ref-type="bibr"><sup>13</sup>
+        # (the latter lives in figure captions). Both become [N] -- the same
+        # shape a.xref-bibr gets above.
+        for marker in soup.select('span.References'):
+            ref_text = marker.get_text(' ', strip=True)
+            marker.replace_with(NavigableString(f"[{ref_text}]" if ref_text else ''))
+        for marker in soup.find_all('xref'):
+            ref_text = marker.get_text(' ', strip=True)
+            # ⚠️ Only a bibliographic xref becomes [N]. A table/figure xref is
+            # a word inside the sentence -- "(see table)" must not turn into
+            # "(see [table])", which pandoc then escapes to "\[table\]".
+            bracket = (marker.get('ref-type') or '') == 'bibr'
+            marker.replace_with(
+                NavigableString((f"[{ref_text}]" if bracket else ref_text) if ref_text else '')
+            )
+
+        # Icons and in-page anchors: an <svg><use> renders as nothing useful,
+        # and a cross-reference to "#image-040004" is dead in a .md file, so
+        # keep the anchor's text (the figure number the sentence reads).
+        for svg in soup.find_all('svg'):
+            svg.decompose()
+        for a_tag in soup.find_all('a', href=True):
+            if a_tag['href'].startswith('#'):
+                a_tag.replace_with(NavigableString(a_tag.get_text(' ', strip=True)))
+                continue
+            # pandoc keeps attributes it does not understand and writes them
+            # as a brace suffix: [March 2005, page 39](…){rel="noopener"
+            # target="_blank"}.
+            for attr in ('rel', 'target'):
+                if attr in a_tag.attrs:
+                    del a_tag[attr]
+
         # Inline formulas are rendered as large MathJax CHTML trees with
         # assistive MathML. Keep only the MathML-derived LaTeX.
         for formula in soup.select('span.inline-formula'):
@@ -173,6 +222,14 @@ class AIPHandler(PublisherHandler):
             latex = cls._convert_aip_mathml(math_tag) if math_tag else ''
             if latex:
                 container.replace_with(NavigableString(f" {stash_formula(latex)} "))
+
+        # A bare <math> with no MathJax wrapper around it -- Physics Today's
+        # inline math. Without this it reaches pandoc as MathML and comes out
+        # as the accessibility read-aloud string.
+        for math_tag in soup.find_all('math'):
+            latex = cls._convert_aip_mathml(math_tag)
+            if latex:
+                math_tag.replace_with(NavigableString(f" {stash_formula(latex)} "))
 
         return str(soup), formulas
 
@@ -194,7 +251,9 @@ class AIPHandler(PublisherHandler):
             return ''
 
         md = cls._convert_aip_mathml(math_tag, display=True)
-        label = wrapper.find(class_='label')
+        # Silverchair marks the equation number with class="label"; the JATS
+        # markup Physics Today embeds uses a <label> tag instead.
+        label = wrapper.find(class_='label') or wrapper.find('label')
         if label:
             label_text = label.get_text(' ', strip=True)
             if label_text:
@@ -234,25 +293,26 @@ class AIPHandler(PublisherHandler):
         return " ".join(parts).strip()
 
     @classmethod
-    def _convert_aip_table_to_md(cls, table_wrap) -> str:
+    def _convert_aip_table_to_md(cls, table_wrap, writer: str = 'md') -> str:
         """Convert an AIP ``div.table-wrap`` element to markdown table.
 
         Pre-processes MathJax ``mjx-container`` markup in table cells before
         converting the ``<table>`` element to markdown via pandoc.
         """
-        # Label and caption
-        label_span = table_wrap.find('span', class_='label')
+        # Label and caption. ⚠️ Both the class and the tag have to be
+        # accepted: Silverchair wraps the table in div.table-wrap with
+        # span.label / .caption, while the JATS markup Physics Today embeds
+        # in its Brightspot page uses <table-wrap> with <label> / <caption>.
+        label_span = table_wrap.find('span', class_='label') or table_wrap.find('label')
         label = label_span.get_text(' ', strip=True) if label_span else ''
 
-        # Tag-agnostic, same reason as the figure caption above: the
-        # class is the contract, the tag is Silverchair's choice.
-        caption_div = table_wrap.select_one('.caption')
+        caption_div = table_wrap.select_one('.caption') or table_wrap.find('caption')
         caption = caption_div.get_text(' ', strip=True) if caption_div else ''
 
-        table_overflow = table_wrap.find('div', class_='table-overflow')
-        if not table_overflow:
-            return ''
-        table = table_overflow.find('table')
+        # Silverchair puts the table inside div.table-overflow; JATS has it as
+        # a direct child. Ask for the <table> itself -- that is the one thing
+        # both shapes agree on.
+        table = table_wrap.find('table')
         if not table:
             return ''
 
@@ -288,19 +348,22 @@ class AIPHandler(PublisherHandler):
         # Convert <table> to markdown via pandoc
         import pypandoc
         table_html = str(table)
-        md = pypandoc.convert_text(table_html, 'md', format='html', extra_args=['--wrap=none'])
+        md = pypandoc.convert_text(table_html, writer, format='html', extra_args=['--wrap=none'])
         md = md.strip()
 
         # Restore LaTeX placeholders
         for idx, latex in enumerate(formulas):
             md = md.replace(f"AIPMATH{idx:03d}MATHEND", latex)
 
-        # Extract table footnotes from div.table-wrap-foot
-        foot_div = table_wrap.find('div', class_='table-wrap-foot')
+        # Extract table footnotes from div.table-wrap-foot (JATS:
+        # <table-wrap-foot><fn><label>)
+        foot_div = (table_wrap.find('div', class_='table-wrap-foot')
+                    or table_wrap.find('table-wrap-foot'))
         footnote_lines = []
         if foot_div:
-            for fn in foot_div.find_all('div', class_='fn'):
-                label_tag = fn.find('span', class_='fn-label')
+            for fn in (foot_div.find_all('div', class_='fn')
+                       or foot_div.find_all('fn')):
+                label_tag = fn.find('span', class_='fn-label') or fn.find('label')
                 fn_label = label_tag.get_text(strip=True) if label_tag else ''
                 p_tag = fn.find('p')
                 if p_tag:
@@ -509,6 +572,328 @@ class AIPHandler(PublisherHandler):
 
         return '\n'.join(lines).strip()
 
+    # ------------------------------------------------------------------
+    # Physics Today (physicstoday.aip.org)
+    #
+    # 📌 Same publisher, a different CMS: Physics Today is a Brightspot site,
+    # not Silverchair, so none of the pubs.aip.org selectors match -- the
+    # handler used to produce a "AIP Article / 0 authors / 0 figures" shell
+    # and print no error at all. What it *does* ship is JATS leftovers inside
+    # Brightspot markup (<disp-formula>, <table-wrap>, <xref>, <label>), so
+    # the formula / table / list / reference machinery above is reused and
+    # only the container selectors are new.
+    # ------------------------------------------------------------------
+    PT_BODY_SELECTOR = 'div.RichTextArticleBody'
+
+    @classmethod
+    def _pt_body(cls, soup):
+        """The Physics Today article body, or None if this is not one."""
+        return soup.select_one(cls.PT_BODY_SELECTOR)
+
+    @staticmethod
+    def _pt_original_cdn_url(url: str) -> str:
+        """Brightspot's derivative URL → the unresized original on the CDN.
+
+        Every ``<img>``/``<source>`` on the page points at a dims4 derivative
+        whose ``?url=`` parameter carries the S3 original, e.g.
+        ``…/resize/820x496!/quality/90/?url=https%3A%2F%2Fk1-prod-aip.s3…
+        %2Fbrightspot%2FPTO.v58.i3.39_1.f3.jpg``. The bare CDN path for that
+        key is the full-resolution file (measured: 657,109 bytes / 2096 px
+        wide, versus 88,362 bytes for the largest webp derivative).
+
+        ⚠️ The key is the path **after** ``/brightspot/``, not the basename --
+        author headshots live in ``bc/c7/<hash>/feder.jpg``.
+        """
+        m = re.search(r'[?&]url=([^&\s]+)', url or '')
+        if not m:
+            return ''
+        decoded = unquote(m.group(1))
+        marker = '/brightspot/'
+        if marker not in decoded:
+            return ''
+        return 'https://aip.brightspotcdn.com/' + decoded.split(marker, 1)[1]
+
+    @classmethod
+    def _pt_picture_urls(cls, pic) -> tuple:
+        """``(hi_res, fallback)`` for one Brightspot ``<picture>``.
+
+        Order asked for by the user: the unresized original on the CDN first,
+        then the last (2×, 1640 px) entry of the ``image/webp`` srcset, then
+        whatever the ``<img>`` itself shows.
+        """
+        img = pic.find('img')
+        webp = ''
+        for source in pic.find_all('source'):
+            if (source.get('type') or '') != 'image/webp':
+                continue
+            entries = [e.strip().split(' ')[0]
+                       for e in (source.get('srcset') or '').split(',') if e.strip()]
+            if entries:
+                webp = entries[-1]
+        shown = ((img.get('src') if img else '') or '').strip()
+        original = ((img.get('data-original-src') if img else '') or '').strip()
+        if not original:
+            original = cls._pt_original_cdn_url(webp or shown)
+        candidates = [u for u in (original, webp, shown) if u]
+        if not candidates:
+            return '', ''
+        hi_res = candidates[0]
+        fallback = next((u for u in candidates[1:] if u != hi_res), '')
+        return hi_res, fallback
+
+    @classmethod
+    def _pt_images(cls, soup, rewrite: bool = False) -> list:
+        """``[(index, hi_res, fallback)]`` for every image in the body.
+
+        The figure scan and the body walk parse the page separately, so -- as
+        with ``_inline_images`` -- the index has to come from document order,
+        the one thing both passes agree on. With *rewrite* the ``<picture>``
+        is collapsed to a single ``<img src="__AIP_IMG_n__">`` so pandoc emits
+        ``![](token)`` and ``convert_to_markdown`` later swaps in the
+        downloaded file (or the publisher URL, if it never came down).
+        """
+        body = cls._pt_body(soup)
+        if body is None:
+            return []
+        found = []
+        index = 0
+        for pic in body.find_all('picture'):
+            # The lightbox ("View larger") is a copy of the figure, caption
+            # included -- rendering it would print every caption twice.
+            if pic.find_parent(class_=re.compile(r'ModalWindow')):
+                continue
+            hi_res, fallback = cls._pt_picture_urls(pic)
+            if not hi_res:
+                continue
+            index += 1
+            found.append((index, hi_res, fallback))
+            if rewrite:
+                # No alt text: Brightspot's alt is the file name
+                # ("PTO.v58.i3.39_1.f1.jpg"), and the caption follows anyway.
+                placeholder = soup.new_tag('img', src=f'__AIP_IMG_{index}__')
+                pic.replace_with(placeholder)
+        return found
+
+    @classmethod
+    def _pt_prepare_body(cls, soup):
+        """Rewrite images, drop lightboxes, lift figures out of prose.
+
+        A figure can sit inside a ``<li>`` (10.1063/1.1595054 figure 2) or a
+        ``<p>``; the fragment converter collapses whitespace, so leaving it
+        there would splice a whole caption into the middle of a sentence.
+        Moving it after the top-level element it belongs to keeps document
+        order and lets the walk render it as a block.
+        """
+        body = cls._pt_body(soup)
+        if body is None:
+            return None
+        cls._pt_images(soup, rewrite=True)
+        for modal in body.find_all(['bsp-modal-window']) + body.select('.ModalWindow'):
+            modal.decompose()
+        for enhancement in body.select('.Enhancement'):
+            top = enhancement
+            while top.parent is not None and top.parent is not body:
+                top = top.parent
+            if top is not enhancement:
+                top.insert_after(enhancement.extract())
+        return body
+
+    @classmethod
+    def _pt_figure_md(cls, enhancement) -> str:
+        """Image + caption + credit for one Physics Today figure."""
+        parts = []
+        img = enhancement.find('img')
+        if img is not None and (img.get('src') or '').startswith('__AIP_IMG_'):
+            parts.append(f"![]({img['src']})")
+        credit = enhancement.select_one('.Figure-credit')
+        credit_md = ''
+        if credit is not None:
+            credit_md = cls._convert_aip_html_fragment_to_markdown(str(credit))
+            credit.decompose()
+        caption = enhancement.find('figcaption')
+        if caption is not None:
+            caption_md = cls._convert_aip_html_fragment_to_markdown(str(caption))
+            if caption_md:
+                parts.append(caption_md)
+        if credit_md:
+            parts.append(f"*{credit_md}*")
+        return "\n\n".join(p for p in parts if p).strip()
+
+    @classmethod
+    def _walk_pt_body(cls, body, body_parts: list) -> None:
+        """Render the Brightspot body in document order."""
+        for child in body.children:
+            if not getattr(child, 'name', None):
+                continue
+            classes = child.get('class') or []
+
+            if child.name in ('h2', 'h3', 'h4'):
+                heading = child.get_text(' ', strip=True)
+                if heading:
+                    level = {'h2': '###', 'h3': '####', 'h4': '#####'}[child.name]
+                    body_parts.extend([f"{level} {heading}", ""])
+                continue
+
+            if 'Enhancement' in classes:
+                md = cls._pt_figure_md(child)
+                if md:
+                    body_parts.extend([md, ""])
+                continue
+
+            if child.name in ('ul', 'ol'):
+                md = cls._convert_aip_list(child)
+                if md:
+                    body_parts.extend([md, ""])
+                continue
+
+            if 'BlockTextModule' in classes:
+                # A boxed sidebar ("Microscopic physics of high-order harmonic
+                # generation"). Rendered as a blockquote so it stays visibly
+                # separate from the running text instead of reading as a
+                # section of the article.
+                headline = child.find(class_='BlockTextModule_headline')
+                lines = []
+                if headline is not None:
+                    text = headline.get_text(' ', strip=True)
+                    headline.decompose()
+                    if text:
+                        lines.append(f"**{text}**")
+                inner: list = []
+                cls._walk_pt_body(child, inner)
+                lines.extend(inner)
+                # Prefix every physical line: a single entry can itself be
+                # multi-line (a $$…$$ block), and a line without "> " ends the
+                # blockquote.
+                quoted = "\n".join(
+                    (f"> {line}" if line.strip() else ">")
+                    for entry in lines for line in entry.split("\n")
+                ).strip()
+                if quoted:
+                    body_parts.extend([quoted, ""])
+                continue
+
+            if 'AckTextModule' in classes:
+                # ⚠️ Not always an acknowledgment: 10.1063/1.3455243 has
+                # <ack><title>Basic research and applications</title></ack> --
+                # a section heading in the wrong tag. Emit a title as a
+                # heading and only real prose as acknowledgments.
+                title = child.find('title')
+                if title is not None:
+                    text = title.get_text(' ', strip=True)
+                    title.decompose()
+                    if text:
+                        body_parts.extend([f"### {text}", ""])
+                md = cls._convert_aip_html_fragment_to_markdown(str(child))
+                if md:
+                    body_parts.extend(["#### Acknowledgments", "", md, ""])
+                continue
+
+            if child.find('table') is not None:
+                table_wrap = (child.find('table-wrap') or child.find(class_='table-wrap')
+                              or child)
+                # gfm, not the default markdown writer: pandoc's simple/
+                # multiline tables align by column width, and Physics Today's
+                # cells are long enough to break the layout (measured on
+                # 10.1063/1.3455243 -- the header row came out detached from
+                # the rule and the last row lost its empty cells). Pipe tables
+                # survive any cell content.
+                md = cls._convert_aip_table_to_md(table_wrap, writer='gfm')
+                if md:
+                    body_parts.extend([md.strip(), ""])
+                continue
+
+            # A <p> can hold a display formula (with its JATS <label>), an
+            # inline image, or plain prose.
+            formulas = child.find_all('disp-formula')
+            if formulas:
+                for wrap in formulas:
+                    fm = cls._convert_aip_display_formula(wrap)
+                    if fm:
+                        body_parts.extend([fm, ""])
+                    wrap.decompose()
+
+            md = cls._convert_aip_html_fragment_to_markdown(str(child))
+            if md:
+                body_parts.extend([md, ""])
+
+    @classmethod
+    def _pt_metadata_from_html(cls, html_content: str) -> dict:
+        """Physics Today metadata: Brightspot has no citation_* meta tags."""
+        soup = BeautifulSoup(html_content, 'html.parser')
+        body = cls._pt_body(soup)
+        if body is None:
+            return {}
+
+        def text_of(selector):
+            el = soup.select_one(selector)
+            return el.get_text(' ', strip=True) if el is not None else ''
+
+        meta = {'journal': 'Physics Today'}
+        title = text_of('h1.Page-headline')
+        if title:
+            meta['title'] = title
+        authors = [el.get_text(' ', strip=True)
+                   for el in soup.select('.Page-authors .IndividualCard__name')]
+        authors = [a for a in authors if a]
+        if authors:
+            meta['authors'] = authors
+            meta['author_with_affiliations'] = [
+                {'author': a, 'affiliations': []} for a in authors
+            ]
+
+        doi_el = soup.select_one('[data-doi]')
+        doi = (doi_el.get('data-doi') if doi_el is not None else '') or ''
+        if not doi:
+            dc = soup.find('meta', attrs={'name': 'DC.Identifier'})
+            doi = (dc.get('content') if dc is not None else '') or ''
+        if doi:
+            meta['doi'] = doi.strip()
+
+        published = soup.find('meta', attrs={'property': 'article:published_time'})
+        date_str = (published.get('content') if published is not None else '') or ''
+        if date_str:
+            meta['publication_date'] = date_str.split('T')[0]
+            meta['year'] = date_str[:4]
+
+        # The dek under the headline is the only summary the page carries --
+        # Physics Today features have no abstract.
+        dek = text_of('.Page-subHeadline')
+        if dek:
+            meta['abstract'] = dek
+
+        # 📌 The PDF link is an attribute on the body element itself
+        # (data-pdf="https://aip.brightspotcdn.com/PTO.v58.i3.39_1.online.pdf")
+        # and needs no entitlement, unlike the pubs.aip.org article-pdf URL
+        # Crossref hands out.
+        pdf_url = (body.get('data-pdf') or '').strip()
+        if pdf_url:
+            meta['pdf_url'] = pdf_url
+            # 📌 Volume and issue appear nowhere else on the page (Brightspot
+            # has no citation_* meta), but the publisher's own file name states
+            # them: PTO.v58.i3.39_1.online.pdf → volume 58, issue 3. Measured
+            # against Crossref on all three samples (58/3, 56/6, 63/6 — exact).
+            # A name that does not match leaves the fields empty rather than
+            # guessed.
+            # ⚠️ The number after the issue is the **first page** only (39,
+            # while the article runs 39-46), so it does not go into 'pages':
+            # a field that contradicts its own name is worse than an empty
+            # one, and crossref.json carries the real range.
+            m = re.search(r'\.v(\d+)\.i(\d+)\.', pdf_url)
+            if m:
+                meta['volume'], meta['issue'] = m.groups()
+        return meta
+
+    @classmethod
+    def _pt_references_from_html(cls, html_content: str) -> list:
+        """``ol.BodyReference > li`` -- each item already prints its number."""
+        soup = BeautifulSoup(html_content, 'html.parser')
+        references = []
+        for li in soup.select('ol.BodyReference > li'):
+            ref_md = cls._convert_aip_html_fragment_to_markdown(str(li))
+            if ref_md:
+                references.append(re.sub(r'\s+', ' ', ref_md).strip())
+        return references
+
     @classmethod
     def extract_article_text_from_html(cls, html_content: str):
         """Extract AIP article text, returning (abstract_md, body_md).
@@ -521,6 +906,15 @@ class AIPHandler(PublisherHandler):
             return '', ''
 
         soup = BeautifulSoup(html_content, 'html.parser')
+
+        pt_body = cls._pt_prepare_body(soup)
+        if pt_body is not None:
+            pt_parts: list = []
+            cls._walk_pt_body(pt_body, pt_parts)
+            dek = soup.select_one('.Page-subHeadline')
+            abstract_md = dek.get_text(' ', strip=True) if dek is not None else ''
+            return abstract_md, "\n".join(pt_parts).strip()
+
         cls._inline_images(soup, rewrite=True)
         abstract_parts = []
         body_parts = []
@@ -639,6 +1033,9 @@ class AIPHandler(PublisherHandler):
             return []
 
         soup = BeautifulSoup(html_content, 'html.parser')
+        if cls._pt_body(soup) is not None:
+            return cls._pt_references_from_html(html_content)
+
         references = []
 
         ref_divs = soup.find_all('div', attrs={'data-content-id': True})
@@ -718,6 +1115,16 @@ class AIPHandler(PublisherHandler):
             return {}
 
         soup = BeautifulSoup(html_content, 'html.parser')
+
+        if cls._pt_body(soup) is not None:
+            pt_figures = {}
+            for index, hi_res, fallback in cls._pt_images(soup):
+                entry = {'url': hi_res, 'caption': ''}
+                if fallback and fallback != hi_res:
+                    entry['original_url'] = fallback
+                pt_figures[f'fig_{index}'] = entry
+            return pt_figures
+
         figures = {}
         seen_ids = set()
 
