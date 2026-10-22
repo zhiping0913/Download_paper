@@ -29,6 +29,7 @@
 10.1063/1.3152994   #Publisher's Note (errata), bullet list with inline mathFormula
 10.1063/5.0083990   #h3,h4,h5,h6 section-title with formula, figure, mathFormula, table with formula
 10.1063/5.0294656   #section-title, figure, mathFormula, table, multiple algorithm diagrams not in figure block, nested list
+10.1063/1.1897563   #physics today. mathFormula, figure, BlockText
 
 ## iop
 10.1088/1361-6463/ae36b8   #Journal of Physics D: Applied Physics, figure, mathFormula, table, supplementary
