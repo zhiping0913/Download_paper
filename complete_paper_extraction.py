@@ -5183,6 +5183,13 @@ async def extract_book_by_chapter(
         'ISSN': book_meta.get('ISSN') or None,
         'book_doi': book_meta.get('doi') or None,
         'book_title': book_meta.get('title') or None,
+        # The same book DOI also goes into `additional_doi`, the key every
+        # other multi-identifier case already uses (UFN's two language
+        # editions, the OUP/Springer book's chapter list). A reader looking
+        # for "what other DOI does this record know about" should not have
+        # to know the `--by-chapter` convention to find it.
+        'additional_doi': ([book_meta['doi']]
+                           if book_meta.get('doi') else None),
     }
     chapter_overrides = {k: v for k, v in chapter_overrides.items()
                          if v and v != '0000'}

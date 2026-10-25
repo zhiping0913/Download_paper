@@ -1245,7 +1245,10 @@ PDF、图片、补充材料、API/页面（如 IOP 的 `/data`）走的是**同�
   `1999--<章节标题>/` 下的 metadata.json + paper.pdf + paper.md。
   整本跑完 **38/38 成功、0 失败**，38 个目录里三件产物一个不缺，`0000--*` 零个，
   每章的 `year` 都是 `1999`、`journal` 都是书名（不是 "Nature"），
-  `book_doi`/`ISBN`/`ISSN` 都借到了。⚠️ 代价是**约 2 分钟一章**（整本约 75 分钟）：
+  `book_doi`/`ISBN`/`ISSN` 都借到了。书的 DOI 在每章的 `metadata.json` 里出现**两处**：
+  `book_doi`（说明"属于哪本书"）和 `additional_doi: []`（本仓既有的"这条记录还知道
+  哪些 DOI"那个键，UFN 的双语版、OUP/Springer 书的章节清单都用它）—— 按通用键去读的
+  人不必先知道 `--by-chapter` 这个约定。⚠️ 代价是**约 2 分钟一章**（整本约 75 分钟）：
   每章都走完整的常规流程
 
 ### springer_book：读捕获了，但 MathJax 拦截摘不掉

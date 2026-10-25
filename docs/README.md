@@ -281,7 +281,8 @@ Crossref 响应，只为取文件起一次浏览器。两层的有头/无头都�
   handler 会把章节 DOI 再归一回书 DOI
 - ⚠️ **章节的 Crossref 记录常常没有年份**（实测这本书每一章的 `issued` 都是
   `[[None]]`，而书本身写着 1999），页面上也没印。目录名要的正是年份，所以书把自己
-  知道的借给各章（`metadata_overrides`：年份、所属书名、ISBN、ISSN、`book_doi`）——
+  知道的借给各章（`metadata_overrides`：年份、所属书名、ISBN、ISSN、`book_doi`、
+  以及把书的 DOI 也放进通用键 `additional_doi: []`）——
   否则每一章都落在 `0000--…` 下面
 - ⚠️ Front Matter / Back Matter **有 PDF 但没有自己的 DOI**，没法作为独立条目跑，
   日志里逐条列出来：否则计数会和目录对不上
