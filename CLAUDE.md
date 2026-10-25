@@ -311,6 +311,39 @@ Step 0 那一次 Crossref 响应、只为取文件起一次浏览器、以 PDF �
   `✓ 已通过机器人问句（31,267 字符）` → `✓ PDF: …/einstein1935.pdf` →
   `paper.pdf` 264,355 字节（APS 1935 年那篇，pdfinfo 的 Title/Author 对得上）
 
+#### ❌ 镜像会把文章交给**另一个站**：sci-net.xyz（用户报告）
+
+实测 `10.1086/112164`：`sci-hub.st/{doi}` 点掉机器人问句之后，**落在
+`https://sci-net.xyz/10.1086/112164`** —— 一个 4,487 字节、结构不同的页面
+（`div.pdf > iframe[src]` 装着 PDF，没有 `citation_pdf_url`、没有 `.download`
+锚点、整页一个 "Sci-Hub" 都不写，它叫 **Sci-Net**）。症状是
+`⊘ 这个镜像没答出可用页面`，**三个镜像全军覆没**，而页面明明是对的。
+
+三层叠在一起，缺一层都还是拿不到：
+
+- ❌ **`_is_scihub_page` 要求 HTML 里有 "sci-hub"** —— 于是一个好页面被报成
+  「这个镜像不可用」，而那句话看着跟「这篇不在 Sci-Hub 上」一模一样。
+  判据加上 `sci-net` / `scinet`
+- ❌ **第二道、也是最隐蔽的一道：`html_looks_like_bot_challenge` 把它判成挡板页**。
+  它最后那条弱判据是「页面 < 5000 字节 **且**含 `verify|challenge|captcha|robot|bot`
+  之一」，**而且是子串匹配** —— sci-net 的内联 CSS 里写着 `margin-bottom`，
+  **"bot" 在 "bottom" 里**。改成**词边界**匹配，与本仓早就记过的
+  `url_looks_like_bot_challenge`（`challenges-in-tokamak-control` 那条）同一个教训。
+  ⚠️ 词表**一个词都没加**：我一度顺手加了 `verification`，而它会把
+  "Verification of a laser model" 这种标题判成挡板页 —— 已去掉
+- ❌ **第三道：PDF 地址是根相对的 `/storage/…/x.pdf`**，拿**请求的** URL 做 base
+  会得到 `sci-hub.st/storage/…` —— 一个哪里都不存在的 URL，而下载层只会说
+  「没拿到文件」（与 `urljoin` 那条同源：base 错了，`urljoin` 也救不了）。
+  现在读 tab 自己的 `location.href` 当 base，Referer 也用它
+- ⚠️ **`ws_url` 在这条路上通常是 None**：一次性 Chrome 的通过判据是「DOI 在响应里」
+  或「body > 5000 字」，而 Sci-Hub/Sci-Net 的页面两条都不满足（body ~100 字），
+  走的是超时路径 —— 那个路径返回的 dict 里 `ws_url=None`，而 tab 其实好好地
+  加载着。所以 `_tab_url` 像 `fetch_page_html_via_cdp` 一样**按端口去问 tab**
+- ✅ 实测同一条 DOI：`↪ 落在 https://sci-net.xyz/10.1086/112164` →
+  `✓ PDF: https://sci-net.xyz/storage/2024/…/A-numerical-approach-….pdf` →
+  `paper.pdf` **1.17 MB**（1977 年 *The Astronomical Journal*，pdfinfo 对得上），
+  目录 `1977--A numerical approach to the testing of the fission hypothesis`
+
 #### ❌ 顺带修掉：没有浏览器时 `tab` 层会把整条阶梯堵死
 
 `--scihub` 第一次跑就卡在这里：`⚠️ 无可用浏览器上下文，无法回退导航下载`

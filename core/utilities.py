@@ -497,6 +497,10 @@ _CHALLENGE_HTML_MARKERS = (
 )
 
 
+_WEAK_CHALLENGE_WORDS_RE = re.compile(
+    r'\b(?:verify|challenge|captcha|robot|bot)\b')
+
+
 def html_looks_like_bot_challenge(html: str) -> bool:
     """True when this HTML is an interstitial rather than an article.
 
@@ -515,8 +519,12 @@ def html_looks_like_bot_challenge(html: str) -> bool:
         return hits >= 3
     if hits >= 2:
         return True
-    return len(html) < 5000 and any(
-        m in low for m in ('verify', 'challenge', 'captcha', 'robot', 'bot'))
+    # ⚠️ The weak words are matched on **word boundaries**, never as
+    # substrings -- the same lesson `url_looks_like_bot_challenge` already
+    # learned. Measured: Sci-Net's article page (4,487 chars, so it reaches
+    # this branch) was declared an interstitial because its inline CSS says
+    # `margin-bottom` -- "bot" inside "bottom".
+    return len(html) < 5000 and bool(_WEAK_CHALLENGE_WORDS_RE.search(low))
 
 
 def sniffed_mime(data: bytes) -> str:

@@ -234,16 +234,57 @@ async def _answer_robot_question(ws_url: str, *, timeout_s: float = 60.0) -> str
     return ''
 
 
+# ⚠️ A mirror may hand the article to a **different site**: sci-hub.st
+# redirects some DOIs to ``sci-net.xyz/{doi}`` (measured on 10.1086/112164),
+# whose page never says "Sci-Hub" anywhere -- it says "Sci-Net". Requiring that
+# string made a perfectly good article page be reported as "this mirror has no
+# usable page", which looks exactly like "this paper is not on Sci-Hub".
+_MIRROR_PAGE_MARKERS = ('sci-hub', 'scihub', 'sci-net', 'scinet')
+
+
 def _is_scihub_page(html: str) -> bool:
     """A real mirror page (found or not found), not a challenge or a 404."""
     if html_looks_like_bot_challenge(html):
         return False
     low = html.lower()
-    return 'sci-hub' in low or 'scihub' in low
+    return any(m in low for m in _MIRROR_PAGE_MARKERS)
+
+
+async def _tab_url(ws_url: str, *, port: int = None) -> str:
+    """Where the tab actually ended up.
+
+    ⚠️ Load-bearing, not diagnostics: the PDF address on these pages is
+    **root-relative** (``/storage/…/x.pdf``), so resolving it against the URL
+    we asked for instead of the one we landed on produces
+    ``sci-hub.st/storage/…`` for a file that lives on ``sci-net.xyz`` -- a URL
+    that exists nowhere, and the download layer can only report "no file".
+    """
+    # ⚠️ ``ws_url`` is only filled in on the paths the session considers
+    # successful, and a Sci-Hub page never passes its test (the DOI is not in
+    # the response and the body is ~100 characters) -- so the timeout path,
+    # which is the normal one here, hands back ws_url=None while the tab sits
+    # there fully loaded. Ask the debug port for the tab instead, exactly as
+    # ``fetch_page_html_via_cdp`` does.
+    if not ws_url and port:
+        from chrome_session import _get_page_ws_url
+        try:
+            ws_url = await _get_page_ws_url(port) or ''
+        except Exception:
+            ws_url = ''
+    if not ws_url:
+        return ''
+    try:
+        async with websockets.connect(ws_url, max_size=None,
+                                      open_timeout=10) as ws:
+            res = await _cdp_send(ws, 'Runtime.evaluate', {
+                'expression': 'location.href', 'returnByValue': True})
+            return (res.get('result') or {}).get('value') or ''
+    except Exception:
+        return ''
 
 
 async def _fetch_scihub_html(page_url: str, *, headless: bool,
-                             timeout_s: float) -> str:
+                             timeout_s: float) -> Tuple[str, str]:
     """Open *page_url* in a throwaway Chrome and return its HTML.
 
     ⚠️ **Not `fetch_html_via_ladder`**, although that is this repo's normal way
@@ -258,6 +299,9 @@ async def _fetch_scihub_html(page_url: str, *, headless: bool,
     challenge otherwise -- a Sci-Hub page satisfies neither, so waiting the
     full default budget only delays reading a page that has been sitting there
     for seconds.
+
+    Returns ``(html, landed_url)``; the landed URL is what relative addresses
+    on the page have to be resolved against (see :func:`_tab_url`).
     """
     from chrome_session import open_url_in_fresh_chrome
 
@@ -268,13 +312,17 @@ async def _fetch_scihub_html(page_url: str, *, headless: bool,
             want_html=True)
         result = session.result or {}
         html = result.get('html') or ''
+        ws_url = result.get('ws_url') or ''
         if looks_like_robot_question(html):
             print("    🤖 镜像先问「Are you a robot?」—— 需要点那个 'No'")
-            html = await _answer_robot_question(result.get('ws_url') or '')
-        return html
+            html = await _answer_robot_question(ws_url)
+        landed = await _tab_url(ws_url, port=getattr(session, 'port', None))
+        if landed and landed.split('#', 1)[0] != page_url:
+            print(f"    ↪ 落在 {landed[:90]}")
+        return html, (landed or page_url)
     except Exception as exc:
         print(f"    ⚠️  打开镜像页失败（{type(exc).__name__}）")
-        return ''
+        return '', page_url
     finally:
         if session is not None:
             try:
@@ -304,13 +352,14 @@ async def resolve_scihub_pdf_url(doi: str, *, headless: bool = False,
     for mirror in mirrors:
         page_url = f"{mirror.rstrip('/')}/{doi}"
         print(f"  ↪ {page_url}")
-        html = await _fetch_scihub_html(page_url, headless=headless,
-                                        timeout_s=timeout_s)
+        html, landed_url = await _fetch_scihub_html(
+            page_url, headless=headless, timeout_s=timeout_s)
         if not html or not _is_scihub_page(html):
             print("    ⊘ 这个镜像没答出可用页面（挡板页/不可达），试下一个")
             continue
 
-        pdf_url, citation = parse_scihub_page(html, page_url)
+        # ⚠️ Resolve against where we landed, not where we asked.
+        pdf_url, citation = parse_scihub_page(html, landed_url)
         if not pdf_url:
             # The mirror answered and said no. Keep going anyway -- the mirrors
             # do not share one corpus -- but say which kind of miss this was.
@@ -320,7 +369,9 @@ async def resolve_scihub_pdf_url(doi: str, *, headless: bool = False,
         print(f"    ✓ PDF: {pdf_url}")
         if citation:
             print(f"    ℹ️  Sci-Hub 引用串: {citation[:90]}")
-        return pdf_url, page_url, citation
+        # The Referer has to be the page the link was on, which after a
+        # redirect is the landed URL rather than the mirror URL we asked for.
+        return pdf_url, landed_url, citation
 
     print("  ❌ 所有镜像都没拿到 PDF 地址")
     return '', '', ''
