@@ -1168,8 +1168,32 @@ WINDOWS_CHILD_RESERVE = 104
 # applies; on Windows it is an upper bound that the path budget may lower.
 DIR_NAME_MAX = 150
 
+# ⚠️ And a cap on its **bytes**, which is what the filesystem actually limits
+# (ext4: 255 bytes per component, and Linux reports the overflow as
+# ``OSError: [Errno 36] File name too long``). The character cap above does not
+# imply it: measured on UFN's Russian title
+# `Генерация быстрых заряженных частиц…`, 150 Cyrillic characters are ~300
+# bytes, so `organize_paper_output` died on `mkdir` -- after the article had
+# been fetched.
+# 📌 200 (not 255) keeps room for the dedup/temporary suffixes this tree adds
+# elsewhere, and it never binds an ASCII title: those hit the 150-character cap
+# first, so existing directory names do not change.
+DIR_NAME_MAX_BYTES = 200
 
-def _clean_title_for_directory(title: str, max_len: int = DIR_NAME_MAX) -> str:
+
+def truncate_to_bytes(text: str, max_bytes: int) -> str:
+    """*text* cut to at most *max_bytes* UTF-8 bytes, never mid-character."""
+    raw = text.encode('utf-8')
+    if len(raw) <= max_bytes:
+        return text
+    raw = raw[:max(0, max_bytes)]
+    while raw and (raw[-1] & 0xC0) == 0x80:
+        raw = raw[:-1]
+    return raw.decode('utf-8', errors='ignore')
+
+
+def _clean_title_for_directory(title: str, max_len: int = DIR_NAME_MAX,
+                               max_bytes: int = DIR_NAME_MAX_BYTES) -> str:
     """Clean title for use as directory name, handling formulas and HTML tags.
 
     *max_len* caps the cleaned title. The caller lowers it on Windows so the
@@ -1244,6 +1268,11 @@ def _clean_title_for_directory(title: str, max_len: int = DIR_NAME_MAX) -> str:
     # Limit length but keep it readable
     title = title[:max(1, int(max_len))].strip()
 
+    # ⚠️ And by bytes, which is the limit the filesystem enforces. Non-Latin
+    # titles are 2-3 bytes per character, so the cap above lets them through at
+    # two to three times the size ext4 accepts.
+    title = truncate_to_bytes(title, max(1, int(max_bytes))).strip()
+
     # ⚠️ Trailing dots and spaces must go *after* truncation -- the cut itself
     # can expose one. Windows silently drops them from the name it stores, so
     # the directory created and the path built from the same string afterwards
@@ -1308,7 +1337,11 @@ def organize_paper_output(output_dir: Path, metadata: dict, s2_data: dict) -> Pa
                       f"文章目录名已压到下限；请把 --output 指向更短的路径")
 
         # Clean title: remove HTML tags and convert math symbols
-        title_clean = _clean_title_for_directory(title, title_budget)
+        # ⚠️ The ``{year}--`` prefix is part of the same component, so it
+        # comes out of the byte budget too.
+        title_clean = _clean_title_for_directory(
+            title, title_budget,
+            DIR_NAME_MAX_BYTES - len(f"{year}--".encode('utf-8')))
 
         # Create directory: {year}--{title}
         dir_name = f"{year}--{title_clean}"
