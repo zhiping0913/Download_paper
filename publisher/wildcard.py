@@ -167,6 +167,18 @@ def prepare_mathjax_html_fragment(html_fragment: str, placeholder_prefix: str = 
     for a_tag in soup.find_all('a', {'xmlns:xlink': True}):
         a_tag.unwrap()
 
+    # ⚠️ Namespace declarations are never content, but pandoc keeps every
+    # attribute it does not understand and writes it as a brace suffix --
+    # measured on IOP, whose JATS-derived markup leaves `xmlns:xlink` on
+    # elements that survive the unwrap above, giving
+    # `{xmlns:xlink="http://www.w3.org/1999/xlink"}` in the Markdown.
+    # ⚠️ Must run *after* that unwrap, which keys on this very attribute.
+    for tag in soup.find_all(lambda t: any(a == 'xmlns' or a.startswith('xmlns:')
+                                           for a in t.attrs)):
+        for attr in [a for a in tag.attrs
+                     if a == 'xmlns' or a.startswith('xmlns:')]:
+            del tag[attr]
+
     return str(soup), formulas
 
 

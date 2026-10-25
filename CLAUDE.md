@@ -1382,6 +1382,22 @@ Playwright 里这几个调用**都不接受 `timeout=`**，也不受 `set_defaul
   `retry_download`「成了」，于是重试、回退低清链接、`fresh` 层全被跳过，只留下一个
   0 字节的 `.jpg` —— 事后还分辨不出它和真图的区别
 
+### ❌ IOP 的 md 里残留 `{xmlns:xlink="http://www.w3.org/1999/xlink"}`
+
+用户报告。**命名空间声明不是内容**，而 pandoc 会把它不认识的属性原样写成花括号
+后缀（本仓已记过三次：ACM 的 `data-style`、OUP 的 `path-from-xml`、MDPI 的
+`aria-label`）。IOP 的标记是 JATS 转出来的，`xmlns:xlink` 留在元素上。
+
+- 📌 **结构层**：`wildcard.prepare_mathjax_html_fragment` 里把所有
+  `xmlns` / `xmlns:*` 属性删掉。⚠️ **必须排在 `<a xmlns:xlink>` 那个 unwrap
+  之后** —— 那条判据认的正是这个属性，先删就等于把它关掉
+- 📌 **文本层兜底**：`cleanup_markdown` 再删一次 `{xmlns…="…"}`。整篇文档那条
+  转换路径（`convert_html_to_markdown`）不经过片段准备函数，只改一处会漏
+- ⚠️ 本机 `captured_data` 里已经没有 IOP 存档，所以**没有端到端复跑**：验证是
+  `git worktree` 的改前/改后对照 —— 带 `xmlns:xlink` 的 `<a>`/`<span>` 片段现在
+  输出干净文本，而五个不含该属性的代表性片段（公式、表格单元格、引用、
+  `style` 属性）**逐字节相同**
+
 ### IOP 表格：符号表、脚注、以及一次没人读的重复转换
 
 用户报告 `10.1088/2515-7647/ac9e2f` 的 `### List of symbols` / `### List of

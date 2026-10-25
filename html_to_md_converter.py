@@ -215,6 +215,11 @@ def cleanup_markdown(md_content: str) -> str:
     Returns:
         清理后的Markdown内容
     """
+    # pandoc 会把它不认识的属性原样写成花括号后缀，而命名空间声明不是内容。
+    # ⚠️ 这是文本层的兜底：结构层已在 wildcard.prepare_mathjax_html_fragment
+    # 里把 xmlns* 属性删掉，但整篇文档那条转换路径不经过它。
+    md_content = re.sub(r'\{\s*xmlns(?::[\w.-]+)?="[^"]*"\s*\}', '', md_content)
+
     # 移除 \mspace 命令
     md_content = re.sub(r'\\mspace\{[^}]+\}', '', md_content)
 
