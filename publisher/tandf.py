@@ -304,8 +304,9 @@ class TandFHandler(PublisherHandler):
         # Say why there is no body, rather than let its absence read as a
         # failed extraction.
         md.extend(['---', '',
-                   '*Taylor & Francis 的网页公式多为图片，本工具对该出版商只提取摘要；'
-                   '正文见 `paper.pdf`。*', ''])
+                   #'*Taylor & Francis 的网页公式多为图片，本工具对该出版商只提取摘要；'
+                   #'正文见 `paper.pdf`。*', 
+                   ''])
 
         if supplemental_urls or supplemental_downloads:
             md.extend(['---', '', '## Supplemental Material', ''])

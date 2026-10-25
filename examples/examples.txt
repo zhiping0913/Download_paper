@@ -158,3 +158,6 @@
 10.1051/proc/201653014   #esaim-proc.org/
 10.1051/swsc/2013027   #swsc-journal.org/
 10.1051/jp4:2006133056   #journaldephysique.org/
+10.1051/refdp/2011244   #refletsdelaphysique.fr/
+10.1051/jphys:01984004503062300   #journaldephysique.org/
+10.1051/eas:2007003   #eas-journal.org/
