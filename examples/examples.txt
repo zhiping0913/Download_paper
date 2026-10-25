@@ -161,3 +161,10 @@
 10.1051/refdp/2011244   #refletsdelaphysique.fr/
 10.1051/jphys:01984004503062300   #journaldephysique.org/
 10.1051/eas:2007003   #eas-journal.org/
+
+
+
+
+
+##sci-hub
+10.1086/112164   #sci-net.xyz
