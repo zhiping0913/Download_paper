@@ -1271,8 +1271,9 @@ class EDPHandler(PublisherHandler):
             # extraction: EDP publishes plenty of articles (EPJ Web of
             # Conferences, for one) with no full-text rendition at all.
             md.extend(['---', '',
-                       '*EDP 没有为这篇提供 full html 版本（只有摘要和 PDF），'
-                       '正文见 paper.pdf。*', ''])
+                       #'*EDP 没有为这篇提供 full html 版本（只有摘要和 PDF），'
+                       #'正文见 paper.pdf。*', ''
+                       ])
 
         if supplemental_urls or supplemental_downloads:
             heading = metadata.get('_olm_heading') or 'Supplemental Material'
