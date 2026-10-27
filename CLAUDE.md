@@ -770,6 +770,57 @@ metadata.json 可能对同一篇论文给出不同的标题**。J-STAGE 正是�
   不特判会把"named anchor"当正文输出
 - 图片优先 `FigureImages/`（高清），`WebImages/` 是预览
 
+### ❌ Optica 老文章的补充材料全军覆没：少了一个 `/oe/`
+
+用户报告 Optica 下载补充材料失败。实测 `10.1364/OE.5.000196`（1999 年，页面上
+`Suppl. Mat. (7)`）：**7 个文件一个都没下来**，而且每个都要付满重试预算
+（5 次 × 间隔 90 秒），整次运行因此跑不完。
+
+- ❌ **病根是拼 URL**：表格里的 href 是 `viewmedia.cfm?uri=oe-5-10-196&seq=1`
+  —— **相对于刊目录 `/oe/`**，而代码拿 `OPTICA_BASE + '/' + href` 拼，得到
+  `opg.optica.org/viewmedia.cfm?...`：一个哪里都不存在的 URL，而下载层只会说
+  「没拿到文件」。**根相对和路径相对是两件事**，`urljoin` 本来就分得清 ——
+  现在以**落地的文章 URL**（`handler._landing_url`，退而取 `page.url`）为 base
+  （与 sci-net 那条同源：base 错了，`urljoin` 也救不了）
+- ⚠️ **第二层：每个 Optica 页面的页脚都链向 `https://opticapreprints.figshare.com/`**。
+  `_resolve_viewmedia_link` 的兜底是「页面里**任意**一个 figshare 链接」，于是落在
+  错页面时那个页脚链接被当成补充材料 —— 7 个文件全「解析」成预印本服务器首页，
+  一个完全合法的 HTML 页。判据改成**必须像一条记录**（`/articles/`、`ndownloader`、
+  `m9.figshare`、`10.6084`），光是域名含 figshare 不算
+- 📌 **Optica 把老文章的 media 搬到了 figshare，一个文件一条记录**：
+  `viewmedia.cfm?...&seq=1` 重定向到
+  `figshare.com/articles/Media_1_…/4952162`。⚠️ **而那个页面对我们是
+  `403 Forbidden`**（`document.title === '403 Forbidden'`、一个锚点都没有），
+  所以「在 figshare 页面上找 `a[href*=ndownloader]`」永远找不到。浏览器这一步
+  只用来取**记录 id**，文件清单问 figshare 的公共 API（`aip._fetch_figshare_collection`
+  用的就是它）—— 它还给出出版商自己的文件名 `oe-5-10-196-m001.MOV`，而下载地址
+  `ndownloader.figshare.com/files/8322332` 里什么名字都没有
+- 📌 **另有一条不开浏览器的兜底**：Optica 把每条 media 记成 `{文章 DOI}.mNNN`
+  （实测 `.m001`…`.m007` 命中、`.m008` 为空），按 DOI 检索即可。⚠️ 这个命名是
+  **推出来的，所以要验不要信**：记录标题必须写着 `Media <n>` 才采用 ——
+  一个猜出来的 DOI 恰好解析到别人的文件，比没有补充材料更糟
+- ⚠️ **顺带修掉 `_detect_and_rename` 的双后缀**：它在检测类型与名字不符时一律
+  **追加**后缀，于是得到 `oe-5-10-196-m002.GIF.jpg`、以及 `.MOV.mov`
+  （后者只是**大小写**没按统一大小写比）。现在：大小写不敏感地比；名字里的后缀
+  是我们认识的内容后缀时**替换**它并打印一行；不认识的（`.cfm`、没有后缀）
+  仍然追加。📌 实测这篇里 Optica 列作 "GIF" 的 6 个文件**字节全是 JPEG** ——
+  **字节说了算，标签说了不算**（同「判定看字节不看状态码」那条），而这个分歧
+  值得打印出来：否则看页面和看目录的人只能自己猜谁在说谎
+- ⚠️ **同一份补充材料会来两次，于是白付一整轮重试**：现代文章里它既以 figshare 的
+  DOI 出现在「Supplementary Material」标题下，又以 viewmedia 行出现在表格里 ——
+  实测 `10.1364/OE.444043` 因此排了 **2 个**条目，其中那条 `doi.org/10.6084/…`
+  解析出的页面回 **403**，整轮重试（5 次 × 90 秒）只是为了下一个已经在手的文件。
+  📌 两条路问 API 得到的是同一个下载地址，所以**按下载 URL 去重**；而
+  `10.6084/m9.figshare.<id>` 里那个数字**就是 figshare 的记录 id**（实测它和
+  viewmedia 那条都答出文件 52753223），所以这种链接连浏览器都不用开
+- ✅ 实测 `10.1364/OE.444043`（现代版式）：补充材料 **2 → 1 个**，
+  `supplemental--5521812.pdf` 1.68 MB（PDF 1.7、10 页），`paper.md` md5
+  `3ff76933` 与去重前**完全相同**，244 行 / 10 图 / 3 个独立公式
+- ✅ 实测同一条 DOI：`✓ 补充材料: 7 个` → 7 个全部落盘
+  （`supplemental--oe-5-10-196-m001.MOV` 401,029 字节，`file` 答 Apple QuickTime；
+  m002–m007 共 6 个 `.jpg`，`file` 全答 JPEG，尺寸 800×341 … 1280×457），
+  md 151 行、3 图、`paper.pdf` 0.30 MB
+
 ### Wiley (`10.1002`, onlinelibrary.wiley.com)
 
 - 服务端渲染，无正文 API。用 view-source 取源码（同 Optica），存 `source.html`

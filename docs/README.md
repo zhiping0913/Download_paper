@@ -644,7 +644,7 @@ PDF、图片和补充材料由主流程统一下载。publisher 只负责在 `li
 
 ### 文件类型检测
 
-部分下载链接（如 figshare 的 `ndownloader.figstatic.com/files/{id}`）不含文件扩展名。`download_supplemental_materials()` 在保存文件后，会调用 `_detect_and_rename()` 通过 `python-magic` 读取文件头字节检测 MIME 类型，自动补齐正确的扩展名（`.pdf`、`.zip`、`.docx` 等）。MIME 到扩展名的映射定义在 `MIME_TO_EXT` 字典中。
+部分下载链接（如 figshare 的 `ndownloader.figstatic.com/files/{id}`）不含文件扩展名。`download_supplemental_materials()` 在保存文件后，会调用 `_detect_and_rename()` 通过 `python-magic` 读取文件头字节检测 MIME 类型，自动补齐正确的扩展名（`.pdf`、`.zip`、`.docx` 等）。MIME 到扩展名的映射定义在 `MIME_TO_EXT` 字典中。名字里已经有后缀时分两种：那个后缀是 `MIME_TO_EXT` 认识的内容后缀（且与字节不符）就**替换**它并打印一行，不认识的（`.cfm`、没有后缀）才**追加**；比较大小写不敏感。⚠️ 实测 Optica 的 `10.1364/OE.5.000196`：页面把 6 个文件列作 "GIF"、figshare 也按 `.GIF` 命名，而字节全是 JPEG —— 字节说了算；旧的「一律追加」会得到 `oe-5-10-196-m002.GIF.jpg` 和 `…m001.MOV.mov`。
 
 ## APS 当前实现
 

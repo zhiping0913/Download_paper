@@ -12,7 +12,10 @@ links are extracted from the article page.
 Requires headed browser (Chrome CDP) due to JavaScript-heavy rendering.
 """
 
+import json
 import re
+import urllib.request
+from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
@@ -767,7 +770,8 @@ class OpticaHandler(PublisherHandler):
     # ------------------------------------------------------------------
 
     @classmethod
-    def _find_supplemental_links_from_html(cls, html_content: str) -> dict:
+    def _find_supplemental_links_from_html(cls, html_content: str,
+                                           base_url: str = '') -> dict:
         """Find supplemental material links from the article HTML.
 
         Returns {url: description} so callers can relay file descriptions.
@@ -777,6 +781,16 @@ class OpticaHandler(PublisherHandler):
         2. <a class="view_media"> rows in the supplemental table — description
            is pulled from the sibling <td>; these viewmedia.cfm links must
            be resolved to actual Figshare download URLs by the caller.
+
+        ⚠️ *base_url* must be the **landed article URL**, not just the host.
+        The table's hrefs are ``viewmedia.cfm?uri=oe-5-10-196&seq=1`` --
+        **path-relative to the journal segment** (``/oe/``). Joining them onto
+        the bare host produced ``opg.optica.org/viewmedia.cfm?...``, a URL that
+        exists nowhere, and the download layer can only report "no file":
+        measured on 10.1364/OE.5.000196, whose 7 media files all failed this
+        way, each burning the full retry budget (5 attempts, 90s apart).
+        Root-relative and path-relative are two different things, and
+        ``urljoin`` already tells them apart -- given the right base.
         """
         if not html_content:
             return {}
@@ -814,8 +828,7 @@ class OpticaHandler(PublisherHandler):
                     continue
                 if 'viewmedia.cfm' not in href and 'figshare' not in href and '10.6084' not in href:
                     continue
-                if not href.startswith('http'):
-                    href = cls.OPTICA_BASE + '/' + href.lstrip('/')
+                href = urljoin(base_url or (cls.OPTICA_BASE + '/'), href)
                 if href in links:
                     continue
                 # Description: link text ("Code 1") + sibling <td> text if available
@@ -831,6 +844,100 @@ class OpticaHandler(PublisherHandler):
                 links[href] = desc
 
         return links
+
+    # Optica moved its legacy media files (the "Media 1: MOV" rows of
+    # pre-2010 papers) onto figshare, one figshare *article* per file.
+    #
+    # ⚠️ Scraping that figshare page for a download anchor does not work:
+    # measured on 10.1364/OE.5.000196, the page figshare serves us is
+    # **403 Forbidden** (`document.title === '403 Forbidden'`, zero anchors) --
+    # while its landed URL still names the article id. So the id is all we
+    # take from the browser; the files come from figshare's public API, the
+    # same one `aip._fetch_figshare_collection` already uses. It also hands
+    # over the publisher's real filename (`oe-5-10-196-m001.MOV`), which the
+    # download URL (`ndownloader.figshare.com/files/8322332`) does not carry.
+    _FIGSHARE_API = 'https://api.figshare.com/v2'
+
+    @staticmethod
+    def _figshare_article_id(url: str) -> str:
+        """The figshare article id in *url*, or ''.
+
+        Shapes seen: ``figshare.com/articles/<slug>/4952162``,
+        ``…/articles/media/<slug>/4952162``, and the figshare DOI
+        ``doi.org/10.6084/m9.figshare.17207330`` -- 📌 whose trailing number
+        **is** the article id (measured: that DOI and the viewmedia route for
+        the same supplement both answer with file 52753223).
+        """
+        if not url or 'figshare' not in url:
+            return ''
+        m = re.search(r'm9\.figshare\.(\d+)', url)
+        if m:
+            return m.group(1)
+        m = re.search(r'/articles/(?:[^/]+/)*(\d+)', urlparse(url).path)
+        return m.group(1) if m else ''
+
+    @classmethod
+    def _figshare_api_get(cls, path: str, payload: dict = None):
+        url = f"{cls._FIGSHARE_API}{path}"
+        headers = {'User-Agent': 'DownloadPaper/1.0'}
+        data = None
+        if payload is not None:
+            data = json.dumps(payload).encode()
+            headers['Content-Type'] = 'application/json'
+        req = urllib.request.Request(url, data=data, headers=headers)
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode())
+
+    @classmethod
+    def _figshare_files(cls, article_id: str) -> list:
+        """``[{'url':…, 'filename':…, 'size':…}]`` for one figshare article."""
+        if not article_id:
+            return []
+        try:
+            data = cls._figshare_api_get(f"/articles/{article_id}")
+        except Exception as e:
+            print(f"  ⚠ Figshare article API 失败 ({article_id}): {e}")
+            return []
+        out = []
+        for f in data.get('files') or []:
+            url = f.get('download_url')
+            if url:
+                out.append({'url': url, 'filename': f.get('name') or '',
+                            'size': f.get('size')})
+        return out
+
+    @classmethod
+    def _figshare_article_by_doi(cls, doi: str, expect_media: int = 0) -> str:
+        """Find the figshare article whose DOI is *doi*; return its id or ''.
+
+        📌 A no-browser fallback for when the viewmedia navigation fails (this
+        site sits behind Radware, and that tab is the flakiest step in the
+        chain). Optica names each media record ``{article doi}.mNNN`` --
+        measured: ``10.1364/OE.5.000196.m001`` … ``.m007`` resolve to the seven
+        records, ``.m008`` to nothing.
+
+        ⚠️ That naming is inferred, so it is **verified, not trusted**: the
+        record's own title must say ``Media <n>``. A guessed DOI that happens
+        to resolve to someone else's file is worse than no supplement at all.
+        """
+        if not doi:
+            return ''
+        try:
+            hits = cls._figshare_api_get('/articles/search',
+                                         {'doi': doi, 'page_size': 5})
+        except Exception as e:
+            print(f"  ⚠ Figshare DOI 检索失败 ({doi}): {e}")
+            return ''
+        for hit in hits or []:
+            title = (hit.get('title') or '')
+            if expect_media and not re.match(rf'\s*Media\s*{expect_media}\b',
+                                             title, re.I):
+                print(f"  ⚠ {doi} 的记录标题是 {title[:40]!r}，"
+                      f"不是 Media {expect_media} —— 不采用")
+                continue
+            if hit.get('id'):
+                return str(hit['id'])
+        return ''
 
     @staticmethod
     async def _resolve_figshare_download(page, figshare_url: str) -> str:
@@ -896,14 +1003,23 @@ class OpticaHandler(PublisherHandler):
 
             # After navigation the page may have redirected to Figshare,
             # or it may embed a link to the Figshare article page.
+            # ⚠️ "any figshare link on the page" is not good enough: every
+            # Optica page's footer links to https://opticapreprints.figshare.com/
+            # (their preprint server). When the viewmedia URL was wrong and we
+            # landed on an error/home page, that footer link was accepted as
+            # the supplement, so all 7 files of 10.1364/OE.5.000196 "resolved"
+            # to the preprints home page -- a perfectly valid HTML page, which
+            # the download layer then reported as "no file". Only an
+            # article-shaped figshare URL counts.
             figshare_url = await new_tab.evaluate("""() => {
-                // Check if we already landed on Figshare
-                if (location.href.includes('figshare.com')) return location.href;
-                // Look for any figshare link in the page
-                const a = document.querySelector(
-                    'a[href*="figshare.com"], a[href*="10.6084"], a[href*="/m9.figshare"]'
-                );
-                return a ? a.href : null;
+                const ok = (u) => !!u && /figshare/.test(u) &&
+                    (/\/articles\//.test(u) || /ndownloader/.test(u) ||
+                     /m9\.figshare/.test(u) || /10\.6084/.test(u));
+                if (ok(location.href)) return location.href;
+                for (const a of document.querySelectorAll('a[href]')) {
+                    if (ok(a.href)) return a.href;
+                }
+                return null;
             }""")
 
             await new_tab.close()
@@ -1162,29 +1278,88 @@ class OpticaHandler(PublisherHandler):
             if fulltext_html:
                 metadata['references'] = self.extract_references_from_html(fulltext_html)
 
-            # Supplemental materials
+            # Supplemental materials.
+            # ⚠️ Resolve the table's hrefs against the **landed article URL**:
+            # they are relative to the journal segment (/oe/), not to the host.
+            supp_base = (getattr(self, '_landing_url', '') or '')
+            if not supp_base:
+                try:
+                    supp_base = (page.url or '') if page is not None else ''
+                except Exception:
+                    supp_base = ''
+            if supp_base.startswith('about:'):
+                supp_base = ''
+
             supp_urls = []
             supp_descriptions = {}
+            _seen_files = set()
+
+            def _add_figshare_files(files, desc) -> bool:
+                """Queue *files* (from the figshare API); True if any were new.
+
+                ⚠️ The same supplement reaches us **twice** on modern papers:
+                once as the figshare DOI under the "Supplementary Material"
+                heading and once as a viewmedia row in the table (measured on
+                10.1364/OE.444043). Both resolve to the same file, so dedupe on
+                the download URL -- otherwise the second copy burns a full
+                retry budget (5 attempts, 90s apart) to download a file we
+                already have.
+                """
+                added = False
+                for f in files:
+                    if f['url'] in _seen_files:
+                        continue
+                    _seen_files.add(f['url'])
+                    entry = {'url': f['url']}
+                    if f.get('filename'):
+                        entry['filename'] = f['filename']
+                    supp_urls.append(entry)
+                    supp_descriptions[f['url']] = desc
+                    print(f"  ✓ {desc} → {f.get('filename') or f['url']}"
+                          f" ({f.get('size')} 字节)")
+                    added = True
+                return added
+
             if fulltext_html:
-                raw_supp = self._find_supplemental_links_from_html(fulltext_html)
+                raw_supp = self._find_supplemental_links_from_html(
+                    fulltext_html, base_url=supp_base)
                 for link, desc in raw_supp.items():
-                    if 'viewmedia.cfm' in link:
-                        # Optica media-viewer page — navigate to it and extract
-                        # the Figshare article URL, then resolve to ndownloader.
+                    aid = self._figshare_article_id(link)
+                    if not aid and 'viewmedia.cfm' in link:
+                        # Optica's media viewer: it redirects to one figshare
+                        # article per file. Navigate, keep the article id, and
+                        # ask figshare's API for the actual files -- see
+                        # _figshare_files for why the page itself is useless.
                         figshare_link = await self._resolve_viewmedia_link(page, link)
-                        if 'figshare' in figshare_link or '10.6084' in figshare_link:
-                            resolved = await self._resolve_figshare_download(page, figshare_link)
-                        else:
-                            resolved = figshare_link
-                        supp_urls.append(resolved)
-                        supp_descriptions[resolved] = desc
-                    elif 'figshare' in link or '10.6084' in link:
+                        aid = self._figshare_article_id(figshare_link)
+                        if not aid:
+                            seq = re.search(r'[?&]seq=s?(\d+)', link)
+                            if seq:
+                                n = int(seq.group(1))
+                                print(f"  ↪ viewmedia 没给出 figshare 记录，"
+                                      f"按 DOI 检索 Media {n}")
+                                aid = self._figshare_article_by_doi(
+                                    f"{doi}.m{n:03d}", expect_media=n)
+                    if aid and _add_figshare_files(self._figshare_files(aid), desc):
+                        continue
+                    if aid:
+                        # Resolved, but every file was already queued from the
+                        # other link to the same record.
+                        continue
+                    if 'figshare' in link or '10.6084' in link:
                         resolved = await self._resolve_figshare_download(page, link)
+                        if resolved in _seen_files:
+                            continue
+                        _seen_files.add(resolved)
                         supp_urls.append(resolved)
                         supp_descriptions[resolved] = desc
-                    else:
-                        supp_urls.append(link)
-                        supp_descriptions[link] = desc
+                        continue
+                    if 'viewmedia.cfm' in link:
+                        # Nothing resolved: keep the publisher's own link so the
+                        # markdown still points at it, and say so.
+                        print(f"  ⚠ 没能解析出 {desc} 的文件地址，保留原链接")
+                    supp_urls.append(link)
+                    supp_descriptions[link] = desc
 
             return {
                 'metadata': metadata,

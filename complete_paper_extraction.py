@@ -877,13 +877,37 @@ MIME_TO_EXT = {
 }
 
 
+#: The extensions this sniffer understands, i.e. the ones it is entitled to
+#: overwrite. Anything else (``.cfm``, ``.php``, no extension at all) is a name
+#: we cannot judge, so the detected type is *appended* instead.
+_KNOWN_CONTENT_EXTS = frozenset(MIME_TO_EXT.values()) | {'.jpeg', '.tiff'}
+
+
 def _detect_and_rename(filepath: Path) -> Path:
     """Detect file type from header bytes and rename with correct extension."""
     mime = magic.from_file(str(filepath), mime=True)
     ext = MIME_TO_EXT.get(mime, '')
-    if not ext or filepath.suffix == ext:
+    # ⚠️ Compare case-insensitively: Optica's legacy media are named
+    # ``oe-5-10-196-m001.MOV``, and a case-sensitive test turned that into
+    # ``.MOV.mov``.
+    if not ext or filepath.suffix.lower() in (ext, {'.jpg': '.jpeg',
+                                                    '.tif': '.tiff'}.get(ext, ext)):
         return filepath
-    new_path = filepath.with_suffix(filepath.suffix + ext)
+    if filepath.suffix.lower() in _KNOWN_CONTENT_EXTS:
+        # The name claims a content type we recognise and the bytes say
+        # otherwise, so **replace** it -- appending produced ``.GIF.jpg``.
+        # 📌 Measured on 10.1364/OE.5.000196: Optica lists six files as "GIF"
+        # and figshare serves them named ``.GIF``, but every one of them is a
+        # JPEG. Bytes win over labels (the same rule as "judge by bytes, not
+        # status code"), and the disagreement is worth printing -- a reader
+        # comparing the article page with the directory should not have to
+        # wonder who is lying.
+        print(f"    ↪ {filepath.name} 的字节是 {mime}，按真实类型改名为 {ext}")
+        new_path = filepath.with_suffix(ext)
+    else:
+        new_path = filepath.with_suffix(filepath.suffix + ext)
+    if new_path != filepath and new_path.exists():
+        return filepath
     filepath.rename(new_path)
     return new_path
 
