@@ -1295,52 +1295,175 @@ class AIPHandler(PublisherHandler):
 
         return links, descriptions
 
+    #: figshare's public API -- the same one the collection route has always
+    #: used. The record *page* is of no use to us: it is HTML either way
+    #: (Optica's figshare pages even answer 403 for us).
+    _FIGSHARE_API = 'https://api.figshare.com/v2'
+
+    @staticmethod
+    def _figshare_record(url: str):
+        """``('collections'|'articles', id)`` for a figshare record, else None.
+
+        ⚠️ A figshare *record* is not a file. The shapes AIP prints are
+        ``10.60893/figshare.<journal>.c.<id>`` (a collection, several files)
+        and ``10.60893/figshare.<journal>.<id>`` / ``m9.figshare.<id>``
+        (a single article). Only ``ndownloader``/``figstatic`` URLs are files.
+        """
+        u = (url or '').strip()
+        if not u:
+            return None
+        for pat, kind in (
+            (r'10\.60893/figshare\.[^./]*\.c\.(\d+)', 'collections'),
+            (r'/collections/(?:[^/]+/)*(\d+)', 'collections'),
+            (r'10\.60893/figshare\.[^./]*\.(\d+)', 'articles'),
+            (r'm9\.figshare\.(\d+)', 'articles'),
+            (r'/articles/(?:[^/]+/)*(\d+)', 'articles'),
+        ):
+            m = re.search(pat, u)
+            if m:
+                return kind, m.group(1)
+        return None
+
+    @staticmethod
+    def _is_figshare_file_url(url: str) -> bool:
+        """True for a figshare URL that really serves bytes."""
+        u = (url or '').lower()
+        return 'ndownloader' in u or 'figstatic.com' in u
+
+    @staticmethod
+    def _figshare_api_get(path: str):
+        """GET ``_FIGSHARE_API + path``, decoded; None on any failure."""
+        import json
+        import urllib.request
+        try:
+            req = urllib.request.Request(
+                f"{AIPHandler._FIGSHARE_API}{path}",
+                headers={'User-Agent': 'DownloadPaper/1.0'})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read().decode())
+        except Exception as e:
+            print(f"  ⚠ figshare API 失败 {path}: {e}")
+            return None
+
+    @staticmethod
+    def _figshare_article_files(article_id, title: str = '') -> tuple:
+        """(entries, descriptions) for one figshare article.
+
+        Entries carry the publisher's own filename -- ``ndownloader
+        .figshare.com/files/<id>`` holds no name at all, so without it every
+        file lands on disk as a bare number.
+        """
+        data = AIPHandler._figshare_api_get(f"/articles/{article_id}")
+        if not data:
+            return [], {}
+        entries = []
+        descriptions = {}
+        for f in data.get('files') or []:
+            url = f.get('download_url')
+            if not url:
+                continue
+            entry = {'url': url}
+            if f.get('name'):
+                entry['filename'] = f['name']
+            entries.append(entry)
+            descriptions[url] = title or data.get('title', '') or f.get('name', '')
+        return entries, descriptions
+
+    @staticmethod
+    def _figshare_record_files(kind: str, record_id) -> tuple:
+        """(entries, descriptions) for a figshare collection or article."""
+        if kind == 'articles':
+            return AIPHandler._figshare_article_files(record_id)
+        articles = AIPHandler._figshare_api_get(
+            f"/collections/{record_id}/articles")
+        if not articles:
+            return [], {}
+        entries = []
+        descriptions = {}
+        for a in articles:
+            aid = a.get('id')
+            if not aid:
+                continue
+            e, d = AIPHandler._figshare_article_files(aid, a.get('title', ''))
+            entries.extend(e)
+            descriptions.update(d)
+        return entries, descriptions
+
     @staticmethod
     def _extract_supplemental_links_from_html(html_content: str) -> tuple:
-        """Extract supplemental material download links from the figshare widget or direct links.
+        """Extract supplemental material download links.
 
-        First tries to extract from class="supplementary-material-link" (direct AIP links).
-        If none found, uses figshare API to discover all files in a collection.
+        Direct AIP links (``supplementary-material-link`` and friends) are
+        used as they are; a figshare *record* link is resolved into its files
+        through the figshare API.
 
-        Returns (urls, descriptions) where descriptions maps URL -> filename.
+        Returns (urls, descriptions); an entry may be a ``{'url', 'filename'}``
+        dict, and descriptions maps download URL -> label.
         """
         if not html_content:
             return [], {}
 
-        # Method 1: Try direct supplementary-material-link extraction
-        direct_links, direct_descriptions = AIPHandler._extract_direct_supplemental_links(html_content)
-        if direct_links:
-            print(f"  ✓ 找到 {len(direct_links)} 个直接补充材料链接")
-            return direct_links, direct_descriptions
-
-        # Method 2: Fallback to figshare
-        soup = BeautifulSoup(html_content, 'html.parser')
         links = []
         descriptions = {}
+        seen = set()
 
+        def _add(entry, label=''):
+            url = entry['url'] if isinstance(entry, dict) else entry
+            if url in seen:
+                return
+            seen.add(url)
+            links.append(entry)
+            if label:
+                descriptions[url] = label
+
+        # Method 1: the direct supplemental anchors in the article HTML.
+        #
+        # ❌ Not all of those anchors are files. AIP prints the supplement as
+        # a *collection DOI* (``<a class="link link-doi"
+        # href="https://doi.org/10.60893/figshare.pop.c.7580147">supplementary
+        # material</a>``), and ``_looks_like_download`` accepts any href
+        # containing "figshare" -- so the direct route claimed that landing
+        # page, printed ``✓ 找到 1 个直接补充材料链接``, and **returned before
+        # the figshare API route could run**. What the download layer then
+        # fetched was a web page, not the files.
+        direct_links, direct_descriptions = (
+            AIPHandler._extract_direct_supplemental_links(html_content))
+        records = []
+        for href in direct_links:
+            rec = AIPHandler._figshare_record(href)
+            if rec and not AIPHandler._is_figshare_file_url(href):
+                if rec not in records:
+                    records.append(rec)
+                continue
+            _add(href, direct_descriptions.get(href, ''))
+
+        # Method 2: the figshare widget's own anchors. ⚠️ The wrapper is empty
+        # in the server response (its anchors are injected by figshare's
+        # JavaScript), which is why the DOI printed in the prose below is the
+        # identifier we actually rely on.
+        soup = BeautifulSoup(html_content, 'html.parser')
         figshare_wrapper = soup.find('div', id='articlefulltext_figshare')
         if figshare_wrapper:
             for a_tag in figshare_wrapper.find_all('a', href=True):
                 href = a_tag['href'].strip()
-                if 'figstatic.com' in href or 'ndownloader' in href:
-                    links.append(href)
+                if AIPHandler._is_figshare_file_url(href):
+                    _add(href, a_tag.get_text(' ', strip=True))
 
-            # If no direct download links, discover via the figshare API.
-            #
-            # ⚠️ This used to be gated on finding an article id in one of the
-            # widget's anchors -- an id ``_fetch_figshare_collection`` does
-            # not even use (it re-derives the *collection* id from the page
-            # text). The gate was therefore testing the wrong thing, and it
-            # only ever passed because the widget's JavaScript had injected
-            # those anchors into the rendered DOM. Reading the server
-            # response instead left the wrapper empty, the gate shut, and
-            # 10.1063/5.0321661 reported "补充材料: 0 个" while the paper
-            # actually has 6 videos plus a DOCX on figshare.
-            if not links:
-                links, descriptions = (
-                    AIPHandler._fetch_figshare_collection('', html_content)
-                )
+        if not records:
+            match = re.search(r'10\.60893/figshare\.[^./]*\.c\.(\d+)',
+                              html_content)
+            if match:
+                records.append(('collections', match.group(1)))
 
+        for kind, record_id in records:
+            entries, desc = AIPHandler._figshare_record_files(kind, record_id)
+            if not entries:
+                print(f"  ⚠ figshare {kind}/{record_id} 没给出任何文件")
+            for entry in entries:
+                _add(entry, desc.get(entry['url'], ''))
+
+        if links:
+            print(f"  ✓ 补充材料: {len(links)} 个")
         return links, descriptions
 
     @staticmethod
@@ -1349,8 +1472,7 @@ class AIPHandler(PublisherHandler):
 
         *article_id* is unused and kept only so existing callers do not have
         to change: what identifies the collection is the ``10.60893/figshare
-        .<journal>.c.<id>`` DOI printed in the article text, which is read
-        from *full_html* below.
+        .<journal>.c.<id>`` DOI printed in the article text.
 
         📌 The article page also fetches
         ``widgets.figshare.com/public/files?articleResourceDOI=<doi>``, which
@@ -1360,47 +1482,11 @@ class AIPHandler(PublisherHandler):
         in our capture. The links it hands out for video are also the signed,
         one-hour S3 *previews* -- this API gives the originals.
         """
-        import json
-        import urllib.request
-
-        collection_id = None
-        match = re.search(r'10\.60893/figshare\.[^.]*\.c\.(\d+)', full_html)
-        if match:
-            collection_id = match.group(1)
-
-        if not collection_id:
+        match = re.search(r'10\.60893/figshare\.[^./]*\.c\.(\d+)',
+                          full_html or '')
+        if not match:
             return [], {}
-
-        article_ids = []
-        try:
-            url = f"https://api.figshare.com/v2/collections/{collection_id}/articles"
-            req = urllib.request.Request(url, headers={'User-Agent': 'DownloadPaper/1.0'})
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                articles = json.loads(resp.read().decode())
-            article_ids = [(a.get('id'), a.get('title', '')) for a in articles if a.get('id')]
-        except Exception as e:
-            print(f"  ⚠ Figshare collection API error: {e}")
-            return [], {}
-
-        links = []
-        descriptions = {}
-        for aid, title in article_ids:
-            try:
-                url = f"https://api.figshare.com/v2/articles/{aid}"
-                req = urllib.request.Request(url, headers={'User-Agent': 'DownloadPaper/1.0'})
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    data = json.loads(resp.read().decode())
-
-                files = data.get('files', [])
-                for f in files:
-                    download_url = f.get('download_url')
-                    if download_url:
-                        links.append(download_url)
-                        descriptions[download_url] = f.get('name', title)
-            except Exception as e:
-                print(f"  ⚠ Figshare article API error for {aid}: {e}")
-
-        return links, descriptions
+        return AIPHandler._figshare_record_files('collections', match.group(1))
 
     async def get_fulltext_url(self, page) -> str:
         if page is not None:

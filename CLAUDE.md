@@ -1083,6 +1083,30 @@ AIP `10.1063/5.0321661` 六个 7–10 MB 的视频，本仓还见过 200+ MB 的
 
 ### AIP 的 figshare 补充材料
 
+#### ❌ 又坏一次：第一条路把 collection 的落地页当成了文件
+
+用户报告 AIP 的补充材料又下不了了。实测 `10.1063/5.0243358`：日志写
+`✓ 找到 1 个直接补充材料链接`，而**那一个链接是**
+`<a class="link link-doi" href="https://doi.org/10.60893/figshare.pop.c.7580147">supplementary material</a>`
+—— 一条 figshare **collection 的 DOI**，不是文件。`metadata.json` 里
+`supplemental: []`。
+
+- ❌ 病根是 `_looks_like_download` 的判据里有 `figshare` **子串**，于是那个落地页
+  被当成下载项；而 Method 1 一旦非空就 **`return`**，figshare API 那条路
+  （唯一知道文件在哪的那条）**一次都没跑**。下载层拿回来的是一张网页
+- 📌 现在直接链接要**分类**：只有 `ndownloader` / `figstatic.com` 才是文件，
+  `10.60893/figshare.<刊>.c.<id>`（collection）、`10.60893/figshare.<刊>.<id>`
+  与 `m9.figshare.<id>`（单条记录）都是**记录指针**，一律交给 figshare API
+  展开（`_figshare_record` / `_figshare_record_files`）。两条路不再互斥
+- 📌 **顺带拿到了出版商自己的文件名**：条目改成 `{'url', 'filename'}` dict
+  （Optica 那条先例），因为 `ndownloader.figshare.com/files/<id>` 里一个名字都没有
+  —— 以前 6 个视频落盘成 6 串数字
+- ✅ 实测 `10.1063/5.0243358`：`supplemental--AdditionalMaterial.pdf`
+  1,340,931 字节（`file` 答 PDF），md 206 行、4 图；
+  回归 `10.1063/5.0321661`：**7/7**（`salt droplet evaporation-SI.docx` 237,068 字节
+  + 6 个 `Supplement Video N (…).mp4`，7.0–10.1 MB，`file` 全答 ISO Media），
+  md 369 行、12 图
+
 - ❌ **闸门判错了东西**：`_extract_supplemental_links_from_html` 的第二条路要求
   先从 `div#articlefulltext_figshare` 的 `<a>` 里找出 article id 才肯调
   `_fetch_figshare_collection` —— 而那个函数**根本不用这个 id**，它自己从页面

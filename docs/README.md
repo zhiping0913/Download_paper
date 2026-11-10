@@ -708,7 +708,7 @@ AIP 由 `publisher/aip.py` 的 `AIPHandler` 处理。
 
 ### 补充材料提取
 
-`_extract_supplemental_links_from_html()` 从内联渲染的 figshare widget（`#articlefulltext_figshare`）中提取 `ndownloader.figstatic.com` 下载链接，传回主流程下载。
+`_extract_supplemental_links_from_html()` 先取文章 HTML 里的直接补充材料锚点，再把其中的 figshare **记录指针**（collection DOI `10.60893/figshare.<刊>.c.<id>`、单条记录 `…figshare.<刊>.<id>` 或 `m9.figshare.<id>`）交给 figshare 公共 API 展开成文件清单（`_figshare_record` / `_figshare_record_files`）。⚠️ 只有 `ndownloader` / `figstatic.com` 的 URL 才是文件，落地页不是 —— 两条路并行而不是互斥。条目以 `{'url', 'filename'}` 传回，因为下载地址里不含文件名。
 
 ### Markdown 生成
 
