@@ -1370,6 +1370,53 @@ class AIPHandler(PublisherHandler):
         return entries, descriptions
 
     @staticmethod
+    def _figshare_articles_by_resource_doi(doi: str) -> list:
+        """figshare article ids whose ``resource_doi`` is exactly *doi*.
+
+        📌 This is the third shape AIP uses, and the only one with **nothing
+        to go on in the HTML**: the wrapper carries
+        ``data-loaddoisbycollection="False"`` and the page text holds no
+        ``10.60893/figshare.<journal>.c.<id>`` DOI at all -- the widget looks
+        its files up by the *article's own* DOI. Measured on
+        10.1063/5.0201401, which reported "补充材料: 0 个" while it actually
+        has 4 videos (~380 MB).
+        ⚠️ The search is a query, so the answer is **verified** rather than
+        trusted: a record counts only when its ``resource_doi`` equals this
+        article's DOI.
+        """
+        import json
+        import urllib.request
+        if not doi:
+            return []
+        payload = json.dumps({'resource_doi': doi, 'page_size': 100}).encode()
+        try:
+            req = urllib.request.Request(
+                f"{AIPHandler._FIGSHARE_API}/articles/search", data=payload,
+                headers={'Content-Type': 'application/json',
+                         'User-Agent': 'DownloadPaper/1.0'})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                hits = json.loads(resp.read().decode())
+        except Exception as e:
+            print(f"  ⚠ figshare 按 resource_doi 检索失败: {e}")
+            return []
+        ids = []
+        for h in hits or []:
+            aid = h.get('id')
+            if not aid:
+                continue
+            detail = AIPHandler._figshare_api_get(f"/articles/{aid}")
+            if not detail:
+                continue
+            if (detail.get('resource_doi') or '').lower() != doi.lower():
+                print(f"  ⚠ 跳过 figshare {aid}：resource_doi 是"
+                      f" {detail.get('resource_doi')!r}，不是本文的")
+                continue
+            ids.append(aid)
+        if ids:
+            print(f"  ↪ figshare 按 resource_doi 命中 {len(ids)} 条记录")
+        return ids
+
+    @staticmethod
     def _figshare_record_files(kind: str, record_id) -> tuple:
         """(entries, descriptions) for a figshare collection or article."""
         if kind == 'articles':
@@ -1390,7 +1437,8 @@ class AIPHandler(PublisherHandler):
         return entries, descriptions
 
     @staticmethod
-    def _extract_supplemental_links_from_html(html_content: str) -> tuple:
+    def _extract_supplemental_links_from_html(html_content: str,
+                                               doi: str = '') -> tuple:
         """Extract supplemental material download links.
 
         Direct AIP links (``supplementary-material-link`` and friends) are
@@ -1454,6 +1502,13 @@ class AIPHandler(PublisherHandler):
                               html_content)
             if match:
                 records.append(('collections', match.group(1)))
+
+        # Neither a direct file nor any record id on the page: ask figshare
+        # which of its records point back at this article (see
+        # ``_figshare_articles_by_resource_doi``).
+        if not records and not links:
+            for aid in AIPHandler._figshare_articles_by_resource_doi(doi):
+                records.append(('articles', aid))
 
         for kind, record_id in records:
             entries, desc = AIPHandler._figshare_record_files(kind, record_id)
@@ -1542,7 +1597,8 @@ class AIPHandler(PublisherHandler):
             supp_descriptions = {}
             if fulltext_html:
                 figure_urls = self.extract_figures_from_html(fulltext_html)
-                supp_urls, supp_descriptions = self._extract_supplemental_links_from_html(fulltext_html)
+                supp_urls, supp_descriptions = self._extract_supplemental_links_from_html(
+                    fulltext_html, doi=self.doi or doi)
 
             return {
                 'metadata': metadata,

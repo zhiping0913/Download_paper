@@ -1083,6 +1083,32 @@ AIP `10.1063/5.0321661` 六个 7–10 MB 的视频，本仓还见过 200+ MB 的
 
 ### AIP 的 figshare 补充材料
 
+#### ❌ 第三种形状：页面上一个线索都没有（按 `resource_doi` 反查）
+
+用户报告 `10.1063/5.0201401` 的补充材料下载不了。实测：日志干脆就是
+`✓ 补充材料: 0 个`，而这篇实际有 **4 个 `.avi`、约 380 MB**。
+
+- 📌 **这篇页面上没有任何可用的标识**：`div#articlefulltext_figshare` 是空的
+  （它的锚点一向由 figshare 的 JS 注入），而且带着
+  `data-loaddoisbycollection="False"` —— 整份响应里**没有**
+  `10.60893/figshare.<刊>.c.<id>`，`figshare` 四次命中只是那个 wrapper 和
+  widget 的 `<script src>`。widget 是按**文章自己的 DOI** 去查文件的
+- 📌 所以加第三条路：`_figshare_articles_by_resource_doi` —— POST
+  `api.figshare.com/v2/articles/search` 带 `{"resource_doi": 本文DOI}`。
+  ⚠️ **搜索是一个查询，不是一个声明**，所以结果要验：逐条取
+  `/articles/<id>`，只有 `resource_doi` **等于本文 DOI** 才采用，不等就打印
+  原因并跳过（同 Optica 那条「推出来的 DOI 要验不要信」）
+- 📌 **只在前两条路都空手时才问**（`not records and not links`），所以
+  collection 那种文章一次多余请求都不会发
+- ✅ 实测 `10.1063/5.0201401`：`↪ figshare 按 resource_doi 命中 4 条记录` →
+  4/4 落盘，`70424_SF-_MANTIS.avi` 104,585,612 字节、
+  `77067_SN_MANTIS.avi` 143,262,344 字节、`77021_JF_MANTIS.avi` 125,921,974、
+  `70424_SF-_Fastcam.avi` 7,593,270（`file` 全答 AVI / Motion JPEG，
+  2540×2064 等），与 API 声明的 size 逐个一致；md 569 行、22 图。
+  ⚠️ 这四个文件都在 `DP_SUPPLEMENTAL_MAX_BYTES` 默认 500 MB 以内，所以照常保留
+- ✅ 回归（离线，同一份 `page_raw.html`）：collection 那篇
+  `10.1063/5.0243358` 仍是 1 个 `AdditionalMaterial.pdf`，**不走新路**
+
 #### ❌ 又坏一次：第一条路把 collection 的落地页当成了文件
 
 用户报告 AIP 的补充材料又下不了了。实测 `10.1063/5.0243358`：日志写
