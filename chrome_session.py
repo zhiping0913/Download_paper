@@ -65,6 +65,7 @@ import asyncio
 import base64
 import contextvars
 import glob
+import itertools
 import json
 import os
 import random
@@ -1080,7 +1081,9 @@ _DEFAULT_API_HARVEST = DEFAULT_API_HARVEST
 _api_harvest_patterns = api_harvest_patterns
 
 
-async def _harvest_document_bodies(ws, sink: dict, limit: int = 48) -> int:
+async def _harvest_document_bodies(ws, sink: dict, limit: int = 48, *,
+                                   budget_s: float = 20.0,
+                                   per_cmd_s: float = 6.0) -> int:
     """Fill in the bodies of the responses worth keeping from *sink*.
 
     ⚠️ Must run while the socket is still open and soon after the page
@@ -1094,11 +1097,20 @@ async def _harvest_document_bodies(ws, sink: dict, limit: int = 48) -> int:
     unless ``DP_HARVEST_API`` is set -- asking for every image, stylesheet and
     font would add dozens of round trips per paper for bytes nothing reads.
 
+    ⚠️ **`Network.getResponseBody` is served by the renderer, so a wedged
+    renderer makes this unbounded.** Measured on ScienceDirect
+    10.1016/j.bbamem.2016.02.003 (a page whose script pins the main thread):
+    96 captured responses, **360 s spent, 0 bodies fetched** -- 30 s of
+    default command ceiling each, in a function every exit path calls. Hence
+    one overall ``budget_s`` and a short ``per_cmd_s``: give up and say so.
+
     ⚠️ The cap is 48, not the 12 that sufficed for documents alone: measured on
     ScienceDirect 10.1016/j.cocom.2026.e01326, one article issues 20 matching
     API calls (each endpoint twice, with different entitledTokens). A cap sized
     for documents would have silently dropped the tail.
     """
+    deadline = time.monotonic() + budget_s if budget_s > 0 else None
+    gave_up = False
     fetched = 0
     for rid, entry in list(sink.items()):
         if entry.get("body") is not None:
@@ -1112,8 +1124,19 @@ async def _harvest_document_bodies(ws, sink: dict, limit: int = 48) -> int:
             continue
         if fetched >= limit:
             break
+        if deadline is not None and time.monotonic() >= deadline:
+            gave_up = True
+            break
         try:
-            got = await _send(ws, "Network.getResponseBody", {"requestId": rid})
+            got = await _send(ws, "Network.getResponseBody", {"requestId": rid},
+                              timeout=min(per_cmd_s, max(
+                                  1.0, deadline - time.monotonic()))
+                              if deadline is not None else per_cmd_s)
+        except asyncio.TimeoutError:
+            # The renderer is not answering. Every remaining request would
+            # cost the same, so stop rather than pay it N times over.
+            gave_up = True
+            break
         except Exception:
             continue  # evicted, or the request never completed
         body = got.get("body")
@@ -1133,13 +1156,64 @@ async def _harvest_document_bodies(ws, sink: dict, limit: int = 48) -> int:
             body = raw.decode("utf-8", "replace")
         entry["body"] = body
         fetched += 1
+    if gave_up:
+        print(f"  ⚠️  取响应体中止（渲染进程不答或超过 {budget_s:.0f}s 预算）："
+              f"已取到 {fetched} 份")
     return fetched
+async def _doi_in_captured_documents(ws, sink: dict, doi: str) -> bool:
+    """Is ``doi`` in a captured response that is not itself a challenge page?
+
+    📌 **This test needs nothing from the renderer.** It reads the bytes the
+    server already sent (``Network.getResponseBody`` is a pure CDP command),
+    which is exactly why it is the verdict to fall back on when
+    ``Runtime.evaluate`` stops answering -- the old code asked the page first
+    and never got as far as this, so a loaded article was reported as
+    "挑战未通过".
+
+    ⚠️ The interstitial quotes the URL we asked for, so it carries the DOI
+    too -- hence the challenge check on each candidate.
+    """
+    if not doi:
+        return False
+    doi_lower = doi.lower()
+    try:
+        await _harvest_document_bodies(ws, sink)
+    except Exception:
+        pass
+    for entry in (sink or {}).values():
+        body = entry.get("body")
+        if not isinstance(body, str):
+            continue
+        if doi_lower not in body.lower():
+            continue
+        if html_looks_like_bot_challenge(body):
+            continue
+        return True
+    return False
 
 
 #: Per-command ceiling for a CDP round trip. ⚠️ A **deadlock breaker, not a
 #: performance knob**: a CDP command answers in milliseconds, so this only
 #: ever fires when the renderer has stopped answering at all.
 CDP_CMD_TIMEOUT = float(os.environ.get("DP_CDP_CMD_TIMEOUT", "30") or 30)
+
+#: Monotonic id for CDP commands.
+#:
+#: ❌ **It used to be ``id(object()) % 1000000``, which returns the *same*
+#: number every time**: the throwaway object is freed immediately and CPython
+#: hands the next one the identical address (measured: six calls in a row ->
+#: 534960 six times). That held together only because every reply was
+#: consumed before the next command went out, so the id was free again.
+#:
+#: ⚠️ **One abandoned command poisons the socket forever.** The moment a
+#: command times out, its id stays in flight, and every later command reuses
+#: it -- Chrome answers ``-32600 Duplicate `id` in protocol request`` and
+#: never runs any of them. Measured on 10.1016/j.bbamem.2016.02.003: one
+#: 15s ``Runtime.evaluate`` silence, then **11 consecutive** duplicate-id
+#: errors; the browser looked wedged (Playwright's ``connect_over_cdp`` also
+#: timed out) while the page was in fact open. That is the user-visible
+#: "程序已经成功打开了 chrome 页面, 却报挑战未通过".
+_CDP_MSG_ID = itertools.count(1)
 
 
 async def _send(ws, method: str, params: dict = None,
@@ -1158,7 +1232,7 @@ async def _send(ws, method: str, params: dict = None,
     whose id is not the one being awaited is discarded, so a late answer to
     an abandoned command cannot be mistaken for the next command's result.
     """
-    msg_id = id(object()) % 1000000
+    msg_id = next(_CDP_MSG_ID)
     msg = {"id": msg_id, "method": method}
     if params:
         msg["params"] = params
@@ -2017,6 +2091,10 @@ async def bypass_cloudflare_cdp(
             widget_rounds = 0
             blank_iframe_rounds = 0
             blank_iframe_reported = False
+            # 渲染进程是否在某一轮里彻底不答（决定超时那句怎么说）
+            _renderer_silent = False
+            # terminateExecution 只给一次额外预算（见下面那段注释）
+            _terminated_once = False
             last_status = ""
 
             # 下面这四个都在循环体内赋值，超时那行要读它们来如实说明失败原因。
@@ -2160,13 +2238,21 @@ async def bypass_cloudflare_cdp(
                     else:
                         break
                 try:
+                    # ⚠️ 每条命令的上限**必须收进剩余预算里**。CDP_CMD_TIMEOUT
+                    # 默认 30s，而挑战预算可能只有 20s —— 实测
+                    # 10.1016/j.bbamem.2016.02.003：一次 evaluate 吃掉 30s
+                    # 的命令上限，回来时预算早已耗尽，于是「页面其实打开了」
+                    # 被报成 `⏰ Cloudflare 挑战未在 20s 内通过`。
+                    _cmd_t = max(2.0, min(
+                        CDP_CMD_TIMEOUT,
+                        deadline - asyncio.get_event_loop().time()))
                     # 获取标题
-                    title_r = await _send(ws, "Runtime.evaluate", {"expression": "document.title || ''"})
+                    title_r = await _send(ws, "Runtime.evaluate", {"expression": "document.title || ''"}, timeout=_cmd_t)
                     title = title_r.get("result", {}).get("value", "") or ""
                     title_lower = title.lower()
 
                     # 获取 body 文本
-                    body_r = await _send(ws, "Runtime.evaluate", {"expression": "document.body?.innerText || ''"})
+                    body_r = await _send(ws, "Runtime.evaluate", {"expression": "document.body?.innerText || ''"}, timeout=_cmd_t)
                     body_text = body_r.get("result", {}).get("value", "") or ""
                     body_lower = body_text.lower()
 
@@ -2179,7 +2265,7 @@ async def bypass_cloudflare_cdp(
                             marker_r = await _send(ws, "Runtime.evaluate", {
                                 "expression": _CHALLENGE_DOM_JS,
                                 "returnByValue": True,
-                            })
+                            }, timeout=_cmd_t)
                             is_challenge = bool(
                                 marker_r.get("result", {}).get("value")
                             )
@@ -2187,7 +2273,7 @@ async def bypass_cloudflare_cdp(
                             pass
 
                     # 检查 cf_clearance
-                    cookies_r = await _send(ws, "Network.getAllCookies")
+                    cookies_r = await _send(ws, "Network.getAllCookies", timeout=_cmd_t)
                     cookies = cookies_r.get("cookies", [])
                     has_cf = any(
                         c.get("name") == "cf_clearance" and c.get("value")
@@ -2200,7 +2286,7 @@ async def bypass_cloudflare_cdp(
                     # 检查 iframe 数（调试用）
                     iframe_r = await _send(ws, "Runtime.evaluate", {
                         "expression": "document.querySelectorAll('iframe').length"
-                    })
+                    }, timeout=_cmd_t)
                     iframe_count = iframe_r.get("result", {}).get("value", 0)
 
                     # Vendor-independent fallback: a page with no text and an
@@ -2365,28 +2451,10 @@ async def bypass_cloudflare_cdp(
                         # fine. The served document carries the DOI all along.
                         doi_where = ''
                         try:
-                            await _harvest_document_bodies(ws, result["responses"])
-                            for _entry in (result.get("responses") or {}).values():
-                                _b = _entry.get("body")
-                                if not isinstance(_b, str):
-                                    continue
-                                if doi_lower not in _b.lower():
-                                    continue
-                                # ⚠️ The interstitial quotes the URL we asked
-                                # for, so it contains the DOI too. Measured on
-                                # APS: the captured document was 6,209 bytes of
-                                # Cloudflare challenge (_cf_chl_opt x7, "Just a
-                                # moment" x1) carrying the DOI 3 times -- and
-                                # this test declared the challenge passed in
-                                # round 1, so the widget was never clicked at
-                                # all. "The DOI is in this response" only means
-                                # we are through if the response is not itself
-                                # the challenge.
-                                if html_looks_like_bot_challenge(_b):
-                                    continue
-                                doi_passed = True
+                            doi_passed = await _doi_in_captured_documents(
+                                ws, result["responses"], doi_lower)
+                            if doi_passed:
                                 doi_where = '捕获的响应'
-                                break
                         except Exception:
                             doi_passed = False
 
@@ -2574,6 +2642,50 @@ async def bypass_cloudflare_cdp(
 
                 except Exception as e:
                     print(f"  ⚠️  轮询出错: {e}")
+                    # ✅ **渲染进程不答，最可能是页面自己的脚本占满了主线程，
+                    # 而这有一条干净的解法：`Runtime.terminateExecution`。**
+                    # 它由 V8 的中断机制执行，**不需要主线程空闲**。
+                    # 实测 ScienceDirect 10.1016/j.bbamem.2016.02.003
+                    # （用户报告「页面内容太多，chrome 打开后卡住了」）：
+                    #   · 1.0s 时 evaluate 还答得出 body=128,857（正文已经在了）
+                    #   · 2.2s 起连续 150s 一次都不答，**自己永远不会恢复**
+                    #   · `Page.*` / `Network.getAllCookies` 秒答（浏览器进程），
+                    #     而 `DOM.getDocument`、`Network.getResponseBody` 同样卡住
+                    #     （都要渲染进程）—— 所以「问捕获」那条兜底在这里也没用
+                    #   · 发一次 terminateExecution：**下一轮立刻答出 body=128,857**，
+                    #     紧接着 `connect_over_cdp` 0.3s 连上
+                    # ⚠️ 所以「把预算调大接着等」是错的方向：它不会自己好。
+                    if isinstance(e, asyncio.TimeoutError):
+                        _renderer_silent = True
+                        try:
+                            await _send(ws, "Runtime.terminateExecution",
+                                        timeout=5)
+                            print("  🧯 渲染进程被页面脚本占满 —— 已发 "
+                                  "Runtime.terminateExecution 掐断跑飞的脚本")
+                            if not _terminated_once:
+                                # 这一轮的预算是被卡顿吃掉的，不是被挑战吃掉的。
+                                # 只补一次，免得变成无限延长。
+                                _terminated_once = True
+                                deadline = (asyncio.get_event_loop().time()
+                                            + timeout_s)
+                                print(f"  ⏳ 预算重新计时 {timeout_s}s"
+                                      f"（刚才那段是卡顿，不是挑战）")
+                        except Exception as _te:
+                            print(f"  ⚠️  terminateExecution 也没答复: {_te}")
+                    # 📌 渲染进程不答**不等于页面没打开**。服务器发的那份
+                    # 早已捕获在手，而判定 DOI 根本不需要渲染进程 ——
+                    # 所以这里再问一次捕获，而不是空等到预算耗尽然后报
+                    # 「挑战未通过」。实测
+                    # 10.1016/j.bbamem.2016.02.003：页面其实好好地开着。
+                    if expected_doi and await _doi_in_captured_documents(
+                            ws, result["responses"], expected_doi):
+                        print(f"  ✅ 渲染进程不答，但 DOI [{expected_doi}] "
+                              f"见于捕获的响应 —— 页面已打开，照常继续")
+                        result["success"] = True
+                        result["ws_url"] = _current_ws_url
+                        result["target_id"] = (
+                            (_current_ws_url or '').rstrip("/").split("/")[-1])
+                        return result
 
                 await asyncio.sleep(check_interval)
 
@@ -2599,6 +2711,11 @@ async def bypass_cloudflare_cdp(
                       f"（title={title[:40]!r}, body={len(body_text)} 字, "
                       f"cf={'✓' if has_cf else '✗'}）")
                 print(f"      → 不是挑战未通过；通常是该文章没有访问权限/需订阅")
+            elif _renderer_silent:
+                # ⚠️ 「渲染进程不答」和「卡在挑战页」是两个答案，该查的东西
+                # 完全不同。报成挑战未通过会把人引去查反爬。
+                print(f"  ⏰  {timeout_s}s 内渲染进程始终不答 Runtime.evaluate"
+                      f"（不是挑战未通过；捕获到的响应仍照常交回）")
             else:
                 print(f"  ⏰  Cloudflare 挑战未在 {timeout_s}s 内通过")
             # Harvest even on timeout: a page that never satisfied the pass

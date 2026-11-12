@@ -356,6 +356,7 @@ Cloudflare 也不算数 —— clearance cookie 绑定在签发它的主机上�
 
 - `launch_chrome()` / `kill_chrome()` — 共享实例的启动与关闭
 - `bypass_cloudflare_cdp()` / `has_cf_clearance_cdp()` — 纯 CDP 过挑战
+  ⚠️ 轮询里每条 CDP 命令的上限收进**剩余挑战预算**（`min(CDP_CMD_TIMEOUT, 剩余)`）。`Runtime.evaluate` 超时多半是**页面脚本占满了渲染进程主线程**（它不会自己恢复），所以发一条 `Runtime.terminateExecution` 掐断它（走 V8 中断，不需要主线程空闲）并只补一次预算；同时用 `_doi_in_captured_documents()` 问一次捕获。CDP 消息 id 用 `itertools.count`——复用 id 会让 Chrome 以 `-32600 Duplicate id` 拒掉超时之后的每一条命令。`_harvest_document_bodies()` 有总预算（`getResponseBody` 也由渲染进程供货）
 - `open_url_via_cdp(url, port, ...)` — 「不接 Playwright、纯 CDP 打开并过挑战」，
   论文页预载与 PDF 下载共用
 - `open_url_in_fresh_chrome(url, ...)` — 起新 Chrome + 打开页面，返回 session
