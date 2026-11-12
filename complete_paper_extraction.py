@@ -1425,7 +1425,23 @@ class SharedBrowserSession:
 
     async def ensure_headless_context(self):
         if self.headless_context is not None:
-            return self.headless_context
+            # A persistent context may be closed underneath us when Chrome
+            # crashes or exits.  Keeping the Python object is not proof that
+            # the browser is alive: reusing such an object makes every later
+            # DOI fail with TargetClosedError.  Probe it with a throwaway page
+            # and rebuild the shared context if the probe fails.
+            try:
+                probe_page = await self.headless_context.new_page()
+                await probe_page.close()
+                return self.headless_context
+            except Exception as exc:
+                print(f"  ⚠️ 共享无头context已失效，将自动重建: {exc}")
+                try:
+                    await self.headless_context.close()
+                except Exception:
+                    pass
+                self.headless_context = None
+                self.headless_browser = None
 
         # A persistent context rather than launch(): the profile directory is
         # what carries always_open_pdf_externally. Without it real Chrome shows
