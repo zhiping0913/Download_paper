@@ -300,7 +300,7 @@ DP_SUPP_MAX_RETRIES = int(_env_seconds('DP_SUPP_MAX_RETRIES', 5)) # supplemental
 HEADLESS_ACCESSIBLE_PUBLISHERS = [
     'nature', 
     'aip', 
-    'cambridge', 
+    #'cambridge', 
     'springer', 
     'springer_book', 
     'oup', 
