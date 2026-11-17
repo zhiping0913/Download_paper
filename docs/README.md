@@ -645,6 +645,10 @@ PDF、图片和补充材料由主流程统一下载。publisher 只负责在 `li
 
 ### 文件类型检测
 
+`download_supplemental_materials()` 的 `tab` 层：导航用 `wait_until='commit'`，**拿到响应就说明 Chrome 在显示这个文件**（`text/plain`、图片、PDF）或者标签页里其实是一张网页 —— 两种情况都不会有 download 事件，所以此时只等 `DP_INLINE_SERVED_GRACE`（默认 5 s）而不是整份 `DP_SUPPLEMENTAL_TIMEOUT`（300 s），随后由既有的 `elif response` 分支读响应体落盘。真附件会用下载打断导航（`goto` 抛异常、`response is None`），长等待留给它。实测 Wiley `10.1029/2008JD009811` 的 5 个 `.txt`：改前每个先卡满 300 s，改后整段约 2 分钟。
+
+`WileyHandler.extract_supplemental_from_html()` 现在返回 `{'url', 'filename'}` 条目，`filename` 取自链接的 `file=` 查询参数 —— Wiley 的 URL basename 是端点名 `downloadSupplement`，不给提示的话一篇里的多个补充材料会**互相覆盖**。
+
 部分下载链接（如 figshare 的 `ndownloader.figstatic.com/files/{id}`）不含文件扩展名。`download_supplemental_materials()` 在保存文件后，会调用 `_detect_and_rename()` 通过 `python-magic` 读取文件头字节检测 MIME 类型，自动补齐正确的扩展名（`.pdf`、`.zip`、`.docx` 等）。MIME 到扩展名的映射定义在 `MIME_TO_EXT` 字典中。名字里已经有后缀时分两种：那个后缀是 `MIME_TO_EXT` 认识的内容后缀（且与字节不符）就**替换**它并打印一行，不认识的（`.cfm`、没有后缀）才**追加**；比较大小写不敏感。⚠️ 实测 Optica 的 `10.1364/OE.5.000196`：页面把 6 个文件列作 "GIF"、figshare 也按 `.GIF` 命名，而字节全是 JPEG —— 字节说了算；旧的「一律追加」会得到 `oe-5-10-196-m002.GIF.jpg` 和 `…m001.MOV.mov`。
 
 ## APS 当前实现

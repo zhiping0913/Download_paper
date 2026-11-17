@@ -854,6 +854,38 @@ metadata.json 可能对同一篇论文给出不同的标题**。J-STAGE 正是�
   图片扫描和正文遍历是两次独立解析，各自计数迟早会错位（ACS 就踩过），
   从标记里读编号就不会
 
+#### ❌ 补充材料全叫 `downloadSupplement`，而且每个文件先卡满 300 秒
+
+用户报告 `10.1029/2008JD009811`（JGR，5 个 `.txt`）：新标签页打开后
+**一直卡住不走下一步**，直到收尾才把 txt 存下来，而文件名是
+`supplemental--downloadSupplement.txt` —— **5 个文件互相覆盖**。两个独立的缺陷：
+
+- ❌ **文件名**：Wiley 的链接是
+  `/action/downloadSupplement?doi=…&file=jgrd14686-sup-0001-t01.txt`，
+  basename 就是端点名。现在 `_supplement_filename()` 从 `file=` 参数取出版商
+  自己的文件名（URL 解码、只留最后一段 —— 参数里真写了路径的话 `/` 会被当成
+  目录分隔符），条目改成 `{'url', 'filename'}`（同 T&F / iphy / AIP）。
+  ⚠️ `convert_to_markdown` 的那个循环也要跟着认 dict，否则 md 里的链接变成
+  一串 `{'url': …}`
+- ❌ **卡住的那 300 秒**：Chrome **会显示**它能显示的一切（`text/plain`、
+  图片、PDF、HTML），于是**永远不会触发 download 事件** —— 而导航已经
+  committed、响应就在手上。旧代码照样等满 `DP_SUPPLEMENTAL_TIMEOUT`
+  **（300s，每个文件各一次）**，然后在 `elif response` 分支里读的正是同一份
+  字节。📌 **判据是「导航 committed 出了一个响应」**：真附件会用下载打断导航，
+  `goto` 抛异常、`response` 是 `None` —— 那才是长等待存在的理由。有响应时
+  只留 `DP_INLINE_SERVED_GRACE`（默认 5s，为「挑战页通过后才真的开始下载」留口），
+  并明说是哪一种（`↪ 浏览器把它显示出来了（text/plain）` / `↪ 标签页里是网页不是文件`）
+- ⚠️ 这条**不是 Wiley 专有的**：任何出版商的 `.txt`/`.csv`/图片/PDF 补充材料
+  走到 `tab` 层都是这个形状。与「浏览器会播放/显示的文件用
+  `Network.loadNetworkResource` 取」那条同源，只是这里连取流都不必 ——
+  导航的响应本身就够
+- ✅ 实测同一条 DOI：5/5 落盘且**名字各不相同**
+  （`supplemental--jgrd14686-sup-0001-t01.txt` 870 B … `-0005-ta1.txt` 515 B，
+  与页面上印的 870 B / 805 B / 787 B / 1.1 KB / 515 B 逐个吻合，内容是
+  制表符分隔的 Table 1–4 和 A1），整段补充材料约 **2 分钟**而不是 25 分钟；
+  md 392 行、20 图、`paper.pdf` 8.61 MB。⚠️ 这 5 个文件**裸请求全是 403**，
+  所以回退到标签页是正常路径，不是故障
+
 ### ACS (`10.1021`, pubs.acs.org)
 
 - Silverchair 平台，服务端渲染，无正文 API：元数据来自 `<meta name="citation_*">`，

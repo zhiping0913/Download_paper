@@ -221,6 +221,14 @@ DP_SUPPLEMENTAL_TIMEOUT = _env_seconds('DP_SUPPLEMENTAL_TIMEOUT', 300)
 # slow link can still need more, which is what raising this is for.
 DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT = _env_seconds('DP_SUPPLEMENTAL_DOWNLOAD_COMPLETE_TIMEOUT', 300)
 
+# Grace period for a download event when the navigation ALREADY committed a
+# response -- i.e. Chrome is displaying the file (text/plain, image, PDF) or
+# the tab holds a web page instead of a file. No download event is coming in
+# that case; this only covers "a challenge page may still start one late".
+# ⚠️ Deliberately small: the alternative is paying DP_SUPPLEMENTAL_TIMEOUT
+# (300 s) per file for bytes that are already in hand.
+DP_INLINE_SERVED_GRACE = _env_seconds('DP_INLINE_SERVED_GRACE', 5)
+
 # Supplemental size cap — a supplement bigger than this is NOT kept.
 # Default: 200 MB. Conference recordings are the reason: ACM's
 # 10.1145/3712285.3771783 ships a **364 MB** MP4 of the talk, which is not
@@ -3006,6 +3014,27 @@ async def download_supplemental_materials(
                         success = True
                         break
 
+                # ❌ Chrome *renders* every file type it can display -- text/plain,
+                # images, PDF, HTML -- instead of downloading it, so no download
+                # event will ever fire. The navigation committed, which means we
+                # are already holding the response; waiting for the event burns
+                # the whole DP_SUPPLEMENTAL_TIMEOUT (300 s) PER FILE and then
+                # reads those very same bytes in the ``elif response`` branch
+                # below. 實測 10.1029/2008JD009811: five .txt supplements, each
+                # one stalling for the full budget before being saved at the end
+                # -- the run looked frozen while nothing was wrong.
+                # 📌 An attachment behaves differently: the download interrupts
+                # the navigation, so ``goto`` raises and ``response`` is None --
+                # that is the case the long wait exists for.
+                _inline_served = response is not None and not downloaded_file and _use_tab
+                if _inline_served:
+                    _ct0 = (response.headers.get('content-type') or '').split(';')[0].lower()
+                    if response.ok and _ct0 and 'text/html' not in _ct0:
+                        print(f"    ↪ 浏览器把它显示出来了（{_ct0}），不会触发下载事件 —— 直接取响应体")
+                    else:
+                        print(f"    ↪ 标签页里是网页不是文件（status={response.status}"
+                              f"{', ' + _ct0 if _ct0 else ''}），不等下载事件")
+
                 # 等待下载事件或超时。
                 # 对于 Cloudflare 等反爬挑战页面，需要给 JS 几秒钟时间通过 challenge
                 # 后才会触发实际的下载，所以等待时间放宽到 ~20 秒。
@@ -3018,10 +3047,14 @@ async def download_supplemental_materials(
                     if not downloaded_file and _use_tab:
                         # 期望下载事件在 DP_SUPPLEMENTAL_TIMEOUT 内触发；
                         # 外层 asyncio.wait_for 额外多 2 s 让 Playwright 有余量正常抛超时。
-                        _dl_ms = int(DP_SUPPLEMENTAL_TIMEOUT * 1000)
+                        # ⚠️ 已经committed出一份响应时只留很短的宽限（挑战页通过后
+                        # 可能迟一点才真的开始下载），而不是整份预算。
+                        _dl_budget = (DP_INLINE_SERVED_GRACE if _inline_served
+                                      else DP_SUPPLEMENTAL_TIMEOUT)
+                        _dl_ms = int(_dl_budget * 1000)
                         download_event = await asyncio.wait_for(
                             asyncio.create_task(download_page.wait_for_event("download", timeout=_dl_ms)),
-                            timeout=DP_SUPPLEMENTAL_TIMEOUT + 2
+                            timeout=_dl_budget + 2
                         )
                         if download_event:
                             # 同上：save_as 直接落到最终位置，不经 Playwright 的

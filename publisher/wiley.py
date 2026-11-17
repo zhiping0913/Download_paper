@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import re
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urljoin, urlparse, urlsplit
+from urllib.parse import parse_qs, unquote, urljoin, urlparse, urlsplit
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 
@@ -566,23 +566,50 @@ class WileyHandler(PublisherHandler):
     # Supporting Information
     # ==================================================================
 
+    @staticmethod
+    def _supplement_filename(url: str) -> str:
+        """The publisher's own filename, taken from the ``file=`` parameter.
+
+        ⚠️ The URL's basename is the endpoint name
+        (``/action/downloadSupplement?doi=…&file=jgrd14686-sup-0001-t01.txt``),
+        so without this hint every supplement of every article is saved as
+        ``supplemental--downloadSupplement`` — and an article with several
+        files overwrites its own earlier ones (實測 10.1029/2008JD009811,
+        5 files). Same lesson as T&F and iphy.
+        """
+        try:
+            values = parse_qs(urlsplit(url).query).get('file') or []
+        except Exception:
+            return ''
+        name = unquote((values[0] if values else '')).strip()
+        # Keep the last path segment only: the parameter is a filename, but a
+        # publisher is free to put a path in it, and a '/' would be read as a
+        # directory separator downstream.
+        name = name.replace('\\', '/').split('/')[-1]
+        return name
+
     @classmethod
-    def extract_supplemental_from_html(cls, html: str) -> Tuple[List[str], Dict[str, str], str]:
-        """``(urls, descriptions, summary_md)`` for Supporting Information."""
+    def extract_supplemental_from_html(cls, html: str) -> Tuple[List[dict], Dict[str, str], str]:
+        """``(links, descriptions, summary_md)`` for Supporting Information.
+
+        Each link is ``{'url', 'filename'}`` so the file lands under the name
+        the publisher gave it (see ``_supplement_filename``).
+        """
         if not html:
             return [], {}, ''
         soup = BeautifulSoup(html, 'html.parser')
 
         urls, descriptions = [], {}
-        for a in soup.find_all('a', href=re.compile('downloadSupplement')):
+        for a in soup.find_all('a', href=re.compile('downloadSupplement', re.I)):
             href = (a.get('href') or '').strip()
             if not href:
                 continue
             url = urljoin(cls.WILEY_BASE, href)
             if url in descriptions:
                 continue
-            urls.append(url)
-            descriptions[url] = a.get_text(' ', strip=True) or url
+            name = cls._supplement_filename(url)
+            urls.append({'url': url, 'filename': name} if name else {'url': url})
+            descriptions[url] = a.get_text(' ', strip=True) or name or url
 
         summary = ''
         section = soup.select_one('section.article-section__supporting')
@@ -1210,8 +1237,12 @@ class WileyHandler(PublisherHandler):
                     md.append(f"- `{item}`")
                 md.append('')
             else:
-                for url in supp_urls:
-                    md.append(f"- [{supp_desc.get(url, url)}]({self._md_url(url)})")
+                for entry in supp_urls:
+                    url = entry.get('url', '') if isinstance(entry, dict) else entry
+                    label = (supp_desc.get(url)
+                             or (entry.get('filename') if isinstance(entry, dict) else '')
+                             or url)
+                    md.append(f"- [{label}]({self._md_url(url)})")
                 md.append('')
 
         references = metadata.get('references') or []
