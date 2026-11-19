@@ -394,7 +394,9 @@ Cloudflare 也不算数 —— clearance cookie 绑定在签发它的主机上�
 - `10.7498`、`*.iphy.ac.cn` -> `iphy` **(物理学报等中科院物理所刊；正文来自页面自己 POST 的 articleFulltextData XHR，可无头)**
 - `10.1080`、`tandfonline.com` -> `tandf` **(abstract-only：网页公式多为图片，只抓摘要 + PDF + 补充材料；必须有头访问)**
 - `10.3367`、`ufn.ru` -> `ufn` **(abstract-only：俄英双版各有 DOI，俄文版为记录，英文版写进 additional_*；PDF 取俄文页；可无头)**
-- `sciencedirect.com`、`10.1016` -> `nature` (Elsevier 回退)
+- `science.org`（含 `spj.science.org`）、`10.1126` -> `science`
+- `sciencedirect.com`、`linkinghub.elsevier.com`、`10.1016` -> `sciencedirect`
+  ⚠️ **主机判定排在 DOI 之前**：AAAS 的 Science Partner Journals 住在 `spj.science.org`，而文章保留原出版商的前缀，所以 `10.1016/j.csbj.2024.11.030` 落地的 URL 同时带两个信号；按 DOI 先判会把它交给 ScienceDirect handler，PDF 直接拿不到。`ScienceHandler` 的 PDF/图片/补充材料地址也一律用**落地主机**（`_site_base()`）而不是写死的 `www.science.org`。
 - `epj-conferences.org`、`10.1051` -> `nature` (EDP Sciences 回退)
 - `arxiv.org` -> `arxiv`
 - 其他 -> `unknown`

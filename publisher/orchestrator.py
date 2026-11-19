@@ -239,10 +239,20 @@ def detect_publisher_from_url(url: str) -> str:
         return 'sciencedirect'
     elif 'linkinghub.elsevier.com' in url_lower:
         return 'sciencedirect'
-    elif '10.1016' in url_lower:
-        return 'sciencedirect'
+    # ⚠️ **The host must be tested before the 10.1016 prefix.** AAAS runs the
+    # *Science Partner Journals* on spj.science.org, and those journals keep
+    # their own publisher's DOI prefix: 10.1016/j.csbj.2024.11.030 lands on
+    #   https://spj.science.org/doi/10.1016/j.csbj.2024.11.030
+    # so a URL carrying **both** signals exists. With '10.1016' first, the
+    # landed URL was still routed to ScienceDirect -- whose selectors match
+    # nothing on an AAAS page, and whose PDF link does not exist there, so
+    # the run produced no PDF and said nothing about why. Same lesson as the
+    # SPIE/researching 10.3788 pair above: when one URL carries two signals,
+    # the host is the one that says where the article actually lives.
     elif 'science.org' in url_lower:
         return 'science'
+    elif '10.1016' in url_lower:
+        return 'sciencedirect'
     elif '10.1126' in url_lower:
         return 'science'
 

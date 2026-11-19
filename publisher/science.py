@@ -812,7 +812,7 @@ class ScienceHandler(PublisherHandler):
         doi_for_pdf = meta.get('doi') or self.doi
         pdf_url = ''
         if doi_for_pdf:
-            pdf_url = f"{self.SCIENCE_BASE}/doi/pdf/{doi_for_pdf}?download=true"
+            pdf_url = f"{self._site_base()}/doi/pdf/{doi_for_pdf}?download=true"
 
         return {
             'title': meta.get('title') or 'Science Article',
@@ -820,7 +820,15 @@ class ScienceHandler(PublisherHandler):
             'author_with_affiliations': [],
             'corresponding_author_emails': [],
             'abstract': abstract,
-            'journal': meta.get('journal') or 'Science',
+            # ⚠️ **Do not fall back to "Science".** The Science Partner
+            # Journals are other publishers' titles hosted on
+            # spj.science.org, and that page carries no
+            # citation_journal_title at all -- so the old default wrote
+            # "Science" into metadata.json for an article that is really in
+            # *Computational and Structural Biotechnology Journal* (实测
+            # 10.1016/j.csbj.2024.11.030). Empty lets the Crossref merge in
+            # the main flow supply the real name.
+            'journal': meta.get('journal') or '',
             'publisher': meta.get('publisher') or 'American Association for the Advancement of Science',
             'publication_date': meta.get('publication_date'),
             'doi': meta.get('doi') or self.doi,
@@ -840,11 +848,35 @@ class ScienceHandler(PublisherHandler):
                 pass
         return f"https://doi.org/{self.doi}" if self.doi else None
 
+    def _site_base(self) -> str:
+        """The host the article actually lives on.
+
+        ⚠️ **Not always www.science.org.** AAAS runs the *Science Partner
+        Journals* on ``spj.science.org``, and those journals keep their own
+        publisher's DOI prefix -- ``10.1016/j.csbj.2024.11.030`` lands on
+        ``https://spj.science.org/doi/10.1016/j.csbj.2024.11.030``. Building
+        the PDF link from the hard-coded base gave a www.science.org URL for
+        an article that is not there, so no PDF came back. The landed URL
+        (``actual_base_url``, set by ``set_actual_base_url``; the pinned
+        ``_landing_url`` when the page is gone) is what settles it -- the
+        same rule the figures and supplementary links already follow.
+        """
+        base = (getattr(self, 'actual_base_url', '') or '').strip()
+        if base:
+            return base.rstrip('/')
+        landing = (getattr(self, '_landing_url', '') or '').strip()
+        if landing:
+            from urllib.parse import urlparse
+            parsed = urlparse(landing)
+            if parsed.scheme and parsed.netloc:
+                return f"{parsed.scheme}://{parsed.netloc}"
+        return self.SCIENCE_BASE
+
     async def get_pdf_url(self, doi: str) -> str:
         doi = doi or self.doi
         if not doi:
             return None
-        return f"{self.SCIENCE_BASE}/doi/pdf/{doi}?download=true"
+        return f"{self._site_base()}/doi/pdf/{doi}?download=true"
 
     async def get_supplemental_url(self, doi: str) -> str:
         return None

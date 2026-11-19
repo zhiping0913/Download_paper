@@ -168,6 +168,38 @@ python complete_paper_extraction.py --file dois.txt         # 批量（主程序
   2. **CDP 会话建不起来要明说**。没有它，查找退化成"只看 DOM 可见部分"，
      而在当前的 Cloudflare 上那等于永久失明，却会报成"这页没有框"
 
+#### ❌ Science Partner Journals 住在 `spj.science.org`，而 DOI 还是原出版商的
+
+用户报告 `10.1016/j.csbj.2024.11.030`：**DOI 看着像 ScienceDirect，落地却在
+science**，而程序一路当它是 sciencedirect，于是 **PDF 没拿到**。
+实测 `doi.org` 的 302 指向
+
+```
+https://spj.science.org/doi/10.1016/j.csbj.2024.11.030
+```
+
+—— 一个**同时带两个信号**的 URL。两个独立的缺陷：
+
+- ❌ **路由**：`detect_publisher_from_url` 里 `10.1016` 这条排在 `science.org`
+  **前面**，于是落地后的重新判定仍答 sciencedirect —— SD 的选择器在 AAAS 页面上
+  一个都不命中，而它推出来的 PDF 地址在那边根本不存在。现在**主机先判、DOI 后判**
+  （与上面 SPIE/researching 的 10.3788 同一个教训：一条 URL 带两个信号时，
+  主机才说得清文章住在哪）。⚠️ 导航**之前**仍按 `10.1016` 猜 sciencedirect ——
+  那时只有 DOI，而两家都要有头，猜错不影响
+- ❌ **PDF 地址写死了 `www.science.org`**（`SCIENCE_BASE`）。Partner Journal 不在
+  那个主机上，所以链接指向一篇不存在的文章。现在 `_site_base()` 取**落地主机**
+  （`actual_base_url`，退而取钉住的 `_landing_url`）—— 图片和补充材料本来就是这么做的
+- ❌ **顺带：这一页没有任何 `citation_*`**（整份响应里只有
+  `citation_fulltext_world_readable`），而 handler 的 journal 兜底是字面的
+  `'Science'` —— 于是 `metadata.json` 宣称这篇发在 *Science* 上，而它其实是
+  *Computational and Structural Biotechnology Journal*。兜底改成空串，并给主流程
+  补上**一条 Crossref 的 journal 合并**（只在 handler 没给时填 —— 以前
+  `journal` 压根不参与 Crossref 合并，页面不印刊名就只能空着或留下一个假值）
+- ✅ 实测同一条 DOI：`✓ 检测出版商: SCIENCE` →
+  `链接: https://spj.science.org/doi/pdf/10.1016/…?download=true` →
+  `paper.pdf` **1.24 MB**、md **731 行**、4 张图落盘；`metadata.json` 的 journal
+  改后是 *Computational and Structural Biotechnology Journal*
+
 ### ⚠️ 未解决：框打勾了、clearance 到手了，页面有时就是不往下走
 
 - 📌 实测产线（`FRESH_PROFILE=1`）：点击 → `✓ Turnstile 验证已通过（iframe 消失）`

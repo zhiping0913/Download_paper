@@ -3907,6 +3907,14 @@ async def complete_extraction_workflow(
                 metadata['year'] = str(crossref_data['year'])
             if crossref_data.get('title') and not metadata.get('title'):
                 metadata['title'] = crossref_data['title']
+            # The journal name. ⚠️ Previously not merged at all, so a page
+            # that does not print its own journal left metadata.json's
+            # 'journal' empty -- or, worse, carrying a handler's hard-coded
+            # default (Science's was literally "Science", wrong for every
+            # Science Partner Journal). Crossref's container-title is the
+            # record; the handler's value still wins when it has one.
+            if crossref_data.get('journal') and not metadata.get('journal'):
+                metadata['journal'] = crossref_data['journal']
             if crossref_data.get('publisher') and not metadata.get('publisher'):
                 metadata['publisher'] = crossref_data['publisher']
             if crossref_data.get('type') and not metadata.get('type'):
