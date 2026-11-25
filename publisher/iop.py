@@ -967,6 +967,47 @@ class IOPHandler(PublisherHandler):
                 pass
         return f"https://doi.org/{self.doi}" if self.doi else None
 
+    IOP_BASE = 'https://iopscience.iop.org'
+
+    def _site_base(self) -> str:
+        """scheme://host of the landed article page (fallback: IOP_BASE)."""
+        from urllib.parse import urlparse
+        for cand in (getattr(self, 'actual_base_url', '') or '',
+                     getattr(self, '_landing_url', '') or ''):
+            parsed = urlparse(cand.strip())
+            if parsed.scheme and parsed.netloc and 'doi.org' not in parsed.netloc:
+                return f"{parsed.scheme}://{parsed.netloc}"
+        return self.IOP_BASE
+
+    def _normalize_pdf_url(self, url: str) -> str:
+        """Fix the host of a ``citation_pdf_url``.
+
+        ⚠️ **IOP's meta tag can name a dead host.** Some articles (实测
+        ``10.1088/1742-6596/2219/1/012030``) declare
+        ``https://cloudflare.iopscience.iop.org/article/{doi}/pdf`` -- a
+        legacy alias that now points at a CloudFront distribution, not the
+        site. The real PDF lives at the *path* ``/article/{doi}/pdf`` on the
+        host the article itself is served from. So: keep the path and
+        query, take the host from the landed page. A relative value is
+        resolved the same way.
+        """
+        if not url:
+            return url
+        from urllib.parse import urlparse, urlunparse
+        url = url.strip()
+        base = self._site_base()
+        parsed = urlparse(url)
+        if not parsed.netloc:
+            return urljoin(base + '/', url)
+        host = parsed.netloc.lower()
+        if host != 'iopscience.iop.org' and host.endswith('iopscience.iop.org'):
+            b = urlparse(base)
+            fixed = urlunparse((b.scheme or 'https', b.netloc,
+                                parsed.path, parsed.params, parsed.query, ''))
+            print(f"    ↪ citation_pdf_url 的主机 {parsed.netloc} 已失效，改用 {b.netloc}: {fixed}")
+            return fixed
+        return url
+
     async def get_pdf_url(self, doi: str) -> str:
         """PDF URL is extracted from citation_pdf_url meta tag in extract_metadata."""
         return None
@@ -1002,7 +1043,7 @@ class IOPHandler(PublisherHandler):
             metadata = await self.extract_metadata(page)
             metadata['doi'] = doi
 
-            pdf_url = metadata.pop('_pdf_url', None)
+            pdf_url = self._normalize_pdf_url(metadata.pop('_pdf_url', None))
             keywords = metadata.pop('_keywords', [])
 
             # Same here: body, figures, tables, references and footnotes are

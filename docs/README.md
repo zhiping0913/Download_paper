@@ -804,6 +804,9 @@ IOP 由 `publisher/iop.py` 的 `IOPHandler` 处理。
 
 - `10.1088`、`iopscience.iop.org` 会被识别为 `iop`。
 - IOP **不在** `HEADLESS_ACCESSIBLE_PUBLISHERS` 中，默认需要有头 Chrome，经过标准有头路径访问。
+- PDF 链接取 `citation_pdf_url`，经 `_normalize_pdf_url()` 归一：⚠️ 部分文章声明的是失效主机
+  `cloudflare.iopscience.iop.org`（实测 `10.1088/1742-6596/2219/1/012030`），保留路径 `/article/{doi}/pdf`、
+  主机换成落地页的 `iopscience.iop.org`；相对路径同样补全。
 
 ### metadata 提取
 

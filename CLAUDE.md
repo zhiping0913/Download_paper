@@ -1596,6 +1596,22 @@ Playwright 里这几个调用**都不接受 `timeout=`**，也不受 `set_defaul
   `retry_download`「成了」，于是重试、回退低清链接、`fresh` 层全被跳过，只留下一个
   0 字节的 `.jpg` —— 事后还分辨不出它和真图的区别
 
+### ❌ IOP 的 `citation_pdf_url` 可能指向一个失效的主机
+
+用户报告 `10.1088/1742-6596/2219/1/012030`：页面声明
+`https://cloudflare.iopscience.iop.org/article/{doi}/pdf`，而真正的 PDF 在
+**`/article/{doi}/pdf`，主机是文章页自己的 `iopscience.iop.org`**。
+`cloudflare.iopscience.iop.org` 现在 CNAME 到一个 CloudFront 分发，不是站点
+（多半是旧链接残留）。
+
+- 📌 `IOPHandler._normalize_pdf_url()`：**保留路径和查询串，主机取落地页**
+  （`actual_base_url`，退而取 `_landing_url`，再退 `iopscience.iop.org`）；
+  相对路径用 `urljoin` 补全。只改写 `*.iopscience.iop.org` 这类**子域名**，
+  正常的 `iopscience.iop.org` 原样不动；改写时打印一行，免得日志里的链接和页面上的对不上
+- ✅ 实测同一条 DOI：`↪ citation_pdf_url 的主机 cloudflare.iopscience.iop.org 已失效`
+  → `链接: https://iopscience.iop.org/article/…/pdf` → `paper.pdf` **3.64 MB**
+  （PDF 1.4、7 页），`metadata.json` 的 `pdf_link` 也是改后的地址
+
 ### ❌ IOP 的 md 里残留 `{xmlns:xlink="http://www.w3.org/1999/xlink"}`
 
 用户报告。**命名空间声明不是内容**，而 pandoc 会把它不认识的属性原样写成花括号
