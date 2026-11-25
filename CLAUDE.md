@@ -1604,10 +1604,12 @@ Playwright 里这几个调用**都不接受 `timeout=`**，也不受 `set_defaul
 `cloudflare.iopscience.iop.org` 现在 CNAME 到一个 CloudFront 分发，不是站点
 （多半是旧链接残留）。
 
-- 📌 `IOPHandler._normalize_pdf_url()`：**保留路径和查询串，主机取落地页**
-  （`actual_base_url`，退而取 `_landing_url`，再退 `iopscience.iop.org`）；
-  相对路径用 `urljoin` 补全。只改写 `*.iopscience.iop.org` 这类**子域名**，
-  正常的 `iopscience.iop.org` 原样不动；改写时打印一行，免得日志里的链接和页面上的对不上
+- 📌 `IOPHandler._normalize_pdf_url()`：**保留路径和查询串，scheme + 主机取最终页面 URL**
+  （`actual_base_url`，即 `page.url`；页面没了退而取钉住的 `_landing_url`）；
+  相对路径用 `urljoin` 补全。⚠️ **主机名不硬编码**：判据是「声明的主机 ≠ 落地主机」，
+  不是「是不是某个已知的坏子域名」—— 落地 URL 是唯一知道文章住在哪的东西。
+  主机一致时原样不动；改写时打印一行，免得日志里的链接和页面上的对不上；
+  两个 URL 都不知道时原样返回（相对路径会明说补不全），不去猜一个主机
 - ✅ 实测同一条 DOI：`↪ citation_pdf_url 的主机 cloudflare.iopscience.iop.org 已失效`
   → `链接: https://iopscience.iop.org/article/…/pdf` → `paper.pdf` **3.64 MB**
   （PDF 1.4、7 页），`metadata.json` 的 `pdf_link` 也是改后的地址
