@@ -392,7 +392,9 @@ Cloudflare 也不算数 —— clearance cookie 绑定在签发它的主机上�
 - `10.1051` -> `edp`（**不记域名清单**：EDP 一个刊一个域名且有几十个，导航前靠前缀，导航后靠 `detect_publisher_from_html()` 读页面自己的 `citation_publisher`） **(EDP Sciences；一个平台多个刊域名。正文/公式在原始响应里（`data-latex` 里是作者的 LaTeX；没有该属性的刊走 MathML→LaTeX，再不行才引用公式图），但**表格内容与高清图不在**：表在 `T<N>.html`、原图在 `F<N>.html` 的 `a.btn2.original`（.tif），Movies/补充材料在 `/olm/` 页（两种形状），参考文献在 `/ref/` 页 —— 这些页面全部取回、落盘到 `html/`，再对着本地文件解析。PDF 取 `citation_pdf_url`。⚠️ `doi.org` 可能落在 `/abs/` 摘要页，按 `citation_fulltext_html_url` 再跳一次并落盘 `full_html.html`；没有 full html 的（如 EPJ Web of Conferences）只产出摘要 + PDF。必须有头，且真实 Chrome profile 要**对每个域名各访问过一次**（DataDome，cookie 按域名隔离）)**
 - `10.1142`、`worldscientific.com` -> `worldscientific` **(Atypon 旧皮肤，WorldScientificHandler 继承 ACMHandler；正文按 h2 平铺遍历，table.listgroup 其实是列表，元数据同样是 Dublin Core；PDF 构造 `/doi/pdf/{doi}?download=true`；必须有头访问)**
 - `10.7498`、`*.iphy.ac.cn` -> `iphy` **(物理学报等中科院物理所刊；正文来自页面自己 POST 的 articleFulltextData XHR，可无头)**
-- `10.1080`、`tandfonline.com` -> `tandf` **(abstract-only：网页公式多为图片，只抓摘要 + PDF + 补充材料；必须有头访问)**
+- `10.1080`、`tandfonline.com` -> `tandf` **（完整正文；必须有头访问）**：公式取 MathML（没有时引用远端 GIF），
+  原图取内联的 `tandf.tfviewerdata`，表格点页面的 Download CSV、落盘为 `html/table_T000N.csv` 再转成 md 表格
+  （拿不到时用内嵌表格 HTML），补充材料先问 figshare 再补页面链接、按文件名去重
 - `10.3367`、`ufn.ru` -> `ufn` **(abstract-only：俄英双版各有 DOI，俄文版为记录，英文版写进 additional_*；PDF 取俄文页；可无头)**
 - `science.org`（含 `spj.science.org`）、`10.1126` -> `science`
 - `sciencedirect.com`、`linkinghub.elsevier.com`、`10.1016` -> `sciencedirect`

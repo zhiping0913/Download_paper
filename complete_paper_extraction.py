@@ -3917,6 +3917,14 @@ async def complete_extraction_workflow(
                 metadata['journal'] = crossref_data['journal']
             if crossref_data.get('publisher') and not metadata.get('publisher'):
                 metadata['publisher'] = crossref_data['publisher']
+            # Volume / issue / pages, same rule: only where the page said
+            # nothing. ⚠️ Not merged before, so a page whose markup omits
+            # them (T&F's ld+json has no page range; 实测
+            # 10.1080/00268976.2020.1802525 left volume and pages empty while
+            # Crossref has 119 / e1802525) wrote blanks into metadata.json.
+            for _key in ('volume', 'issue', 'pages'):
+                if crossref_data.get(_key) and not str(metadata.get(_key) or '').strip():
+                    metadata[_key] = str(crossref_data[_key])
             if crossref_data.get('type') and not metadata.get('type'):
                 metadata['type'] = crossref_data['type']
             # Store Crossref reference data for unified BibTeX generation

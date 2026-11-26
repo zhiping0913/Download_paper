@@ -447,7 +447,7 @@ Step 0 那一次 Crossref 响应、只为取文件起一次浏览器、以 PDF �
 | `10.1145` | ACMHandler | **有头** | 完整（开放获取有正文，gated 的只有摘要）|
 | `10.1073` / pnas.org | PNASHandler | 有头 | 完整（复用 ACM 那套 Atypon 遍历）|
 | `10.7498` / iphy.ac.cn | IPhyHandler | 无头 | 完整（正文来自单独的 XHR）|
-| `10.1080` / tandfonline.com | TandFHandler | 有头 | **abstract-only** — 见下 |
+| `10.1080` / tandfonline.com | TandFHandler | 有头 | 完整（表格取页面的 Download CSV）— 见下 |
 | `10.3367` / ufn.ru | UFNHandler | 无头 | **abstract-only**（俄英双版）— 见下 |
 | `10.1109` | IEEEHandler | 有头 | 完整（REST 接口） |
 | `10.1021` | ACSHandler | 有头 | 完整 |
@@ -3236,31 +3236,71 @@ Optica → None；Elsevier → None；Nature → `nature`；iphy → `iphy`
 
 ### Taylor & Francis (`10.1080`, tandfonline.com)
 
-**刻意只抓摘要。** ⚠️ 这家的网页公式**大多是图片**，不是 MathJax 也不是 LaTeX，
-而且有真标记的只是近几年的文章。抓正文会得到一篇公式全是无法还原的图片的稿子 ——
-**一个悄悄丢掉数学的正文比没有正文更糟**，所以这个 handler 不假装有正文，
-md 里明说「正文见 paper.pdf」。
+**完整正文**（用户要求从 abstract-only 升级）。整篇在原始响应的 `div.hlFld-Fulltext` 里，
+服务端渲染，所以全部离线解析 `page_raw.html`；唯一要回页面的是表格 CSV。
 
-- **元数据和摘要全在 `<script type="application/ld+json">`** 的 `ScholarlyArticle`
-  节点里：标题、摘要、作者、关键词、日期、页码范围，纯文本、已装配好，不用爬 DOM
-- ⚠️ **那些节点是嵌套的**：一个 `<script>` 里是个列表，第二个元素是 `@graph` 包装，
-  文章节点在里面。只看顶层只会找到一个 `BreadcrumbList`
-- **PDF 用页面自己的 "Download PDF" 链接**（`/doi/pdf/{doi}`）。⚠️ **不要用它先展示的
-  `/doi/epdf/...?needAccess=true`** —— 那是在线阅读器，导航过去永远不会触发下载
-- **补充材料在 `div.supplemental-material-container`**：每个文件一个
-  `div.supplement-box`，文件名在 `<h3>`、链接是
-  `/action/downloadSupplement?doi=…&file=…`。📌 文件名要作为 `filename` 提示传下去 ——
-  URL 的 basename 是 `downloadSupplement`，不给提示的话每篇每个文件都叫这个名字
-- ⚠️ **`isAccessibleForFree` 不要转成 `access: False`**。它说的是「这篇是否免费」，
-  不是「我们能不能读」—— 机构订阅正是它看不见的那种情况，而错误的 `False` 会
-  **静默跳过一篇本来能下的文章**（见 access 判定那节）
-- ✅ 实测 `10.1080/14685248.2018.1462496`：标题 / 4 位作者 / 摘要 1,334 字符 /
-  4 个关键词 / 页码 463-492 全部来自 ld+json，`paper.pdf` 5.65 MB（31 页），md 37 行
-- 📌 **那个 `.avi` 补充材料本机拿不到，而这是正确结果**：直接请求 403、浏览器标签页
-  回来的是 `text/html` 403、一次性 Chrome 拿回的是网页。这篇 `isAccessibleForFree`
-  是 `false` 且本机没有 T&F 订阅 —— 链接照常写进 md（指向远程），日志明说
-  「通常是该文章没有访问权限/需订阅」。⚠️ 有意思的是**同一篇的 PDF 下得到** ——
-  所以「补充材料 403」不能用来推断整篇没权限，更不该据此返回 `access: False`
+| 东西 | 在哪 |
+|---|---|
+| 元数据 | `<script type="application/ld+json">`（嵌套在 `@graph` 里，要拍平）。⚠️ 卷号挂在 `PublicationIssue.isPartOf`（`["PublicationVolume","Periodical"]`）上，不是顶层节点 |
+| 摘要 | 渲染出来的 `div.hlFld-Abstract#abstractId1`，走公式管道；ld+json 那份是纯文本，只作兜底 |
+| Graphical Abstract | 带 `h2#graphical-abstract` 的那个 `hlFld-Abstract` → `key_image` |
+| 正文 | `div.NLM_sec`（`NLM_sec_level_N`）+ `h2/h3/h4.section-heading-N` + 普通 `<p>` |
+| 图 | `div.figureView` |
+| 表 | `div.tableView`（**只有表题和按钮**）|
+| 参考文献 | `ul.references > li`（`ul.getFTR[data-target]` 是该条的 DOI）|
+
+- ⚠️ **每个公式出现两遍**：`span.NLM_disp-formula-image`（GIF，地址在
+  `data-formula-source` 的 JSON 里）+ `span.NLM_disp-formula`（MathML）。用 MathML；
+  **没有 MathML 孪生的才退到 GIF**，引用远端不下载（同 SPIE/PNAS）。实测 2018 年的
+  `10.1080/14685248.2018.1462496` **全是 GIF**（416 个 `data-formula-source`、0 个
+  `<math>`），2020 年的 `10.1080/00268976.2020.1802525` 130 对全有 MathML
+- ⚠️ **独立公式写在 `<p>` 里面**，编号在 `span.mathjaxLabel`（"(1) "）→ `\tag{1}`。
+  T&F 把每个独立公式都包成 `mtable`，pandoc 会印成 `\begin{matrix}{…}`：1×1 的直接拆掉，
+  多行且 `columnalign` 是 right/left 交替的改成 `aligned`
+- ⚠️ **`span.hidden` 是被交叉引用的那个公式的完整副本**（每处 "Equation (1)" 都带一份），
+  不删就会把公式在正文里多印一遍；`span.off-screen`（"Citation"/"Equation" 读屏词）同理
+- ⚠️ **页面上的 `<img>` 是 500 px 预览，而且原图的 asset id 不一样**（实测 Fig. 1：
+  页面 `20c2ef26-…/…_f0001_oc.jpg`，原图 `0261a6bb-…/…_f0001_oc.jpg`）。原图只在
+  **`tandf.tfviewerdata`** 这个内联 JSON 里（"Display full size" 查看器的数据，就在原始响应里）。
+  三个坑：
+  1. 查看器条目里**第一个 `<img>` 不是图**——图注里的公式是 `<img src="//:0">` 占位，排在前面。
+     取 `id="fig-…"` 且 src 真实的那个
+  2. **id 大小写不一致**：老文章查看器里写 `f0004`、页面按钮写 `F0004`，按原样匹配就落回预览 GIF。
+     一律小写比
+  3. **图的 id 要从它自己的控件读**（`a.thumbnail` / `button.show-full-size`）：图注里引用了表格时，
+     第一个 `[data-id]` 是那张表的（实测 2018 那篇 Fig. 4 先给出 `t0001`）
+- **表格走页面自己的 "Download CSV"**（用户要求）：每张表落盘成 `html/table_T000N.csv`，
+  再转成 pipe 表格进 md。
+  - ❌ **`fetch()` 和裸请求都是 403**（带 cookie 也一样，5 张表全中）；**真点击按钮**和
+    **新标签页打开 CSV 地址**都拿得到 —— 这个端点只认导航，不认程序化请求。所以顺序是
+    ① `page.expect_download` + 点击文章页上的按钮 → ② 新标签页 `goto`（捕获打断导航的下载）
+  - CSV 的跨列表头用**空格子**表示（`"","Cyclohexane",,"Dichloromethane",,…`），照原样进表格。
+    ⚠️ **CSV 会丢上下标**：表格 HTML 里是 `S<sub>0</sub>`，CSV 里是 `S0`。这是选 CSV 的代价
+  - 只在第一列有字、其余全空的首尾行才当表题/表注提出来；⚠️ 不能用"只有一个非空格子"判 ——
+    跨列表头 `"","Energy",,,` 也只有一个
+  - **兜底是 `tfviewerdata` 里的表格 HTML**（CSV 拿不到，或 `settings.hasCsvFormat=false` ——
+    2018 那篇两张表都是 false、页面上也没有 CSV 按钮）。它带 colspan 和上下标，走 pandoc gfm
+- **补充材料先问 figshare**（按 `resource_doi` 检索并核验，复用 AIP 那套）：页面上的
+  `div.figshare_widget` 是 JS 填的，原始响应里没有。figshare 公开给文件、而且是**出版商自己的文件名**
+  （`S1_Virial Formula.pdf`、`S2_Virial Data.docx`）。页面上的 `/action/downloadSupplement`
+  链接随后补充，**按文件名去重**
+  - ⚠️ **页面上的 `.zip` 是 figshare 那几个文件的打包**：实测 `tmph_a_1802525_sm0135.zip`
+    里正好是那两个文件、字节数一致。所以 figshare 有答案时跳过页面上的压缩包（日志会说）
+- 引文是数字（含 `1–20`、`36-47` 这种范围）就编号 `[N]`，否则（作者-年份制）列成圆点
+- 出版商自己的 typo 修一处：`href="https://doi.org/https://doi.org/10.1080/…"`
+- ⚠️ **`isAccessibleForFree` 不要转成 `access: False`**（它说的是"免不免费"，不是"我们能不能读"）
+- 📌 **主流程顺带补了一条 Crossref 合并**：`volume` / `issue` / `pages` 只在 handler 没给时填。
+  T&F 的 ld+json 没有页码，以前 `metadata.json` 里这几栏空着，而 Crossref 有（`119` / `e1802525`）
+- ✅ 实测：
+
+  | | `10.1080/00268976.2020.1802525` | `10.1080/00268976.2026.2756513` | `10.1080/14685248.2018.1462496` |
+  |---|---|---|---|
+  | md | 291 行 | 332 行 | 438 行 |
+  | 公式 | MathML，12 个独立公式全带 `\tag` | 无 | **全 GIF**（远端引用）|
+  | 图 | 8 张原图 + GA | 5 张原图 + GA | 16 张原图 |
+  | 表 | 无 | **5 张 CSV**（477–612 B，点击按钮取得）| 2 张（无 CSV，用内嵌 HTML）|
+  | 参考文献 | 26 条 | 80 条 | 47 条 |
+  | 补充材料 | figshare 2 个（zip 跳过）| figshare 1 个（页面同名 docx 去重）| — |
 
 ### iphy（中科院物理所平台，`10.7498`、`*.iphy.ac.cn`）
 
