@@ -3243,7 +3243,7 @@ Optica → None；Elsevier → None；Nature → `nature`；iphy → `iphy`
 |---|---|
 | 元数据 | `<script type="application/ld+json">`（嵌套在 `@graph` 里，要拍平）。⚠️ 卷号挂在 `PublicationIssue.isPartOf`（`["PublicationVolume","Periodical"]`）上，不是顶层节点 |
 | 摘要 | 渲染出来的 `div.hlFld-Abstract#abstractId1`，走公式管道；ld+json 那份是纯文本，只作兜底 |
-| Graphical Abstract | 带 `h2#graphical-abstract` 的那个 `hlFld-Abstract` → `key_image` |
+| Graphical Abstract | 带 `h2#graphical-abstract` 的那个 `hlFld-Abstract` → `key_image`；图注和 "detailed figure description" 与正文图**走同一个 `_render_figure`**（只是占位符换成 `[KEY_IMAGE]`、不占 `FIGURE_N` 编号）|
 | 正文 | `div.NLM_sec`（`NLM_sec_level_N`）+ `h2/h3/h4.section-heading-N` + 普通 `<p>` |
 | 图 | `div.figureView` |
 | 表 | `div.tableView`（**只有表题和按钮**）|

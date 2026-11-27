@@ -438,10 +438,18 @@ class TandFHandler(PublisherHandler):
     # Body walk
     # ------------------------------------------------------------------
 
-    def _render_figure(self, fv: Tag, out: List[str], counter: List[int]) -> None:
-        counter[0] += 1
-        number = counter[0]
-        out.append(f"[FIGURE_{number}]")
+    def _render_figure(self, fv: Tag, out: List[str], counter: List[int],
+                       placeholder: str = '') -> None:
+        """Image placeholder + caption + "detailed figure description".
+
+        Body figures and the graphical abstract both go through here, so the
+        two can never drift apart; the GA passes its own placeholder instead
+        of taking a ``[FIGURE_N]`` slot.
+        """
+        if not placeholder:
+            counter[0] += 1
+            placeholder = f"[FIGURE_{counter[0]}]"
+        out.append(placeholder)
         caption = fv.select_one('p.captionText')
         if caption is not None:
             label = caption.select_one('span.captionLabel')
@@ -544,6 +552,19 @@ class TandFHandler(PublisherHandler):
         if extra is not None:
             self._prepare(extra)
             self._walk(extra, out, [0])
+        return '\n\n'.join(x for x in out if x.strip())
+
+    def graphical_abstract_markdown(self, html: str) -> str:
+        """The GA block, rendered like a body figure; image as ``[KEY_IMAGE]``."""
+        soup = parse_article_html(html)
+        ga = next((d for d in soup.select('div.hlFld-Abstract')
+                   if d.select_one('#graphical-abstract')), None)
+        fv = ga.select_one('div.figureView') if ga is not None else None
+        if fv is None:
+            return ''
+        self._prepare(fv)
+        out: List[str] = []
+        self._render_figure(fv, out, [0], placeholder='[KEY_IMAGE]')
         return '\n\n'.join(x for x in out if x.strip())
 
     # ------------------------------------------------------------------
@@ -1047,11 +1068,14 @@ class TandFHandler(PublisherHandler):
         if metadata.get('_keywords'):
             md.extend(['**Keywords:** ' + ', '.join(metadata['_keywords']), ''])
 
+        html = article_text if isinstance(article_text, str) else ''
         ga = key_image or metadata.get('key_image_url')
         if ga:
-            md.extend(['### Graphical Abstract', '', f"![Graphical Abstract]({ga})", ''])
+            image = f"![Graphical Abstract]({ga})"
+            block = self.graphical_abstract_markdown(html) if html else ''
+            block = block.replace('[KEY_IMAGE]', image) if block else image
+            md.extend(['### Graphical Abstract', '', block, ''])
 
-        html = article_text if isinstance(article_text, str) else ''
         body = self.body_markdown(html) if html else ''
         md.extend(['---', '', '## Article Text', ''])
         if body:
