@@ -532,9 +532,18 @@ class TandFHandler(PublisherHandler):
                 btn = tv.select_one('[data-id]')
                 tid = btn.get('data-id', '') if btn else ''
             tv['dptable'] = tid     # not data-*: _prepare strips those
+        # "Additional information" (Funding, …) is a sibling of the
+        # full-text container, not inside it -- walking only the container
+        # silently drops it.  Grab it before _prepare strips ids.
+        extra = soup.select_one('div#infos-holder')
+        if extra is not None and root in extra.parents:
+            extra = None
         self._prepare(root)
         out: List[str] = []
         self._walk(root, out, [0])
+        if extra is not None:
+            self._prepare(extra)
+            self._walk(extra, out, [0])
         return '\n\n'.join(x for x in out if x.strip())
 
     # ------------------------------------------------------------------
@@ -1051,7 +1060,13 @@ class TandFHandler(PublisherHandler):
             md.extend(['*页面上没有 HTML 正文；正文见 `paper.pdf`。*', ''])
 
         if supplemental_urls or supplemental_downloads:
-            md.extend(['---', '', '## Supplemental Material', ''])
+            # The body usually carries its own "Supplemental Material"
+            # section (a sentence pointing at the DOI); don't print a
+            # second heading with the same name.
+            heading = ('Supplemental Files'
+                       if re.search(r'^#+ Supplemental Material\s*$', body, re.M | re.I)
+                       else 'Supplemental Material')
+            md.extend(['---', '', f'## {heading}', ''])
             for index, entry in enumerate(supplemental_urls):
                 url = entry.get('url', '') if isinstance(entry, dict) else entry
                 name = entry.get('filename') if isinstance(entry, dict) else ''

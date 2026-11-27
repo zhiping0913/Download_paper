@@ -3286,6 +3286,10 @@ Optica → None；Elsevier → None；Nature → `nature`；iphy → `iphy`
   链接随后补充，**按文件名去重**
   - ⚠️ **页面上的 `.zip` 是 figshare 那几个文件的打包**：实测 `tmph_a_1802525_sm0135.zip`
     里正好是那两个文件、字节数一致。所以 figshare 有答案时跳过页面上的压缩包（日志会说）
+- ❌ **"Additional information"（Funding 等）在正文容器外面**：`div#infos-holder` 是
+  `div.hlFld-Fulltext` 的**兄弟**，只遍历容器就静默丢掉它（用户报告，三篇存档都有这一块）。
+  现在接在正文后面一起遍历。正文自带一节 "Supplemental Material"（一句指向 DOI 的话），
+  所以文件清单那节此时改叫 **Supplemental Files**，不印两个同名标题
 - 引文是数字（含 `1–20`、`36-47` 这种范围）就编号 `[N]`，否则（作者-年份制）列成圆点
 - 出版商自己的 typo 修一处：`href="https://doi.org/https://doi.org/10.1080/…"`
 - ⚠️ **`isAccessibleForFree` 不要转成 `access: False`**（它说的是"免不免费"，不是"我们能不能读"）
